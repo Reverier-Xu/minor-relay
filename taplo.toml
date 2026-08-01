@@ -1,0 +1,8 @@
+include = ["Cargo.toml", "taplo.toml", "rustfmt.toml"]
+
+[formatting]
+align_comments        = true
+align_entries         = true
+align_single_comments = true
+crlf                  = false
+reorder_keys          = true

@@ -1,0 +1,60 @@
+name: quality_check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+
+      - name: install nightly rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: install stable rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: install taplo
+        uses: taiki-e/install-action@v2
+        with:
+          tool: taplo-cli
+
+      - name: cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: taplo fmt
+        run: taplo fmt --check
+
+      - name: cargo fmt
+        run: cargo +nightly fmt --all -- --check
+
+      - name: cargo check
+        run: cargo check --workspace --all-targets --all-features --locked
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --all-features --locked
