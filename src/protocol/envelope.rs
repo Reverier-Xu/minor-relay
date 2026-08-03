@@ -1,10 +1,334 @@
+use minicbor::{Decode, Decoder, Encode, Encoder, data::Type};
+
+use crate::{Error, Result};
+
+const MAGIC: [u8; 4] = *b"MRLY";
+const PRELUDE_LEN: usize = 16;
+const MAX_CBOR_DEPTH: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Prelude {
+  schema_id: u16,
+  kind_id: u16,
+  flags: u16,
+  body_len: u32,
+}
+
+impl Prelude {
+  const fn new(schema_id: u16, kind_id: u16, flags: u16, body_len: u32) -> Self {
+    Self {
+      schema_id,
+      kind_id,
+      flags,
+      body_len,
+    }
+  }
+
+  const fn schema_id(self) -> u16 {
+    self.schema_id
+  }
+
+  const fn kind_id(self) -> u16 {
+    self.kind_id
+  }
+
+  const fn flags(self) -> u16 {
+    self.flags
+  }
+
+  fn encode(self) -> [u8; PRELUDE_LEN] {
+    let schema = self.schema_id.to_be_bytes();
+    let kind = self.kind_id.to_be_bytes();
+    let flags = self.flags.to_be_bytes();
+    let body_len = self.body_len.to_be_bytes();
+    [
+      MAGIC[0],
+      MAGIC[1],
+      MAGIC[2],
+      MAGIC[3],
+      schema[0],
+      schema[1],
+      kind[0],
+      kind[1],
+      flags[0],
+      flags[1],
+      0,
+      0,
+      body_len[0],
+      body_len[1],
+      body_len[2],
+      body_len[3],
+    ]
+  }
+
+  fn decode(bytes: &[u8]) -> Result<Self> {
+    if bytes.len() < PRELUDE_LEN || bytes[..4] != MAGIC {
+      return Err(Error::invalid_input("wire prelude"));
+    }
+    if bytes[10] != 0 || bytes[11] != 0 {
+      return Err(Error::invalid_input("wire reserved bits"));
+    }
+
+    Ok(Self {
+      schema_id: u16::from_be_bytes([bytes[4], bytes[5]]),
+      kind_id: u16::from_be_bytes([bytes[6], bytes[7]]),
+      flags: u16::from_be_bytes([bytes[8], bytes[9]]),
+      body_len: u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+    })
+  }
+}
+
+fn split_message<IsDeclared>(
+  message: &[u8], allowed_flags: u16, message_limit: u32, receive_limit: u32,
+  is_declared: IsDeclared,
+) -> Result<(Prelude, &[u8])>
+where
+  IsDeclared: FnOnce(u16, u16) -> bool, {
+  let prelude = Prelude::decode(message)?;
+  if !is_declared(prelude.schema_id, prelude.kind_id)
+    || prelude.flags & !allowed_flags != 0
+    || prelude.body_len > message_limit
+    || prelude.body_len > receive_limit
+  {
+    return Err(Error::invalid_input("wire limits"));
+  }
+
+  let body_len =
+    usize::try_from(prelude.body_len).map_err(|_| Error::invalid_input("wire body length"))?;
+  let expected_len = PRELUDE_LEN
+    .checked_add(body_len)
+    .ok_or_else(|| Error::invalid_input("wire body length"))?;
+  if message.len() != expected_len {
+    return Err(Error::invalid_input("wire body length"));
+  }
+
+  Ok((prelude, &message[PRELUDE_LEN..]))
+}
+
+#[derive(Clone, Copy)]
+struct CborLimits {
+  max_depth: usize,
+  max_collection_items: u64,
+  max_body_len: usize,
+}
+
+impl CborLimits {
+  const fn new(max_depth: usize, max_collection_items: u64, max_body_len: usize) -> Self {
+    Self {
+      max_depth: if max_depth > MAX_CBOR_DEPTH {
+        MAX_CBOR_DEPTH
+      } else {
+        max_depth
+      },
+      max_collection_items,
+      max_body_len,
+    }
+  }
+}
+
+fn encode_canonical<T>(value: &T, limits: CborLimits) -> Result<Vec<u8>>
+where
+  T: Encode<()>, {
+  let mut encoder = Encoder::new(Vec::new());
+  value
+    .encode(&mut encoder, &mut ())
+    .map_err(|_| Error::invalid_input("CBOR encode"))?;
+  let bytes = encoder.into_writer();
+  validate_canonical(&bytes, limits)?;
+  Ok(bytes)
+}
+
+fn decode_canonical<'bytes, T>(bytes: &'bytes [u8], limits: CborLimits) -> Result<T>
+where
+  T: Decode<'bytes, ()>, {
+  validate_canonical(bytes, limits)?;
+  let mut decoder = Decoder::new(bytes);
+  let value = T::decode(&mut decoder, &mut ()).map_err(|_| Error::invalid_input("CBOR decode"))?;
+  if decoder.position() != bytes.len() {
+    return Err(Error::invalid_input("CBOR trailing data"));
+  }
+  Ok(value)
+}
+
+fn validate_canonical(bytes: &[u8], limits: CborLimits) -> Result<()> {
+  if bytes.is_empty() || bytes.len() > limits.max_body_len {
+    return Err(Error::invalid_input("CBOR body length"));
+  }
+
+  let mut decoder = Decoder::new(bytes);
+  validate_item(&mut decoder, bytes, limits, 0)?;
+  if decoder.position() != bytes.len() {
+    return Err(Error::invalid_input("CBOR trailing data"));
+  }
+  Ok(())
+}
+
+fn validate_item(
+  decoder: &mut Decoder<'_>, bytes: &[u8], limits: CborLimits, depth: usize,
+) -> Result<()> {
+  let start = decoder.position();
+  let data_type = decoder
+    .datatype()
+    .map_err(|_| Error::invalid_input("CBOR type"))?;
+  match data_type {
+    Type::U8
+    | Type::U16
+    | Type::U32
+    | Type::U64
+    | Type::I8
+    | Type::I16
+    | Type::I32
+    | Type::I64
+    | Type::Int => {
+      let (_, header_len) = canonical_argument(bytes, start)?;
+      decoder
+        .skip()
+        .map_err(|_| Error::invalid_input("CBOR integer"))?;
+      if decoder.position() - start != header_len {
+        return Err(Error::invalid_input("CBOR integer"));
+      }
+    }
+    Type::Bytes => {
+      let (length, header_len) = canonical_argument(bytes, start)?;
+      decoder
+        .bytes()
+        .map_err(|_| Error::invalid_input("CBOR bytes"))?;
+      validate_sized_item(start, decoder.position(), header_len, length)?;
+    }
+    Type::String => {
+      let (length, header_len) = canonical_argument(bytes, start)?;
+      decoder
+        .str()
+        .map_err(|_| Error::invalid_input("CBOR string"))?;
+      validate_sized_item(start, decoder.position(), header_len, length)?;
+    }
+    Type::Array => {
+      validate_container_depth(depth, limits)?;
+      let (length, _) = canonical_argument(bytes, start)?;
+      let decoded_length = decoder
+        .array()
+        .map_err(|_| Error::invalid_input("CBOR array"))?
+        .ok_or_else(|| Error::invalid_input("CBOR indefinite array"))?;
+      if decoded_length != length || length > limits.max_collection_items {
+        return Err(Error::invalid_input("CBOR array length"));
+      }
+      for _ in 0..length {
+        validate_item(decoder, bytes, limits, depth + 1)?;
+      }
+    }
+    Type::Map => {
+      validate_container_depth(depth, limits)?;
+      let (length, _) = canonical_argument(bytes, start)?;
+      let decoded_length = decoder
+        .map()
+        .map_err(|_| Error::invalid_input("CBOR map"))?
+        .ok_or_else(|| Error::invalid_input("CBOR indefinite map"))?;
+      if decoded_length != length || length > limits.max_collection_items {
+        return Err(Error::invalid_input("CBOR map length"));
+      }
+      let mut previous_key: Option<&[u8]> = None;
+      for _ in 0..length {
+        let key_start = decoder.position();
+        validate_item(decoder, bytes, limits, depth + 1)?;
+        let key = &bytes[key_start..decoder.position()];
+        if previous_key.is_some_and(|previous| previous >= key) {
+          return Err(Error::invalid_input("CBOR map key order"));
+        }
+        previous_key = Some(key);
+        validate_item(decoder, bytes, limits, depth + 1)?;
+      }
+    }
+    Type::Bool => {
+      decoder
+        .bool()
+        .map_err(|_| Error::invalid_input("CBOR bool"))?;
+    }
+    Type::Null => {
+      decoder
+        .null()
+        .map_err(|_| Error::invalid_input("CBOR null"))?;
+    }
+    Type::Undefined
+    | Type::F16
+    | Type::F32
+    | Type::F64
+    | Type::Simple
+    | Type::BytesIndef
+    | Type::StringIndef
+    | Type::ArrayIndef
+    | Type::MapIndef
+    | Type::Tag
+    | Type::Break
+    | Type::Unknown(_) => return Err(Error::invalid_input("CBOR unsupported type")),
+  }
+  Ok(())
+}
+
+fn validate_container_depth(depth: usize, limits: CborLimits) -> Result<()> {
+  if depth >= limits.max_depth {
+    return Err(Error::invalid_input("CBOR nesting depth"));
+  }
+  Ok(())
+}
+
+fn validate_sized_item(start: usize, end: usize, header_len: usize, value_len: u64) -> Result<()> {
+  let value_len =
+    usize::try_from(value_len).map_err(|_| Error::invalid_input("CBOR item length"))?;
+  if end.checked_sub(start) != header_len.checked_add(value_len) {
+    return Err(Error::invalid_input("CBOR item length"));
+  }
+  Ok(())
+}
+
+fn canonical_argument(bytes: &[u8], start: usize) -> Result<(u64, usize)> {
+  let initial = *bytes
+    .get(start)
+    .ok_or_else(|| Error::invalid_input("CBOR header"))?;
+  let additional = initial & 0x1F;
+  let (value, header_len) = match additional {
+    value @ 0..=23 => (u64::from(value), 1),
+    24 => (u64::from(read_array::<1>(bytes, start)?[0]), 2),
+    25 => (u64::from(u16::from_be_bytes(read_array(bytes, start)?)), 3),
+    26 => (u64::from(u32::from_be_bytes(read_array(bytes, start)?)), 5),
+    27 => (u64::from_be_bytes(read_array(bytes, start)?), 9),
+    _ => return Err(Error::invalid_input("CBOR indefinite length")),
+  };
+
+  let canonical_len = if value < 24 {
+    1
+  } else if u8::try_from(value).is_ok() {
+    2
+  } else if u16::try_from(value).is_ok() {
+    3
+  } else if u32::try_from(value).is_ok() {
+    5
+  } else {
+    9
+  };
+  if header_len != canonical_len {
+    return Err(Error::invalid_input("CBOR non-shortest argument"));
+  }
+  Ok((value, header_len))
+}
+
+fn read_array<const LENGTH: usize>(bytes: &[u8], start: usize) -> Result<[u8; LENGTH]> {
+  let first = start
+    .checked_add(1)
+    .ok_or_else(|| Error::invalid_input("CBOR header"))?;
+  let last = first
+    .checked_add(LENGTH)
+    .ok_or_else(|| Error::invalid_input("CBOR header"))?;
+  let slice = bytes
+    .get(first..last)
+    .ok_or_else(|| Error::invalid_input("CBOR header"))?;
+  <[u8; LENGTH]>::try_from(slice).map_err(|_| Error::invalid_input("CBOR header"))
+}
+
 #[cfg(test)]
 mod tests {
   use proptest::prelude::*;
 
-  use super::{
-    CborLimits, Prelude, decode_canonical, encode_canonical, split_message,
-  };
+  use super::{CborLimits, Prelude, decode_canonical, encode_canonical, split_message};
 
   const LIMITS: CborLimits = CborLimits::new(8, 16, 1_024);
 
@@ -14,7 +338,19 @@ mod tests {
     #[n(0)]
     sequence: u64,
     #[n(1)]
+    #[cbor(with = "minicbor::bytes")]
     payload: Vec<u8>,
+  }
+
+  struct Ignored;
+
+  impl<'bytes, Context> minicbor::Decode<'bytes, Context> for Ignored {
+    fn decode(
+      decoder: &mut minicbor::Decoder<'bytes>, _context: &mut Context,
+    ) -> core::result::Result<Self, minicbor::decode::Error> {
+      decoder.skip()?;
+      Ok(Self)
+    }
   }
 
   #[test]
@@ -24,8 +360,8 @@ mod tests {
     assert_eq!(
       encoded,
       [
-        b'M', b'R', b'L', b'Y', 0x00, 0x01, 0x02, 0x03, 0x00, 0x04, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x05,
+        b'M', b'R', b'L', b'Y', 0x00, 0x01, 0x02, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x05,
       ],
     );
   }
@@ -41,7 +377,11 @@ mod tests {
       let mut message = Vec::from(Prelude::new(schema, kind, flags, body.len() as u32).encode());
       message.extend_from_slice(&body);
 
-      let (decoded, decoded_body) = split_message(&message, 0x000f, 256, 512).unwrap();
+      let (decoded, decoded_body) =
+        split_message(&message, 0x000f, 256, 512, |declared_schema, declared_kind| {
+          declared_schema == schema && declared_kind == kind
+        })
+        .unwrap();
       prop_assert_eq!(decoded.schema_id(), schema);
       prop_assert_eq!(decoded.kind_id(), kind);
       prop_assert_eq!(decoded.flags(), flags);
@@ -53,26 +393,27 @@ mod tests {
   #[test]
   fn g1_core_prelude_rejects_malformed_and_over_limit_messages() {
     let canonical = message(0, &[0x01]);
-    assert!(split_message(&canonical[..15], 0, 8, 8).is_err());
+    assert!(split_message(&canonical[..15], 0, 8, 8, declared).is_err());
 
     let mut wrong_magic = canonical.clone();
     wrong_magic[0] = b'X';
-    assert!(split_message(&wrong_magic, 0, 8, 8).is_err());
+    assert!(split_message(&wrong_magic, 0, 8, 8, declared).is_err());
 
     let mut unknown_flags = canonical.clone();
     unknown_flags[9] = 1;
-    assert!(split_message(&unknown_flags, 0, 8, 8).is_err());
+    assert!(split_message(&unknown_flags, 0, 8, 8, declared).is_err());
 
     let mut reserved = canonical.clone();
     reserved[11] = 1;
-    assert!(split_message(&reserved, 0, 8, 8).is_err());
+    assert!(split_message(&reserved, 0, 8, 8, declared).is_err());
 
     let mut wrong_length = canonical.clone();
     wrong_length[15] = 2;
-    assert!(split_message(&wrong_length, 0, 8, 8).is_err());
+    assert!(split_message(&wrong_length, 0, 8, 8, declared).is_err());
 
-    assert!(split_message(&canonical, 0, 0, 8).is_err());
-    assert!(split_message(&canonical, 0, 8, 0).is_err());
+    assert!(split_message(&canonical, 0, 8, 8, |_, _| false).is_err());
+    assert!(split_message(&canonical, 0, 0, 8, declared).is_err());
+    assert!(split_message(&canonical, 0, 8, 0, declared).is_err());
   }
 
   #[test]
@@ -83,30 +424,39 @@ mod tests {
     };
 
     let encoded = encode_canonical(&body, LIMITS).unwrap();
-    assert_eq!(encoded, [0xa2, 0x00, 0x01, 0x01, 0x42, b'o', b'k']);
-    assert_eq!(decode_canonical::<TestBody>(&encoded, LIMITS).unwrap(), body);
+    assert_eq!(encoded, [0xA2, 0x00, 0x01, 0x01, 0x42, b'o', b'k']);
+    assert_eq!(
+      decode_canonical::<TestBody>(&encoded, LIMITS).unwrap(),
+      body
+    );
   }
 
   #[test]
   fn g1_core_cbor_rejects_noncanonical_or_unsupported_forms() {
     for bytes in [
       &[0x18, 0x01][..],
-      &[0x9f, 0xff],
-      &[0xa2, 0x00, 0x01, 0x00, 0x02],
-      &[0xa2, 0x01, 0x01, 0x00, 0x02],
-      &[0xc0, 0x00],
-      &[0xf9, 0x00, 0x00],
+      &[0x9F, 0xFF],
+      &[0xA2, 0x00, 0x01, 0x00, 0x02],
+      &[0xA2, 0x01, 0x01, 0x00, 0x02],
+      &[0xC0, 0x00],
+      &[0xF9, 0x00, 0x00],
       &[0x00, 0x00],
     ] {
-      assert!(decode_canonical::<minicbor::data::Value>(bytes, LIMITS).is_err());
+      assert!(decode_canonical::<Ignored>(bytes, LIMITS).is_err());
     }
   }
 
   #[test]
   fn g1_core_cbor_enforces_depth_collection_and_body_limits() {
-    assert!(decode_canonical::<minicbor::data::Value>(&[0x81, 0x81, 0x00], CborLimits::new(1, 8, 8)).is_err());
-    assert!(decode_canonical::<minicbor::data::Value>(&[0x83, 0x00, 0x01, 0x02], CborLimits::new(4, 2, 8)).is_err());
-    assert!(decode_canonical::<minicbor::data::Value>(&[0x00], CborLimits::new(4, 2, 0)).is_err());
+    assert!(decode_canonical::<Ignored>(&[0x81, 0x81, 0x00], CborLimits::new(1, 8, 8)).is_err());
+    assert!(
+      decode_canonical::<Ignored>(&[0x83, 0x00, 0x01, 0x02], CborLimits::new(4, 2, 8)).is_err()
+    );
+    assert!(decode_canonical::<Ignored>(&[0x00], CborLimits::new(4, 2, 0)).is_err());
+  }
+
+  fn declared(schema: u16, kind: u16) -> bool {
+    schema == 1 && kind == 1
   }
 
   fn message(flags: u16, body: &[u8]) -> Vec<u8> {
