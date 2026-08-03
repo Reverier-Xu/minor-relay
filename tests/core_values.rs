@@ -1,9 +1,9 @@
 use std::str::FromStr;
 
 use minor_relay::{
-  ClusterId, DiscoveryTag, Error, ErrorKind, EventTag, FeatureTag, NodeConfig, NodeId,
-  ProtocolTag, ProviderErrorContext, ProviderErrorKind, QualifiedTag, ResourceTag, SchemaTag,
-  TraceId, TransportTag,
+  ClusterId, DiscoveryTag, Error, ErrorKind, EventTag, FeatureTag, NodeConfig, NodeId, ProtocolTag,
+  ProviderErrorContext, ProviderErrorKind, QualifiedTag, ResourceTag, SchemaTag, TraceId,
+  TransportTag,
 };
 
 #[test]
