@@ -326,6 +326,9 @@ fn read_array<const LENGTH: usize>(bytes: &[u8], start: usize) -> Result<[u8; LE
 
 #[cfg(test)]
 mod tests {
+  use std::cell::Cell;
+
+  use minicbor::{Encode, Encoder, encode::Write};
   use proptest::prelude::*;
 
   use super::{CborLimits, Prelude, decode_canonical, encode_canonical, split_message};
@@ -353,6 +356,24 @@ mod tests {
     }
   }
 
+  struct RepeatedBody {
+    accepted_items: Cell<usize>,
+  }
+
+  impl<Context> Encode<Context> for RepeatedBody {
+    fn encode<Writer: Write>(
+      &self,
+      encoder: &mut Encoder<Writer>,
+      _context: &mut Context,
+    ) -> core::result::Result<(), minicbor::encode::Error<Writer::Error>> {
+      for _ in 0..100 {
+        encoder.bytes(&[0; 16])?;
+        self.accepted_items.set(self.accepted_items.get() + 1);
+      }
+      Ok(())
+    }
+  }
+
   #[test]
   fn g1_core_prelude_uses_exact_network_order_bytes() {
     let encoded = Prelude::new(0x0001, 0x0203, 0x0004, 5).encode();
@@ -367,6 +388,8 @@ mod tests {
   }
 
   proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1_000))]
+
     #[test]
     fn g1_core_prelude_round_trips_without_copying_body(
       schema in any::<u16>(),
@@ -387,6 +410,32 @@ mod tests {
       prop_assert_eq!(decoded.flags(), flags);
       prop_assert_eq!(decoded_body.as_ptr(), message[16..].as_ptr());
       prop_assert_eq!(decoded_body, body);
+    }
+
+    #[test]
+    fn g1_core_hostile_wire_and_cbor_bytes_never_panic(
+      input in proptest::collection::vec(any::<u8>(), 0..512),
+    ) {
+      let wire_result = std::panic::catch_unwind(|| {
+        split_message(&input, 0, 256, 512, |schema, kind| schema == 1 && kind == 1)
+      });
+      let cbor_result = std::panic::catch_unwind(|| {
+        decode_canonical::<Ignored>(&input, CborLimits::new(8, 16, 512))
+      });
+
+      prop_assert!(wire_result.is_ok());
+      prop_assert!(cbor_result.is_ok());
+    }
+
+    #[test]
+    fn g1_core_equivalent_cbor_values_encode_identically(
+      sequence in any::<u64>(),
+      payload in proptest::collection::vec(any::<u8>(), 0..128),
+    ) {
+      let first = TestBody { sequence, payload: payload.clone() };
+      let second = TestBody { sequence, payload };
+
+      prop_assert_eq!(encode_canonical(&first, LIMITS).unwrap(), encode_canonical(&second, LIMITS).unwrap());
     }
   }
 
@@ -453,6 +502,26 @@ mod tests {
       decode_canonical::<Ignored>(&[0x83, 0x00, 0x01, 0x02], CborLimits::new(4, 2, 8)).is_err()
     );
     assert!(decode_canonical::<Ignored>(&[0x00], CborLimits::new(4, 2, 0)).is_err());
+  }
+
+  #[test]
+  fn g1_core_cbor_bounds_output_before_encoding_growth() {
+    let body = RepeatedBody {
+      accepted_items: Cell::new(0),
+    };
+
+    assert!(encode_canonical(&body, CborLimits::new(4, 8, 32)).is_err());
+    assert!(body.accepted_items.get() <= 1);
+  }
+
+  #[test]
+  fn g1_core_cbor_enforces_absolute_limits() {
+    let mut too_deep = vec![0x81; 33];
+    too_deep.push(0x00);
+    assert!(decode_canonical::<Ignored>(&too_deep, CborLimits::new(usize::MAX, u64::MAX, usize::MAX)).is_err());
+
+    let oversized_collection = [0x99, 0x10, 0x01];
+    assert!(decode_canonical::<Ignored>(&oversized_collection, CborLimits::new(usize::MAX, u64::MAX, usize::MAX)).is_err());
   }
 
   fn declared(schema: u16, kind: u16) -> bool {
