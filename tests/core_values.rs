@@ -54,6 +54,7 @@ fn g1_core_tags_parse_canonical_namespaces_and_categories() {
   DiscoveryTag::parse("example.com/discovery/local").unwrap();
   ResourceTag::parse("example.com/resources/capacity").unwrap();
   EventTag::parse("example.com/events/changed").unwrap();
+  QualifiedTag::parse("example.com/crypto/custom-purpose").unwrap();
 
   assert!(FeatureTag::parse("example.com/protocols/work").is_err());
 }

@@ -134,6 +134,7 @@ fn validate_tag(value: &str) -> Result<(usize, usize)> {
     || !valid_domain(domain)
     || !valid_name_component(category)
     || !valid_name_component(name)
+    || (domain == "relay.woooo.tech" && category == "crypto")
   {
     return Err(Error::invalid_input("qualified tag"));
   }
