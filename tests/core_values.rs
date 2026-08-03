@@ -76,6 +76,7 @@ fn g1_core_tags_reject_noncanonical_namespaces() {
     "example.com/features/work/extra",
     "example.com//work",
     "example.com/features/wörk",
+    "relay.woooo.tech/crypto/admission-grant-v1",
     too_long_tag.as_str(),
   ] {
     assert!(QualifiedTag::parse(value).is_err(), "accepted {value:?}");
@@ -204,6 +205,201 @@ fn g1_core_node_config_validates_all_owned_knobs() {
       .with_max_future_skew(Duration::from_millis(499))
       .is_err()
   );
+  assert!(
+    NodeConfig::new()
+      .with_session_queue_limits(1_025, 1)
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_session_queue_limits(1, 33_554_433)
+      .is_err()
+  );
+}
+
+#[test]
+fn g1_core_admission_and_protocol_boundaries_are_closed() {
+  AdmissionLimits::new(1, 16, 1, 64).unwrap();
+  AdmissionLimits::new(16, 256, 60, 4_096).unwrap();
+  for values in [
+    (0, 16, 1, 64),
+    (17, 256, 1, 64),
+    (1, 15, 1, 64),
+    (1, 257, 1, 64),
+    (1, 16, 0, 64),
+    (1, 16, 61, 64),
+    (1, 16, 1, 63),
+    (1, 16, 1, 4_097),
+  ] {
+    assert!(AdmissionLimits::new(values.0, values.1, values.2, values.3).is_err());
+  }
+
+  ProtocolLimits::new(65_536, 1).unwrap();
+  ProtocolLimits::new(8_388_608, 1_024).unwrap();
+  assert!(ProtocolLimits::new(65_535, 1).is_err());
+  assert!(ProtocolLimits::new(8_388_609, 1).is_err());
+  assert!(ProtocolLimits::new(65_536, 0).is_err());
+  assert!(ProtocolLimits::new(65_536, 1_025).is_err());
+}
+
+#[test]
+fn g1_core_trace_limit_boundaries_are_closed() {
+  TraceLimits::new()
+    .per_source_active(16)
+    .unwrap()
+    .global_active(64)
+    .unwrap();
+  TraceLimits::new().global_active(65_536).unwrap();
+  assert!(TraceLimits::new().global_active(65_537).is_err());
+  assert!(TraceLimits::new().per_source_active(15).is_err());
+  TraceLimits::new().per_source_active(8_192).unwrap();
+  assert!(TraceLimits::new().per_source_active(8_193).is_err());
+
+  TraceLimits::new()
+    .per_source_active(16)
+    .unwrap()
+    .global_active(64)
+    .unwrap()
+    .per_source_total(256)
+    .unwrap()
+    .global_total(1_024)
+    .unwrap();
+  TraceLimits::new().global_total(1_048_576).unwrap();
+  assert!(TraceLimits::new().global_total(1_048_577).is_err());
+  assert!(TraceLimits::new().per_source_total(255).is_err());
+  TraceLimits::new().per_source_total(131_072).unwrap();
+  assert!(TraceLimits::new().per_source_total(131_073).is_err());
+
+  TraceLimits::new()
+    .per_source_bytes(2_097_152)
+    .unwrap()
+    .global_bytes(16_777_216)
+    .unwrap();
+  TraceLimits::new().global_bytes(4_294_967_296).unwrap();
+  assert!(TraceLimits::new().global_bytes(4_294_967_297).is_err());
+  assert!(TraceLimits::new().per_source_bytes(2_097_151).is_err());
+  TraceLimits::new()
+    .global_bytes(4_294_967_296)
+    .unwrap()
+    .per_source_bytes(2_147_483_648)
+    .unwrap();
+  assert!(TraceLimits::new().per_source_bytes(2_147_483_649).is_err());
+
+  TraceLimits::new()
+    .send_tasks(16)
+    .unwrap()
+    .send_tasks(1_024)
+    .unwrap();
+  assert!(TraceLimits::new().send_tasks(15).is_err());
+  assert!(TraceLimits::new().send_tasks(1_025).is_err());
+  TraceLimits::new()
+    .handler_tasks(16)
+    .unwrap()
+    .handler_tasks(1_024)
+    .unwrap();
+  assert!(TraceLimits::new().handler_tasks(15).is_err());
+  assert!(TraceLimits::new().handler_tasks(1_025).is_err());
+}
+
+#[test]
+fn g1_core_trace_limits_reject_cross_field_inversions() {
+  let small = TraceLimits::new()
+    .per_source_active(16)
+    .unwrap()
+    .global_active(64)
+    .unwrap()
+    .per_source_total(256)
+    .unwrap()
+    .global_total(1_024)
+    .unwrap()
+    .per_source_bytes(2_097_152)
+    .unwrap()
+    .global_bytes(16_777_216)
+    .unwrap();
+
+  assert!(small.global_active(15).is_err());
+  assert!(small.per_source_active(65).is_err());
+  assert!(small.global_active(1_025).is_err());
+  assert!(small.per_source_active(257).is_err());
+  assert!(small.global_total(255).is_err());
+  assert!(small.per_source_total(1_025).is_err());
+  assert!(small.global_bytes(2_097_151).is_err());
+  assert!(small.per_source_bytes(16_777_217).is_err());
+}
+
+#[test]
+fn g1_core_node_duration_and_queue_boundaries_are_closed() {
+  NodeConfig::new()
+    .with_anti_entropy_interval(Duration::from_nanos(1))
+    .unwrap();
+  assert!(
+    NodeConfig::new()
+      .with_anti_entropy_interval(Duration::ZERO)
+      .is_err()
+  );
+
+  NodeConfig::new()
+    .with_ack_timeout(Duration::from_millis(250))
+    .unwrap();
+  NodeConfig::new()
+    .with_ack_timeout(Duration::from_secs(30))
+    .unwrap();
+  assert!(
+    NodeConfig::new()
+      .with_ack_timeout(Duration::from_millis(249))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_ack_timeout(Duration::from_millis(30_001))
+      .is_err()
+  );
+
+  NodeConfig::new()
+    .with_trace_retention(Duration::from_secs(600))
+    .unwrap();
+  NodeConfig::new()
+    .with_trace_retention(Duration::from_secs(2_592_000))
+    .unwrap();
+  assert!(
+    NodeConfig::new()
+      .with_trace_retention(Duration::from_secs(599))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_trace_retention(Duration::from_secs(2_592_001))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_trace_retention(Duration::from_millis(600_001))
+      .is_err()
+  );
+
+  NodeConfig::new()
+    .with_max_future_skew(Duration::from_millis(500))
+    .unwrap();
+  NodeConfig::new()
+    .with_max_future_skew(Duration::from_secs(60))
+    .unwrap();
+  assert!(
+    NodeConfig::new()
+      .with_max_future_skew(Duration::from_millis(499))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_max_future_skew(Duration::from_millis(60_001))
+      .is_err()
+  );
+
+  NodeConfig::new().with_session_queue_limits(1, 1).unwrap();
+  NodeConfig::new()
+    .with_session_queue_limits(1_024, 33_554_432)
+    .unwrap();
+  assert!(NodeConfig::new().with_session_queue_limits(0, 1).is_err());
+  assert!(NodeConfig::new().with_session_queue_limits(1, 0).is_err());
   assert!(
     NodeConfig::new()
       .with_session_queue_limits(1_025, 1)
