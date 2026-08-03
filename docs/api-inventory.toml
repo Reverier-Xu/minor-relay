@@ -1,0 +1,133 @@
+schema = "relay.woooo.tech/schemas/api-inventory-v1"
+status = "accepted"
+document = "docs/api-manifest.md"
+sha256 = "50d7f274cc22eff745b10614a9e5a4ece0a28eaa1b16f8c83eb60649187589b8"
+
+node_handle_signatures = [
+  "pub async fn command<C: Command>(&self, command: C) -> Result<C::Output>;",
+  "pub async fn query<Q: Query>(&self, query: Q) -> Result<Q::Output>;",
+  "pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>>;",
+]
+
+commands = [
+  "Shutdown",
+  "CreateCluster",
+  "RotateJoinCredential",
+  "Listen",
+  "StopListener",
+  "JoinCluster",
+  "DisconnectPeer",
+  "DirectRequest",
+  "UpdateDescriptor",
+  "RoutedRequest",
+  "PutState",
+  "DeleteState",
+  "MutateLabels",
+  "RevokeNode",
+  "CleanupState",
+  "LeaveCluster",
+]
+
+queries = [
+  "GetLocalNode",
+  "GetNodeStatus",
+  "WaitForShutdown",
+  "ListListeners",
+  "ListSessions",
+  "ListTrust",
+  "GetMember",
+  "ListMembers",
+  "GetTopology",
+  "GetDelivery",
+  "GetState",
+  "ScanState",
+  "GetClockHealth",
+  "GetNodeResource",
+  "ListNodeResources",
+  "SelectNodes",
+  "ListSessionFeatures",
+  "GetObservability",
+]
+
+events = [
+  "SessionChanged",
+  "MemberChanged",
+  "StateChanged",
+  "LabelsChanged",
+  "NodeRevoked",
+  "StateCleaned",
+  "IdentityReplaced",
+  "EquivocationObserved",
+]
+
+extension_traits = [
+  "Clock",
+  "Entropy",
+  "KeyProvider",
+  "StorageFactory",
+  "Storage",
+  "Transport",
+  "TransportListener",
+  "TransportConnection",
+  "Discovery",
+  "ProtocolHandler",
+  "StateCodec",
+  "NeighborPolicy",
+  "RoutingPolicy",
+]
+
+required_reexports = [
+  "NodeBuilder",
+  "NodeConfig",
+  "AdmissionLimits",
+  "ProtocolLimits",
+  "TraceLimits",
+  "ExtensionRegistry",
+  "NodeHandle",
+  "Command",
+  "Query",
+  "Event",
+  "Error",
+  "ErrorKind",
+  "ProviderErrorKind",
+  "ProviderErrorContext",
+  "Result",
+  "NodeId",
+  "ClusterId",
+  "TraceId",
+  "JoinCredential",
+  "PublicKey",
+  "Signature",
+  "QualifiedTag",
+  "FeatureTag",
+  "ProtocolTag",
+  "SchemaTag",
+  "TransportTag",
+  "DiscoveryTag",
+  "ResourceTag",
+  "EventTag",
+  "FeatureDefinition",
+  "LimitDefinition",
+  "ProtocolDefinition",
+  "Endpoint",
+  "StateKey",
+  "StateValue",
+  "StateVersion",
+  "StateRecordView",
+  "Selector",
+  "CleanupState",
+  "AcceptStaleReplicaResurrection",
+  "ReplaceIdentityAndDeleteOldLocalState",
+  "ObservabilitySnapshot",
+]
+
+forbidden_public_tokens = [
+  "tokio::sync",
+  "tokio::task",
+  "rustls::",
+  "tungstenite::",
+  "minicbor::",
+  "redb::",
+  "serde_json::Value",
+  "lycoris",
+]
