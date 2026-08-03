@@ -1,3 +1,9 @@
+mod error;
+mod identity;
+
+pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
+pub use identity::{ClusterId, NodeId, TraceId};
+
 pub fn add(left: u64, right: u64) -> u64 {
   left + right
 }
