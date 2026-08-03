@@ -1,10 +1,11 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use minor_relay::{
-  ClusterId, DiscoveryTag, Error, ErrorKind, EventTag, FeatureTag, NodeConfig, NodeId, ProtocolTag,
-  ProviderErrorContext, ProviderErrorKind, QualifiedTag, ResourceTag, SchemaTag, TraceId,
-  TransportTag,
+  AdmissionLimits, ClusterId, Digest, DiscoveryTag, Error, ErrorKind, EventTag, FeatureTag,
+  NodeConfig, NodeId, ProtocolLimits, ProtocolTag, ProviderErrorContext, ProviderErrorKind, PublicKey,
+  QualifiedTag, ResourceTag, SchemaTag, Signature, TraceId, TraceLimits, TransportTag,
 };
+use proptest::prelude::*;
 
 #[test]
 fn g1_core_ids_round_trip_canonical_forms() {
@@ -106,4 +107,124 @@ fn g1_core_provider_errors_use_closed_context() {
   assert_eq!(error.kind(), ErrorKind::Io);
   assert_eq!(error.context(), "entropy");
   assert!(!error.to_string().contains("secret"));
+}
+
+#[test]
+fn g1_core_byte_wrappers_require_explicit_access() {
+  let digest = Digest::from_bytes([7; 32]);
+  let public_key = PublicKey::from_bytes([8; 32]);
+  let signature = Signature::from_bytes([9; 64]);
+
+  assert_eq!(digest.as_bytes(), &[7; 32]);
+  assert_eq!(public_key.as_bytes(), &[8; 32]);
+  assert_eq!(signature.as_bytes(), &[9; 64]);
+  assert_eq!(format!("{digest:?}"), "Digest(..)");
+  assert_eq!(format!("{public_key:?}"), "PublicKey(..)");
+  assert_eq!(format!("{signature:?}"), "Signature(..)");
+}
+
+#[test]
+fn g1_core_limit_types_enforce_frozen_ranges() {
+  let admission = AdmissionLimits::default();
+  assert_eq!(admission.pending_per_source(), 4);
+  assert_eq!(admission.pending_global(), 64);
+  assert_eq!(admission.attempts_per_source_per_minute(), 16);
+  assert_eq!(admission.attempts_global_per_minute(), 256);
+  assert!(AdmissionLimits::new(0, 64, 16, 256).is_err());
+  assert!(AdmissionLimits::new(4, 3, 16, 256).is_err());
+  assert!(AdmissionLimits::new(4, 64, 60, 59).is_err());
+
+  let protocol = ProtocolLimits::default();
+  assert_eq!(protocol.data_body_bytes(), 1_048_576);
+  assert_eq!(protocol.in_flight_requests(), 256);
+  assert!(ProtocolLimits::new(65_535, 256).is_err());
+  assert!(ProtocolLimits::new(8_388_609, 256).is_err());
+  assert!(ProtocolLimits::new(1_048_576, 0).is_err());
+  assert!(ProtocolLimits::new(1_048_576, 1_025).is_err());
+
+  let trace = TraceLimits::default();
+  assert_eq!(trace.global_active_records(), 8_192);
+  assert_eq!(trace.active_records_per_source(), 1_024);
+  assert_eq!(trace.global_total_records(), 262_144);
+  assert_eq!(trace.total_records_per_source(), 32_768);
+  assert_eq!(trace.global_journal_bytes(), 268_435_456);
+  assert_eq!(trace.journal_bytes_per_source(), 67_108_864);
+  assert_eq!(trace.concurrent_send_tasks(), 256);
+  assert_eq!(trace.concurrent_handler_tasks(), 256);
+  assert!(TraceLimits::new().global_active(63).is_err());
+  assert!(TraceLimits::new().send_tasks(1_025).is_err());
+}
+
+#[test]
+fn g1_core_node_config_validates_all_owned_knobs() {
+  let required = FeatureTag::parse("example.com/features/work").unwrap();
+  let config = NodeConfig::new()
+    .with_anti_entropy_interval(Duration::from_millis(250))
+    .unwrap()
+    .with_ack_timeout(Duration::from_millis(250))
+    .unwrap()
+    .with_trace_retention(Duration::from_secs(600))
+    .unwrap()
+    .with_max_future_skew(Duration::from_millis(500))
+    .unwrap()
+    .with_session_queue_limits(1_024, 33_554_432)
+    .unwrap()
+    .with_protocol_limits(ProtocolLimits::default())
+    .unwrap()
+    .with_trace_limits(TraceLimits::default())
+    .unwrap()
+    .with_admission_limits(AdmissionLimits::default())
+    .unwrap()
+    .require_feature(required.clone())
+    .unwrap();
+
+  assert!(config.require_feature(required).is_err());
+  assert!(NodeConfig::new().with_anti_entropy_interval(Duration::ZERO).is_err());
+  assert!(NodeConfig::new().with_ack_timeout(Duration::from_millis(249)).is_err());
+  assert!(NodeConfig::new().with_trace_retention(Duration::from_secs(599)).is_err());
+  assert!(NodeConfig::new().with_trace_retention(Duration::from_millis(600_001)).is_err());
+  assert!(NodeConfig::new().with_max_future_skew(Duration::from_millis(499)).is_err());
+  assert!(NodeConfig::new().with_session_queue_limits(1_025, 1).is_err());
+  assert!(NodeConfig::new().with_session_queue_limits(1, 33_554_433).is_err());
+}
+
+proptest! {
+  #[test]
+  fn g1_core_generated_ids_round_trip(suffix in "[0-9a-zA-Z]{21}") {
+    let node = format!("node_{suffix}");
+    let cluster = format!("cluster_{suffix}");
+    let trace = format!("trace_{suffix}");
+
+    let parsed_node = NodeId::parse(&node).unwrap();
+    let parsed_cluster = ClusterId::parse(&cluster).unwrap();
+    let parsed_trace = TraceId::parse(&trace).unwrap();
+    prop_assert_eq!(parsed_node.as_str(), node.as_str());
+    prop_assert_eq!(parsed_cluster.as_str(), cluster.as_str());
+    prop_assert_eq!(parsed_trace.as_str(), trace.as_str());
+  }
+
+  #[test]
+  fn g1_core_generated_tags_round_trip(
+    owner in "[a-z][a-z0-9]{0,7}",
+    label in "[a-z][a-z0-9]{0,7}",
+    name in "[a-z][a-z0-9-]{0,15}[a-z0-9]",
+  ) {
+    let value = format!("{owner}.{label}/features/{name}");
+    let tag = QualifiedTag::parse(&value).unwrap();
+
+    prop_assert_eq!(tag.as_str(), value.as_str());
+    prop_assert!(FeatureTag::parse(&value).is_ok());
+  }
+
+  #[test]
+  fn g1_core_generated_ids_and_tags_reject_mutations(
+    suffix in "[0-9a-zA-Z]{21}",
+    owner in "[a-z]{1,8}",
+    name in "[a-z]{1,8}",
+  ) {
+    let invalid_id = format!("node_{}!", suffix);
+    let invalid_tag = format!("{}.com/features/{}", owner.to_uppercase(), name);
+    prop_assert!(NodeId::parse(&invalid_id).is_err());
+    prop_assert!(QualifiedTag::parse(&invalid_tag).is_err());
+  }
 }
