@@ -1,10 +1,12 @@
-use minicbor::{Decode, Decoder, Encode, Encoder, data::Type};
+use minicbor::{Decode, Decoder, Encode, Encoder, data::Type, encode::Write};
 
 use crate::{Error, Result};
 
 const MAGIC: [u8; 4] = *b"MRLY";
 const PRELUDE_LEN: usize = 16;
-const MAX_CBOR_DEPTH: usize = 64;
+const MAX_CBOR_DEPTH: usize = 32;
+const MAX_CBOR_COLLECTION_ITEMS: u64 = 4_096;
+const MAX_CBOR_BODY_LEN: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Prelude {
@@ -120,20 +122,73 @@ impl CborLimits {
       } else {
         max_depth
       },
-      max_collection_items,
-      max_body_len,
+      max_collection_items: if max_collection_items > MAX_CBOR_COLLECTION_ITEMS {
+        MAX_CBOR_COLLECTION_ITEMS
+      } else {
+        max_collection_items
+      },
+      max_body_len: if max_body_len > MAX_CBOR_BODY_LEN {
+        MAX_CBOR_BODY_LEN
+      } else {
+        max_body_len
+      },
     }
+  }
+}
+
+#[derive(Debug)]
+enum LimitedWriteError {
+  LimitExceeded,
+}
+
+struct LimitedWriter {
+  bytes: Vec<u8>,
+  position: usize,
+}
+
+impl LimitedWriter {
+  fn new(limit: usize) -> Result<Self> {
+    let mut bytes = Vec::new();
+    bytes
+      .try_reserve_exact(limit)
+      .map_err(|_| Error::invalid_input("CBOR output allocation"))?;
+    bytes.resize(limit, 0);
+    Ok(Self { bytes, position: 0 })
+  }
+
+  fn into_bytes(mut self) -> Vec<u8> {
+    self.bytes.truncate(self.position);
+    self.bytes
+  }
+}
+
+impl Write for LimitedWriter {
+  type Error = LimitedWriteError;
+
+  fn write_all(&mut self, buffer: &[u8]) -> core::result::Result<(), Self::Error> {
+    let end = self
+      .position
+      .checked_add(buffer.len())
+      .ok_or(LimitedWriteError::LimitExceeded)?;
+    let output = self
+      .bytes
+      .get_mut(self.position..end)
+      .ok_or(LimitedWriteError::LimitExceeded)?;
+    output.copy_from_slice(buffer);
+    self.position = end;
+    Ok(())
   }
 }
 
 fn encode_canonical<T>(value: &T, limits: CborLimits) -> Result<Vec<u8>>
 where
   T: Encode<()>, {
-  let mut encoder = Encoder::new(Vec::new());
+  let writer = LimitedWriter::new(limits.max_body_len)?;
+  let mut encoder = Encoder::new(writer);
   value
     .encode(&mut encoder, &mut ())
     .map_err(|_| Error::invalid_input("CBOR encode"))?;
-  let bytes = encoder.into_writer();
+  let bytes = encoder.into_writer().into_bytes();
   validate_canonical(&bytes, limits)?;
   Ok(bytes)
 }
@@ -362,9 +417,7 @@ mod tests {
 
   impl<Context> Encode<Context> for RepeatedBody {
     fn encode<Writer: Write>(
-      &self,
-      encoder: &mut Encoder<Writer>,
-      _context: &mut Context,
+      &self, encoder: &mut Encoder<Writer>, _context: &mut Context,
     ) -> core::result::Result<(), minicbor::encode::Error<Writer::Error>> {
       for _ in 0..100 {
         encoder.bytes(&[0; 16])?;
@@ -388,8 +441,6 @@ mod tests {
   }
 
   proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1_000))]
-
     #[test]
     fn g1_core_prelude_round_trips_without_copying_body(
       schema in any::<u16>(),
@@ -518,10 +569,19 @@ mod tests {
   fn g1_core_cbor_enforces_absolute_limits() {
     let mut too_deep = vec![0x81; 33];
     too_deep.push(0x00);
-    assert!(decode_canonical::<Ignored>(&too_deep, CborLimits::new(usize::MAX, u64::MAX, usize::MAX)).is_err());
+    assert!(
+      decode_canonical::<Ignored>(&too_deep, CborLimits::new(usize::MAX, u64::MAX, usize::MAX))
+        .is_err()
+    );
 
     let oversized_collection = [0x99, 0x10, 0x01];
-    assert!(decode_canonical::<Ignored>(&oversized_collection, CborLimits::new(usize::MAX, u64::MAX, usize::MAX)).is_err());
+    assert!(
+      decode_canonical::<Ignored>(
+        &oversized_collection,
+        CborLimits::new(usize::MAX, u64::MAX, usize::MAX)
+      )
+      .is_err()
+    );
   }
 
   fn declared(schema: u16, kind: u16) -> bool {

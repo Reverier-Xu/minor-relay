@@ -2,8 +2,8 @@ use std::{str::FromStr, time::Duration};
 
 use minor_relay::{
   AdmissionLimits, ClusterId, Digest, DiscoveryTag, Error, ErrorKind, EventTag, FeatureTag,
-  NodeConfig, NodeId, ProtocolLimits, ProtocolTag, ProviderErrorContext, ProviderErrorKind, PublicKey,
-  QualifiedTag, ResourceTag, SchemaTag, Signature, TraceId, TraceLimits, TransportTag,
+  NodeConfig, NodeId, ProtocolLimits, ProtocolTag, ProviderErrorContext, ProviderErrorKind,
+  PublicKey, QualifiedTag, ResourceTag, SchemaTag, Signature, TraceId, TraceLimits, TransportTag,
 };
 use proptest::prelude::*;
 
@@ -179,13 +179,41 @@ fn g1_core_node_config_validates_all_owned_knobs() {
     .unwrap();
 
   assert!(config.require_feature(required).is_err());
-  assert!(NodeConfig::new().with_anti_entropy_interval(Duration::ZERO).is_err());
-  assert!(NodeConfig::new().with_ack_timeout(Duration::from_millis(249)).is_err());
-  assert!(NodeConfig::new().with_trace_retention(Duration::from_secs(599)).is_err());
-  assert!(NodeConfig::new().with_trace_retention(Duration::from_millis(600_001)).is_err());
-  assert!(NodeConfig::new().with_max_future_skew(Duration::from_millis(499)).is_err());
-  assert!(NodeConfig::new().with_session_queue_limits(1_025, 1).is_err());
-  assert!(NodeConfig::new().with_session_queue_limits(1, 33_554_433).is_err());
+  assert!(
+    NodeConfig::new()
+      .with_anti_entropy_interval(Duration::ZERO)
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_ack_timeout(Duration::from_millis(249))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_trace_retention(Duration::from_secs(599))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_trace_retention(Duration::from_millis(600_001))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_max_future_skew(Duration::from_millis(499))
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_session_queue_limits(1_025, 1)
+      .is_err()
+  );
+  assert!(
+    NodeConfig::new()
+      .with_session_queue_limits(1, 33_554_433)
+      .is_err()
+  );
 }
 
 proptest! {
