@@ -99,6 +99,13 @@ impl Error {
       context,
     }
   }
+
+  pub(crate) const fn conflict(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::Conflict,
+      context,
+    }
+  }
 }
 
 impl fmt::Debug for Error {

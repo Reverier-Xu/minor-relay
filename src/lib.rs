@@ -3,9 +3,9 @@ mod error;
 mod identity;
 mod protocol;
 
-pub use config::NodeConfig;
+pub use config::{AdmissionLimits, NodeConfig, ProtocolLimits, TraceLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
-pub use identity::{ClusterId, NodeId, TraceId};
+pub use identity::{ClusterId, Digest, NodeId, PublicKey, Signature, TraceId};
 pub use protocol::{
   DiscoveryTag, EventTag, FeatureTag, ProtocolTag, QualifiedTag, ResourceTag, SchemaTag,
   TransportTag,
