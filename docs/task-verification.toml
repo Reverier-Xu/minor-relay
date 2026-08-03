@@ -1,0 +1,942 @@
+schema = "relay.woooo.tech/schemas/task-verification-v1"
+status = "accepted"
+quality_timeout_seconds = 1800
+
+quality_argv = [
+  [
+    "taplo",
+    "fmt",
+    "--check",
+  ],
+  [
+    "cargo",
+    "+nightly",
+    "fmt",
+    "--all",
+    "--",
+    "--check",
+  ],
+  [
+    "cargo",
+    "check",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--locked",
+  ],
+  [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--locked",
+    "--",
+    "-D",
+    "warnings",
+  ],
+  [
+    "cargo",
+    "test",
+    "--workspace",
+    "--all-features",
+    "--locked",
+  ],
+]
+
+[[task]]
+id = "T-G00-01"
+verification_id = "VERIFY-G00-01"
+state = "inline"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G00-01"
+owner_task = "T-G00-01"
+state = "inline"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G00-02"
+verification_id = "VERIFY-G00-02"
+state = "inline"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G00-02"
+owner_task = "T-G00-02"
+state = "inline"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G00-03"
+verification_id = "VERIFY-G00-03"
+state = "inline"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G00-03"
+owner_task = "T-G00-03"
+state = "inline"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G00-04"
+verification_id = "VERIFY-G00-04"
+state = "inline"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G00-04"
+owner_task = "T-G00-04"
+state = "inline"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G00-05"
+verification_id = "VERIFY-G00-05"
+state = "inline"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G00-05"
+owner_task = "T-G00-05"
+state = "inline"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G00-06"
+verification_id = "VERIFY-G00-06"
+state = "ready"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G00-06"
+owner_task = "T-G00-06"
+state = "ready"
+argv = ["scripts/validate-planning-docs.sh", "--self-test"]
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G01-01"
+verification_id = "VERIFY-G01-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G01-01"
+owner_task = "T-G01-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G01-02"
+verification_id = "VERIFY-G01-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G01-02"
+owner_task = "T-G01-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G01-03"
+verification_id = "VERIFY-G01-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G01-03"
+owner_task = "T-G01-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G01-04"
+verification_id = "VERIFY-G01-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G01-04"
+owner_task = "T-G01-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G01-05"
+verification_id = "VERIFY-G01-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G01-05"
+owner_task = "T-G01-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G02-01"
+verification_id = "VERIFY-G02-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G02-01"
+owner_task = "T-G02-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G02-02"
+verification_id = "VERIFY-G02-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G02-02"
+owner_task = "T-G02-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G02-03"
+verification_id = "VERIFY-G02-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G02-03"
+owner_task = "T-G02-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G02-04"
+verification_id = "VERIFY-G02-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G02-04"
+owner_task = "T-G02-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G02-05"
+verification_id = "VERIFY-G02-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G02-05"
+owner_task = "T-G02-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G03-01"
+verification_id = "VERIFY-G03-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G03-01"
+owner_task = "T-G03-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G03-02"
+verification_id = "VERIFY-G03-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G03-02"
+owner_task = "T-G03-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G03-03"
+verification_id = "VERIFY-G03-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G03-03"
+owner_task = "T-G03-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G03-04"
+verification_id = "VERIFY-G03-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G03-04"
+owner_task = "T-G03-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G03-05"
+verification_id = "VERIFY-G03-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G03-05"
+owner_task = "T-G03-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G03-06"
+verification_id = "VERIFY-G03-06"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G03-06"
+owner_task = "T-G03-06"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G04-01"
+verification_id = "VERIFY-G04-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G04-01"
+owner_task = "T-G04-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G04-02"
+verification_id = "VERIFY-G04-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G04-02"
+owner_task = "T-G04-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G04-03"
+verification_id = "VERIFY-G04-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G04-03"
+owner_task = "T-G04-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G04-04"
+verification_id = "VERIFY-G04-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G04-04"
+owner_task = "T-G04-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G04-05"
+verification_id = "VERIFY-G04-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G04-05"
+owner_task = "T-G04-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G04-06"
+verification_id = "VERIFY-G04-06"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G04-06"
+owner_task = "T-G04-06"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G05-01"
+verification_id = "VERIFY-G05-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G05-01"
+owner_task = "T-G05-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G05-02"
+verification_id = "VERIFY-G05-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G05-02"
+owner_task = "T-G05-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G05-03"
+verification_id = "VERIFY-G05-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G05-03"
+owner_task = "T-G05-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G05-04"
+verification_id = "VERIFY-G05-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G05-04"
+owner_task = "T-G05-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G05-05"
+verification_id = "VERIFY-G05-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G05-05"
+owner_task = "T-G05-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G05-06"
+verification_id = "VERIFY-G05-06"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G05-06"
+owner_task = "T-G05-06"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G06-01"
+verification_id = "VERIFY-G06-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G06-01"
+owner_task = "T-G06-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G06-02"
+verification_id = "VERIFY-G06-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G06-02"
+owner_task = "T-G06-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G06-03"
+verification_id = "VERIFY-G06-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G06-03"
+owner_task = "T-G06-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G06-04"
+verification_id = "VERIFY-G06-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G06-04"
+owner_task = "T-G06-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G06-05"
+verification_id = "VERIFY-G06-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G06-05"
+owner_task = "T-G06-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G07-01"
+verification_id = "VERIFY-G07-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G07-01"
+owner_task = "T-G07-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G07-02"
+verification_id = "VERIFY-G07-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G07-02"
+owner_task = "T-G07-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G07-03"
+verification_id = "VERIFY-G07-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G07-03"
+owner_task = "T-G07-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G07-04"
+verification_id = "VERIFY-G07-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G07-04"
+owner_task = "T-G07-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G07-05"
+verification_id = "VERIFY-G07-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G07-05"
+owner_task = "T-G07-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G07-06"
+verification_id = "VERIFY-G07-06"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G07-06"
+owner_task = "T-G07-06"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G08-01"
+verification_id = "VERIFY-G08-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G08-01"
+owner_task = "T-G08-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G08-02"
+verification_id = "VERIFY-G08-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G08-02"
+owner_task = "T-G08-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G08-03"
+verification_id = "VERIFY-G08-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G08-03"
+owner_task = "T-G08-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G08-04"
+verification_id = "VERIFY-G08-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G08-04"
+owner_task = "T-G08-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G08-05"
+verification_id = "VERIFY-G08-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G08-05"
+owner_task = "T-G08-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-01"
+verification_id = "VERIFY-G09-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-01"
+owner_task = "T-G09-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-02"
+verification_id = "VERIFY-G09-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-02"
+owner_task = "T-G09-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-03"
+verification_id = "VERIFY-G09-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-03"
+owner_task = "T-G09-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-04"
+verification_id = "VERIFY-G09-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-04"
+owner_task = "T-G09-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-05"
+verification_id = "VERIFY-G09-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-05"
+owner_task = "T-G09-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-06"
+verification_id = "VERIFY-G09-06"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-06"
+owner_task = "T-G09-06"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G09-07"
+verification_id = "VERIFY-G09-07"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G09-07"
+owner_task = "T-G09-07"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-01"
+verification_id = "VERIFY-G10-01"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-01"
+owner_task = "T-G10-01"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-02"
+verification_id = "VERIFY-G10-02"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-02"
+owner_task = "T-G10-02"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-03"
+verification_id = "VERIFY-G10-03"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-03"
+owner_task = "T-G10-03"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-04"
+verification_id = "VERIFY-G10-04"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-04"
+owner_task = "T-G10-04"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-05"
+verification_id = "VERIFY-G10-05"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-05"
+owner_task = "T-G10-05"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-06"
+verification_id = "VERIFY-G10-06"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-06"
+owner_task = "T-G10-06"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-07"
+verification_id = "VERIFY-G10-07"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-07"
+owner_task = "T-G10-07"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-08"
+verification_id = "VERIFY-G10-08"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-08"
+owner_task = "T-G10-08"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-09"
+verification_id = "VERIFY-G10-09"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-09"
+owner_task = "T-G10-09"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-10"
+verification_id = "VERIFY-G10-10"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-10"
+owner_task = "T-G10-10"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-11"
+verification_id = "VERIFY-G10-11"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-11"
+owner_task = "T-G10-11"
+state = "planned"
+argv = []
+timeout_seconds = 1800
+
+[[task]]
+id = "T-G10-12"
+verification_id = "VERIFY-G10-12"
+state = "planned"
+include_quality = true
+
+[[verification]]
+id = "VERIFY-G10-12"
+owner_task = "T-G10-12"
+state = "planned"
+argv = []
+timeout_seconds = 1800
