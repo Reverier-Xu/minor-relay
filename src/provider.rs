@@ -1,50 +1,17 @@
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use crate::{BoxFuture, Digest, PublicKey, Result, Signature};
 
 pub struct KeyOperationId {
-  value: Arc<[u8]>,
-}
-
-impl KeyOperationId {
-  pub fn as_bytes(&self) -> &[u8] {
-    &self.value
-  }
+  _private: (),
 }
 
 pub struct KeyHandle {
-  value: Arc<[u8]>,
-}
-
-impl KeyHandle {
-  pub fn expose_provider_handle(&self) -> &[u8] {
-    &self.value
-  }
-}
-
-impl fmt::Debug for KeyHandle {
-  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    formatter.write_str("KeyHandle(..)")
-  }
+  _private: (),
 }
 
 pub struct CreatedKey {
-  handle: KeyHandle,
-  public_key: PublicKey,
-}
-
-impl CreatedKey {
-  pub fn new(handle: KeyHandle, public_key: PublicKey) -> Self {
-    Self { handle, public_key }
-  }
-
-  pub fn handle(&self) -> &KeyHandle {
-    &self.handle
-  }
-
-  pub fn public_key(&self) -> &PublicKey {
-    &self.public_key
-  }
+  _private: (),
 }
 
 #[non_exhaustive]
@@ -93,110 +60,11 @@ pub enum DurabilityLevel {
 }
 
 pub struct StoreRequirements {
-  required_durability: DurabilityLevel,
-  conditional_batch: bool,
-  ordered_scan: bool,
-  reconciliation: bool,
-  exclusive_lifetime_lock: bool,
-  transactional_migration: bool,
+  _private: (),
 }
 
-impl StoreRequirements {
-  pub fn required_durability(&self) -> DurabilityLevel {
-    self.required_durability
-  }
-
-  pub fn requires_conditional_batch(&self) -> bool {
-    self.conditional_batch
-  }
-
-  pub fn requires_ordered_scan(&self) -> bool {
-    self.ordered_scan
-  }
-
-  pub fn requires_reconciliation(&self) -> bool {
-    self.reconciliation
-  }
-
-  pub fn requires_exclusive_lifetime_lock(&self) -> bool {
-    self.exclusive_lifetime_lock
-  }
-
-  pub fn requires_transactional_migration(&self) -> bool {
-    self.transactional_migration
-  }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreCapabilities {
-  durability: DurabilityLevel,
-  conditional_batch: bool,
-  ordered_scan: bool,
-  reconciliation: bool,
-  exclusive_lifetime_lock: bool,
-  transactional_migration: bool,
-}
-
-impl StoreCapabilities {
-  pub fn new(durability: DurabilityLevel) -> Self {
-    Self {
-      durability,
-      conditional_batch: false,
-      ordered_scan: false,
-      reconciliation: false,
-      exclusive_lifetime_lock: false,
-      transactional_migration: false,
-    }
-  }
-
-  pub fn conditional_batch(mut self, supported: bool) -> Self {
-    self.conditional_batch = supported;
-    self
-  }
-
-  pub fn ordered_scan(mut self, supported: bool) -> Self {
-    self.ordered_scan = supported;
-    self
-  }
-
-  pub fn reconciliation(mut self, supported: bool) -> Self {
-    self.reconciliation = supported;
-    self
-  }
-
-  pub fn exclusive_lifetime_lock(mut self, supported: bool) -> Self {
-    self.exclusive_lifetime_lock = supported;
-    self
-  }
-
-  pub fn transactional_migration(mut self, supported: bool) -> Self {
-    self.transactional_migration = supported;
-    self
-  }
-
-  pub fn durability(&self) -> DurabilityLevel {
-    self.durability
-  }
-
-  pub fn has_conditional_batch(&self) -> bool {
-    self.conditional_batch
-  }
-
-  pub fn has_ordered_scan(&self) -> bool {
-    self.ordered_scan
-  }
-
-  pub fn has_reconciliation(&self) -> bool {
-    self.reconciliation
-  }
-
-  pub fn has_exclusive_lifetime_lock(&self) -> bool {
-    self.exclusive_lifetime_lock
-  }
-
-  pub fn has_transactional_migration(&self) -> bool {
-    self.transactional_migration
-  }
+  _private: (),
 }
 
 pub struct StoreSnapshot {
