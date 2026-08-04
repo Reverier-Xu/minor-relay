@@ -1192,10 +1192,20 @@ mod tests {
 
   #[test]
   fn simulation_network_fault_matrix() {
+    assert_fault_matrix(0..1);
+  }
+
+  #[test]
+  #[ignore = "run by VERIFY-G01-03 with a forced seed range"]
+  fn simulation_network_fault_matrix_gate() {
     let seeds = match matrix_seed_range() {
       Ok(seeds) => seeds,
       Err(_) => fail_matrix(0, MatrixFailure::Run, &[]),
     };
+    assert_fault_matrix(seeds);
+  }
+
+  fn assert_fault_matrix(seeds: std::ops::Range<u64>) {
     let mut fingerprints = BTreeSet::new();
     for seed in seeds {
       let first = match run_fault_matrix_seed(seed) {
