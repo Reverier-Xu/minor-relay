@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod error;
 mod identity;
+mod node;
 mod protocol;
 mod provider;
 

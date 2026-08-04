@@ -7,10 +7,11 @@ use std::{
 };
 
 use minor_relay::{
-  BoxFuture, Clock, CommitOutcome, CreatedKey, Digest, Entropy, Error, KeyCreateState,
-  KeyDeleteState, KeyHandle, KeyOperationId, KeyProvider, MonotonicTime, ProviderErrorContext,
-  ProviderErrorKind, PublicKey, ReconcileOutcome, Result, Signature, Storage, StorageFactory,
-  StoreRequirements, StoreTransaction, TransactionId,
+  BoxFuture, Clock, Command, CommitOutcome, CreatedKey, Digest, Entropy, Error, EventOptions,
+  GetNodeStatus, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId, KeyProvider,
+  MonotonicTime, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey, Query,
+  ReconcileOutcome, Result, Shutdown, ShutdownOutcome, Signature, Storage, StorageFactory,
+  StoreRequirements, StoreTransaction, TransactionId, WaitForShutdown,
 };
 
 #[derive(Debug)]
@@ -172,6 +173,30 @@ fn g1_lifecycle_provider_scaffold_matches_builder_signature() {
     Arc::new(DeclarationOnlyStorage),
     Arc::new(DeclarationOnlyKeys),
   );
+}
+
+#[test]
+fn g1_lifecycle_sealed_operations_preserve_outputs() {
+  fn assert_command<Operation: Command<Output = ShutdownOutcome>>() {}
+  fn assert_status_query<Operation: Query<Output = NodeStatus>>() {}
+  fn assert_wait_query<Operation: Query<Output = minor_relay::ShutdownReason>>() {}
+
+  assert_command::<Shutdown>();
+  assert_status_query::<GetNodeStatus>();
+  assert_wait_query::<WaitForShutdown>();
+
+  Shutdown::new();
+  GetNodeStatus::new();
+  WaitForShutdown::new();
+}
+
+#[test]
+fn g1_lifecycle_event_capacity_is_bounded() {
+  EventOptions::new().capacity(1).unwrap();
+  EventOptions::new().capacity(1_024).unwrap();
+
+  assert!(EventOptions::new().capacity(0).is_err());
+  assert!(EventOptions::new().capacity(1_025).is_err());
 }
 
 fn provider_error(context: ProviderErrorContext) -> Error {
