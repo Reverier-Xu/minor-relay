@@ -1,8 +1,9 @@
 use std::{
-  fs::{self, OpenOptions},
-  io::Write,
+  fs::{self, File, OpenOptions},
+  io::{self, Write},
   path::{Path, PathBuf},
   process::Command as ProcessCommand,
+  sync::atomic::{AtomicU64, Ordering},
 };
 
 use minor_relay_test_support::{
@@ -15,6 +16,8 @@ use crate::simulation::{
   fixture::{ScenarioFixture, SimulationEvidenceSource},
   network::run_fault_matrix_seed,
 };
+
+static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MatrixFailure {
@@ -168,15 +171,45 @@ fn write_failure_artifact(
     "simulation-network-fault-matrix-{}-seed-{seed}.json",
     failure.diagnostic()
   ));
-  let mut file = OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .open(&path)
-    .map_err(|_| FailureCaptureError::Write)?;
-  file
-    .write_all(artifact.as_bytes())
-    .map_err(|_| FailureCaptureError::Write)?;
+  publish_new_file(&path, |file| {
+    file.write_all(artifact.as_bytes())?;
+    file.sync_all()
+  })?;
   Ok(path)
+}
+
+fn publish_new_file(
+  final_path: &Path, write_complete: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<(), FailureCaptureError> {
+  let directory = final_path.parent().ok_or(FailureCaptureError::Directory)?;
+  let file_name = final_path
+    .file_name()
+    .and_then(|value| value.to_str())
+    .ok_or(FailureCaptureError::Write)?;
+  let (temp_path, mut file) = create_temp_file(directory, file_name)?;
+  let write_result = write_complete(&mut file);
+  drop(file);
+  let result = write_result.and_then(|()| fs::hard_link(&temp_path, final_path));
+  let _ = fs::remove_file(&temp_path);
+  result.map_err(|_| FailureCaptureError::Write)
+}
+
+fn create_temp_file(
+  directory: &Path, final_name: &str,
+) -> Result<(PathBuf, File), FailureCaptureError> {
+  for _ in 0..64 {
+    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    let path = directory.join(format!(
+      ".{final_name}.tmp-{}-{sequence}",
+      std::process::id()
+    ));
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+      Ok(file) => return Ok((path, file)),
+      Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+      Err(_) => return Err(FailureCaptureError::Write),
+    }
+  }
+  Err(FailureCaptureError::Write)
 }
 
 pub(crate) fn capture_network_fault_matrix_fixture(
@@ -193,14 +226,18 @@ pub(crate) fn capture_network_fault_matrix_fixture(
 
 #[cfg(test)]
 mod tests {
-  use std::{fs, path::Path};
+  use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+  };
 
   use minor_relay_test_support::MAX_ARTIFACT_BYTES;
 
   use super::{
     FailureCaptureError, MatrixFailure, build_matrix_artifact,
-    capture_network_fault_matrix_fixture, retain_matrix_failure_at, synthetic_fixture_provenance,
-    trusted_provenance, write_failure_artifact,
+    capture_network_fault_matrix_fixture, publish_new_file, retain_matrix_failure_at,
+    synthetic_fixture_provenance, trusted_provenance, write_failure_artifact,
   };
 
   #[test]
@@ -261,6 +298,29 @@ mod tests {
       provenance.lockfile.as_hex()
     )));
     fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_partial_write_is_not_published() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-partial-artifact-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let final_path = root.join("simulation-network-fault-matrix-run-seed-1.json");
+
+    let result = publish_new_file(&final_path, |file| {
+      file.write_all(b"partial")?;
+      Err(io::Error::other("injected write failure"))
+    });
+
+    assert_eq!(result, Err(FailureCaptureError::Write));
+    assert!(!final_path.exists());
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    fs::remove_dir_all(&root).unwrap();
   }
 
   #[test]
