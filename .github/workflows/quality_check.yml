@@ -67,7 +67,7 @@ jobs:
           tar --extract --gzip --file /tmp/ripgrep.tar.gz --directory /tmp
           install -m 0755 /tmp/ripgrep-15.2.0-x86_64-unknown-linux-musl/rg \
             "${HOME}/.cargo/bin/rg"
-          test "$(rg --version | head -n 1)" = "ripgrep 15.2.0"
+          test "$(rg --version | awk 'NR == 1 { print $2 }')" = "15.2.0"
 
       - name: install jq
         run: |
