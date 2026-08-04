@@ -27,4 +27,8 @@ impl ShutdownOutcome {
   pub fn already_stopped(&self) -> bool {
     self.already_stopped
   }
+
+  pub(crate) const fn new(already_stopped: bool) -> Self {
+    Self { already_stopped }
+  }
 }
