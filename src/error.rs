@@ -127,6 +127,13 @@ impl Error {
       context,
     }
   }
+
+  pub(crate) const fn not_ready(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::NotReady,
+      context,
+    }
+  }
 }
 
 impl fmt::Debug for Error {

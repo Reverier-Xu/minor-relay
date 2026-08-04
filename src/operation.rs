@@ -15,13 +15,14 @@ pub trait Query: private::Sealed + Send + 'static {
 #[allow(private_bounds)]
 pub trait Event: private::Sealed + Clone + Send + Sync + 'static {}
 
-#[derive(Debug)]
-pub struct Shutdown;
+pub struct Shutdown {
+  _private: (),
+}
 
 #[allow(clippy::new_without_default)]
 impl Shutdown {
   pub fn new() -> Self {
-    Self
+    Self { _private: () }
   }
 }
 
@@ -31,13 +32,14 @@ impl Command for Shutdown {
   type Output = crate::ShutdownOutcome;
 }
 
-#[derive(Debug)]
-pub struct GetNodeStatus;
+pub struct GetNodeStatus {
+  _private: (),
+}
 
 #[allow(clippy::new_without_default)]
 impl GetNodeStatus {
   pub fn new() -> Self {
-    Self
+    Self { _private: () }
   }
 }
 
@@ -47,13 +49,14 @@ impl Query for GetNodeStatus {
   type Output = crate::NodeStatus;
 }
 
-#[derive(Debug)]
-pub struct WaitForShutdown;
+pub struct WaitForShutdown {
+  _private: (),
+}
 
 #[allow(clippy::new_without_default)]
 impl WaitForShutdown {
   pub fn new() -> Self {
-    Self
+    Self { _private: () }
   }
 }
 

@@ -10,8 +10,8 @@ use std::{
 
 use minor_relay::{
   BoxFuture, Command, Digest, Error, EventOptions, ExtensionRegistry, GetNodeStatus, MonotonicTime,
-  NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey,
-  Query, Result, Shutdown, ShutdownOutcome, Signature, WaitForShutdown,
+  NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind,
+  PublicKey, Query, Result, Shutdown, ShutdownOutcome, Signature, WaitForShutdown,
   extension::{
     Clock, CommitOutcome, CreatedKey, Entropy, KeyCreateState, KeyDeleteState, KeyHandle,
     KeyOperationId, KeyProvider, ReconcileOutcome, Storage, StorageFactory, StoreRequirements,
@@ -337,7 +337,9 @@ fn g1_lifecycle_start_without_tokio_returns_not_ready() {
 
   let result = Future::poll(start.as_mut(), &mut context);
 
-  assert!(matches!(result, Poll::Ready(Err(error)) if error.kind() == minor_relay::ErrorKind::NotReady));
+  assert!(
+    matches!(result, Poll::Ready(Err(error)) if error.kind() == minor_relay::ErrorKind::NotReady)
+  );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -354,6 +356,30 @@ async fn g1_lifecycle_shutdown_releases_retained_providers() {
   .unwrap();
 
   handle.command(Shutdown::new()).await.unwrap();
+
+  assert_eq!(drops.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
+  let drops = Arc::new(AtomicUsize::new(0));
+  let handle = NodeBuilder::new(
+    Arc::new(DeclarationOnlyStorage::tracked(Arc::clone(&drops))),
+    Arc::new(DeclarationOnlyKeys::tracked(Arc::clone(&drops))),
+  )
+  .clock(Arc::new(VirtualClock::new()))
+  .entropy(Arc::new(SequenceEntropy::new(vec![7; 32])))
+  .start()
+  .await
+  .unwrap();
+
+  drop(handle);
+  for _ in 0..16 {
+    if drops.load(Ordering::SeqCst) == 2 {
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
 
   assert_eq!(drops.load(Ordering::SeqCst), 2);
 }

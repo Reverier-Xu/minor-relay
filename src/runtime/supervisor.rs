@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use tokio::{
+  runtime::Handle,
   sync::{mpsc, oneshot, watch},
   task::JoinSet,
 };
 
 use crate::{
-  Clock, Entropy, Error, ExtensionRegistry, KeyProvider, NodeConfig, Result, ShutdownOutcome,
-  ShutdownReason, StorageFactory,
+  Error, ExtensionRegistry, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
+  api::{Clock, Entropy},
+  provider::{KeyProvider, StorageFactory},
   runtime::{Control, LifecycleSnapshot, RuntimeClient},
 };
 
@@ -24,11 +26,12 @@ pub(crate) struct RuntimeDependencies {
 }
 
 pub(crate) async fn spawn_runtime(dependencies: RuntimeDependencies) -> Result<RuntimeClient> {
+  let runtime = Handle::try_current().map_err(|_| Error::not_ready("Tokio runtime"))?;
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();
 
-  tokio::spawn(supervise(dependencies, control_rx, state_tx, ready_tx));
+  runtime.spawn(supervise(dependencies, control_rx, state_tx, ready_tx));
 
   ready_rx
     .await
@@ -40,29 +43,40 @@ async fn supervise(
   dependencies: RuntimeDependencies, mut control: mpsc::Receiver<Control>,
   state: watch::Sender<LifecycleSnapshot>, ready: oneshot::Sender<()>,
 ) {
-  let _dependencies = dependencies;
-  let mut tasks = JoinSet::new();
+  let tasks = JoinSet::<()>::new();
   state.send_replace(LifecycleSnapshot::running());
   if ready.send(()).is_err() {
-    finish_shutdown(&mut control, &mut tasks, &state).await;
+    finish_shutdown(control, tasks, dependencies, state, None).await;
     return;
   }
 
-  match control.recv().await {
-    Some(Control::Shutdown { reply }) => {
-      finish_shutdown(&mut control, &mut tasks, &state).await;
-      let _ = reply.send(ShutdownOutcome::new(false));
-    }
-    None => finish_shutdown(&mut control, &mut tasks, &state).await,
-  }
+  let first_reply = control
+    .recv()
+    .await
+    .map(|Control::Shutdown { reply }| reply);
+  finish_shutdown(control, tasks, dependencies, state, first_reply).await;
 }
 
 async fn finish_shutdown(
-  control: &mut mpsc::Receiver<Control>, tasks: &mut JoinSet<()>,
-  state: &watch::Sender<LifecycleSnapshot>,
+  mut control: mpsc::Receiver<Control>, mut tasks: JoinSet<()>, dependencies: RuntimeDependencies,
+  state: watch::Sender<LifecycleSnapshot>, first_reply: Option<oneshot::Sender<ShutdownOutcome>>,
 ) {
   state.send_replace(LifecycleSnapshot::shutting_down());
   control.close();
+
+  let mut queued_replies = Vec::with_capacity(CONTROL_CAPACITY);
+  while let Ok(Control::Shutdown { reply }) = control.try_recv() {
+    queued_replies.push(reply);
+  }
   tasks.shutdown().await;
+  drop(control);
+  drop(dependencies);
+
   state.send_replace(LifecycleSnapshot::stopped(ShutdownReason::Requested));
+  if let Some(reply) = first_reply {
+    let _ = reply.send(ShutdownOutcome::new(false));
+  }
+  for reply in queued_replies {
+    let _ = reply.send(ShutdownOutcome::new(true));
+  }
 }

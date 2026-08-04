@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
-  Clock, Entropy, ExtensionRegistry, KeyProvider, NodeConfig, NodeHandle, Result, StorageFactory,
-  api::{SystemClock, SystemEntropy},
+  ExtensionRegistry, NodeConfig, NodeHandle, Result,
+  api::{Clock, Entropy, SystemClock, SystemEntropy},
+  provider::{KeyProvider, StorageFactory},
   runtime::{RuntimeDependencies, spawn_runtime},
 };
 
