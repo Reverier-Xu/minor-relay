@@ -30,7 +30,10 @@ mod tests {
         "test",
         "--locked",
         "--lib",
-        "simulation_network_fault_matrix",
+        "simulation::network::tests::simulation_network_fault_matrix_gate",
+        "--",
+        "--ignored",
+        "--exact",
       ],
     );
   }
