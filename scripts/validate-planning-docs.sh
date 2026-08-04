@@ -63,7 +63,7 @@ verify_frozen_document docs/scenario-catalog.toml 1216beeaa2c5db5acaac9b87d7988d
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
 verify_frozen_document docs/task-verification.toml 747f06c8532af1f4c000635720180890cf2a00edef1206db2af64eb7b5742c9b
-verify_frozen_document docs/evidence-impact.toml fa1d6b180ca8b03dcef5ff4ef3270d607c77f629ac985840b6d34ce092c0315a
+verify_frozen_document docs/evidence-impact.toml 8c82bd1487a1117757bfd606d0d74144490d2b8f2b7f20517a7afac3653dbbd2
 
 for file in "${TOML_FILES[@]}"; do
   name=$(basename "$file" .toml)
@@ -311,6 +311,23 @@ check_api_inventory() {
     and (.queries | length) > 0 and (.queries | unique | length) == (.queries | length)
     and (.events | length) > 0 and (.events | unique | length) == (.events | length)
     and (.extension_traits | length) > 0 and (.extension_traits | unique | length) == (.extension_traits | length)
+    and .extension_traits == [
+      "Entropy",
+      "KeyProvider",
+      "StorageFactory",
+      "Storage",
+      "StoreSnapshot",
+      "StoreScan",
+      "Transport",
+      "TransportListener",
+      "TransportConnection",
+      "Discovery",
+      "PacketBody",
+      "PacketConsumer",
+      "NeighborPolicy",
+      "LoadBalancingPolicy",
+      "RoutingPolicy"
+    ]
     and (.required_reexports | length) > 0 and (.required_reexports | unique | length) == (.required_reexports | length)
     and ((.commands + .queries + .events) | length) == ((.commands + .queries + .events) | unique | length)
     and (. as $inventory | all(($inventory.commands + $inventory.queries + $inventory.events)[]; . as $operation | (($inventory.extension_traits + $inventory.required_reexports) | index($operation)) == null))
@@ -534,6 +551,11 @@ if [[ ${1:-} == "--self-test" ]]; then
   jq '(.events[0]) as $event | (.required_reexports | index("NodeBuilder")) as $index | .events[0] = "NodeBuilder" | .required_reexports[$index] = $event' "$TMP/api-inventory.json" > "$TMP/negative-event-category.json"
   if check_api_inventory "$TMP/negative-event-category.json"; then
     fail "cross-category event substitution was accepted"
+  fi
+
+  jq '(.extension_traits | index("PacketBody")) as $index | .extension_traits[$index] = "Command"' "$TMP/api-inventory.json" > "$TMP/negative-open-extension-category.json"
+  if check_api_inventory "$TMP/negative-open-extension-category.json"; then
+    fail "sealed trait accepted as an open extension"
   fi
 
   jq '.threat[0].residual = ""' "$TMP/threat-model.json" > "$TMP/negative-missing-residual.json"

@@ -249,7 +249,9 @@ globs = ["src/provider.rs", "src/storage/**"]
 precedence = 200
 owner_task = "T-G02-01"
 verification_ids = [
+  "VERIFY-G01-05",
   "VERIFY-G02-01",
+  "VERIFY-G02-02",
   "VERIFY-G02-03",
   "VERIFY-G02-04",
   "VERIFY-G02-05",
@@ -257,8 +259,18 @@ verification_ids = [
   "VERIFY-G08-02",
   "VERIFY-G08-03",
   "VERIFY-G08-04",
+  "VERIFY-G10-08",
 ]
-threat_ids = ["THR-013", "THR-015", "THR-020", "THR-021", "THR-022", "THR-023"]
+threat_ids = [
+  "THR-004",
+  "THR-005",
+  "THR-013",
+  "THR-015",
+  "THR-020",
+  "THR-021",
+  "THR-022",
+  "THR-023",
+]
 
 [[path_rule]]
 id = "IMPACT-MEMBERSHIP-TOPOLOGY"
