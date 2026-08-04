@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::simulation::{
   artifact::{
-    ArtifactBytes, ArtifactError, EvidenceDigest, EvidenceManifest, FailureClass, InvariantId,
-    build_failure_artifact,
+    ArtifactBytes, ArtifactError, CommitDigest, EvidenceManifest, FailureClass, InvariantId,
+    LockfileDigest, build_failure_artifact,
   },
   event::{DropReason, EventRecord},
   network::run_fault_matrix_seed,
@@ -292,8 +292,8 @@ pub(crate) fn capture_network_fault_matrix(seed: u64) -> Result<ArtifactBytes, A
     seed,
     FailureClass::Invariant,
     InvariantId::CompleteFaultMatrix,
-    EvidenceDigest::new([0x11; 32]),
-    EvidenceDigest::new([0x22; 32]),
+    CommitDigest::new([0x11; 32]),
+    LockfileDigest::new([0x22; 32]),
     replay,
   )?;
   let candidates = run
