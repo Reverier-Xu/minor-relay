@@ -1,0 +1,7 @@
+**
+!Cargo.toml
+!Cargo.lock
+!src/**
+!test-support/**
+!tests/**
+!.github/docker/run-quality.sh
