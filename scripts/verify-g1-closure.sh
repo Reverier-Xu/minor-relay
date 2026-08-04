@@ -36,4 +36,4 @@ run_rust_lane() {
 run_rust_lane 1.97.1
 run_rust_lane stable
 scripts/check-dependency-graph.sh
-cargo deny --locked check
+cargo deny --locked --workspace check
