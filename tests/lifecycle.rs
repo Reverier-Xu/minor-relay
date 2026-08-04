@@ -221,6 +221,64 @@ async fn g1_lifecycle_cloned_handles_share_runtime_status() {
   );
 }
 
+#[tokio::test]
+async fn g1_lifecycle_shutdown_and_wait_are_idempotent() {
+  let handle = start_node().await;
+  let waiter = handle.clone();
+  let waiting = tokio::spawn(async move { waiter.query(WaitForShutdown::new()).await });
+  tokio::task::yield_now().await;
+
+  let first = handle.command(Shutdown::new()).await.unwrap();
+  let reason = waiting.await.unwrap().unwrap();
+
+  assert!(!first.already_stopped());
+  assert_eq!(reason, minor_relay::ShutdownReason::Requested);
+  assert_eq!(
+    handle.query(GetNodeStatus::new()).await.unwrap(),
+    NodeStatus::Stopped,
+  );
+  assert_eq!(
+    handle.query(WaitForShutdown::new()).await.unwrap(),
+    minor_relay::ShutdownReason::Requested,
+  );
+  assert!(
+    handle
+      .command(Shutdown::new())
+      .await
+      .unwrap()
+      .already_stopped()
+  );
+}
+
+#[tokio::test]
+async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
+  let handle = start_node().await;
+  let barrier = Arc::new(tokio::sync::Barrier::new(16));
+  let mut callers = Vec::new();
+  for _ in 0..16 {
+    let caller = handle.clone();
+    let barrier = Arc::clone(&barrier);
+    callers.push(tokio::spawn(async move {
+      barrier.wait().await;
+      caller.command(Shutdown::new()).await
+    }));
+  }
+
+  let mut initiated = 0;
+  for caller in callers {
+    let outcome = caller.await.unwrap().unwrap();
+    if !outcome.already_stopped() {
+      initiated += 1;
+    }
+  }
+
+  assert_eq!(initiated, 1);
+  assert_eq!(
+    handle.query(WaitForShutdown::new()).await.unwrap(),
+    minor_relay::ShutdownReason::Requested,
+  );
+}
+
 async fn start_node() -> NodeHandle {
   let clock = Arc::new(VirtualClock::new());
   let entropy = Arc::new(SequenceEntropy::new(vec![7; 32]));
