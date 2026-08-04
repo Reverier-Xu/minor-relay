@@ -465,9 +465,13 @@ fn reorder_deadline(deadline: u64, window: u64) -> SimResult<u64> {
   if window == 0 {
     return Err(SimulationError::InvalidPolicy);
   }
-  deadline
-    .checked_add(window - 1)
-    .map(|value| value / window)
+  let quotient = deadline / window;
+  let remainder = deadline % window;
+  if remainder == 0 {
+    return Ok(deadline);
+  }
+  quotient
+    .checked_add(1)
     .and_then(|bucket| bucket.checked_mul(window))
     .ok_or(SimulationError::Overflow)
 }
@@ -487,7 +491,8 @@ const FAULT_CLOCK_SKEW: u32 = 1 << 11;
 const FAULT_DELIVERY: u32 = 1 << 12;
 const FAULT_DIRECTED: u32 = 1 << 13;
 const FAULT_JOINT: u32 = 1 << 14;
-pub(crate) const REQUIRED_FAULTS: u32 = (1 << 15) - 1;
+const FAULT_DELAY: u32 = 1 << 15;
+pub(crate) const REQUIRED_FAULTS: u32 = (1 << 16) - 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MatrixRun {
@@ -561,97 +566,240 @@ pub(crate) fn run_fault_matrix_seed(seed: u64) -> SimResult<MatrixRun> {
 
   let skew = if seed & 1 == 0 { 17 } else { -17 };
   simulator.set_clock_skew(NodeKey::new(2), skew)?;
+  let expected_joint_message = MessageId::new(simulator.next_message);
+  let joint_start = simulator.now_nanos;
+  let mut joint_deadlines = [0_u64; 2];
+  for copy in 0..=1_u8 {
+    let jitter = bounded_word(
+      decision_word(seed, expected_joint_message, joint, copy, 3),
+      20,
+    );
+    let nominal = joint_start
+      .checked_add(3)
+      .and_then(|deadline| deadline.checked_add(jitter))
+      .ok_or(SimulationError::Overflow)?;
+    joint_deadlines[usize::from(copy)] = reorder_deadline(nominal, 10)?;
+  }
   let joint_message = simulator.send(joint, 32)?;
+  if joint_message != expected_joint_message {
+    return Err(SimulationError::Invariant);
+  }
   simulator.partition(joint, PartitionId::new(3))?;
   simulator.heal(joint, PartitionId::new(3))?;
   simulator.run()?;
 
   let records = simulator.records();
   let mut faults = 0_u32;
-  let mut joint_duplicate = false;
-  let mut joint_reorder = false;
-  let mut joint_stale = false;
-  let mut blocked_observed = false;
-  let mut reverse_delivered = false;
-  for record in records {
-    match record {
-      EventRecord::Lost { message, .. } if *message == lost_message => faults |= FAULT_LOSS,
-      EventRecord::DuplicateCreated { message, .. } => {
-        faults |= FAULT_DUPLICATE;
-        joint_duplicate |= *message == joint_message;
-      }
-      EventRecord::Reordered { message, .. } => {
-        faults |= FAULT_REORDER;
-        joint_reorder |= *message == joint_message;
-      }
-      EventRecord::Dropped {
-        message,
-        reason: DropReason::Blocked,
-        ..
-      } => {
-        faults |= FAULT_BLOCKED;
-        blocked_observed |= *message == blocked_message;
-      }
-      EventRecord::Dropped {
-        message,
-        reason: DropReason::StaleLink,
-        ..
-      } => {
-        faults |= FAULT_STALE_LINK;
-        joint_stale |= *message == joint_message;
-      }
-      EventRecord::Dropped {
-        message,
-        reason: DropReason::StaleBoot,
-        ..
-      } if *message == stale_boot_message => faults |= FAULT_STALE_BOOT,
-      EventRecord::Dropped {
-        message,
-        reason: DropReason::StaleAddress,
-        ..
-      } if *message == stale_address_message => faults |= FAULT_STALE_ADDRESS,
-      EventRecord::Partitioned { .. } => faults |= FAULT_PARTITION,
-      EventRecord::Healed { .. } => faults |= FAULT_HEAL,
-      EventRecord::Restarted { .. } => faults |= FAULT_RESTART,
-      EventRecord::AddressChanged { .. } => faults |= FAULT_ADDRESS_CHANGE,
-      EventRecord::ClockSkewChanged { .. } => faults |= FAULT_CLOCK_SKEW,
-      EventRecord::Delivered { message, .. } => {
-        faults |= FAULT_DELIVERY;
-        reverse_delivered |= *message == reverse_message;
-      }
-      _ => {}
-    }
+  if observed_loss(records, lost_message) {
+    faults |= FAULT_LOSS;
   }
-  let delivered = records
-    .iter()
-    .filter_map(|record| match record {
-      EventRecord::Delivered { message, .. } => Some(*message),
-      _ => None,
-    })
-    .collect::<Vec<_>>();
-  if blocked_observed && reverse_delivered {
-    faults |= FAULT_DIRECTED;
+  if observed_exact_duplicate(records, duplicated_message) {
+    faults |= FAULT_DUPLICATE;
   }
-  if joint_duplicate && joint_reorder && joint_stale {
-    faults |= FAULT_JOINT;
+  if observed_reorder(records, reordered_first, reordered_second) {
+    faults |= FAULT_REORDER;
   }
-  if delivered.iter().position(|value| *value == reordered_second)
-    < delivered.iter().position(|value| *value == reordered_first)
-    && delivered.iter().filter(|value| **value == duplicated_message).count() == 2
-    && !delivered.contains(&lost_message)
-    && records.iter().any(|record| {
-      matches!(record, EventRecord::Dropped { message, reason: DropReason::StaleLink, .. } if *message == stale_link_message)
-    })
-  {
-    faults |= FAULT_REORDER | FAULT_DUPLICATE | FAULT_LOSS | FAULT_STALE_LINK;
+  if observed_drop(records, blocked_message, DropReason::Blocked) {
+    faults |= FAULT_BLOCKED;
+  }
+  if observed_drop(records, stale_link_message, DropReason::StaleLink) {
+    faults |= FAULT_STALE_LINK;
+  }
+  if observed_drop(records, stale_boot_message, DropReason::StaleBoot) {
+    faults |= FAULT_STALE_BOOT;
+  }
+  if observed_drop(records, stale_address_message, DropReason::StaleAddress) {
+    faults |= FAULT_STALE_ADDRESS;
   }
 
-  let decision_fingerprint = decision_word(seed, joint_message, joint, 0, 3);
+  let partition_state = simulator.topology.link(partitioned)?;
+  let joint_state = simulator.topology.link(joint)?;
+  let partition_events = records
+    .iter()
+    .filter(|record| matches!(record, EventRecord::Partitioned { .. }))
+    .count();
+  let heal_events = records
+    .iter()
+    .filter(|record| matches!(record, EventRecord::Healed { .. }))
+    .count();
+  if partition_events == 3
+    && !partition_state.is_blocked()
+    && partition_state.generation() == 4
+    && !joint_state.is_blocked()
+    && joint_state.generation() == 2
+  {
+    faults |= FAULT_PARTITION;
+  }
+  if heal_events == 3 && !partition_state.is_blocked() && !joint_state.is_blocked() {
+    faults |= FAULT_HEAL;
+  }
+
+  let restarted_state = simulator.topology.node(NodeKey::new(4))?;
+  if restarted_state.boot_epoch() == 1
+    && records.iter().any(|record| {
+      matches!(record, EventRecord::Restarted { node, boot_epoch: 1, .. } if *node == NodeKey::new(4))
+    })
+  {
+    faults |= FAULT_RESTART;
+  }
+  let address_state = simulator.topology.node(NodeKey::new(3))?;
+  if address_state.address() == AddressId::new(99)
+    && address_state.address_generation() == 1
+    && records.iter().any(|record| {
+      matches!(record, EventRecord::AddressChanged { node, address, generation: 1, .. } if *node == NodeKey::new(3) && *address == AddressId::new(99))
+    })
+  {
+    faults |= FAULT_ADDRESS_CHANGE;
+  }
+  let expected_utc = if skew >= 0 {
+    100 + skew.unsigned_abs()
+  } else {
+    100 - skew.unsigned_abs()
+  };
+  if simulator.observed_utc(NodeKey::new(2), 100)? == expected_utc
+    && records.iter().any(|record| {
+      matches!(record, EventRecord::ClockSkewChanged { node, skew_nanos, .. } if *node == NodeKey::new(2) && *skew_nanos == skew)
+    })
+  {
+    faults |= FAULT_CLOCK_SKEW;
+  }
+  if observed_delivery(records, reverse_message) {
+    faults |= FAULT_DELIVERY;
+  }
+  if observed_drop(records, blocked_message, DropReason::Blocked)
+    && observed_delivery(records, reverse_message)
+  {
+    faults |= FAULT_DIRECTED;
+  }
+  if observed_joint_fault(records, joint_message, joint_deadlines) {
+    faults |= FAULT_JOINT;
+  }
+  if observed_delay(records, reverse_message) {
+    faults |= FAULT_DELAY;
+  }
+
+  let decision_fingerprint = decision_word(seed, joint_message, joint, 0, 3)
+    ^ joint_deadlines[0].rotate_left(17)
+    ^ joint_deadlines[1].rotate_left(33);
   Ok(MatrixRun {
     snapshot: simulator.snapshot(),
     faults,
     decision_fingerprint,
   })
+}
+
+fn observed_loss(records: &[EventRecord], message: MessageId) -> bool {
+  records
+    .iter()
+    .any(|record| matches!(record, EventRecord::Lost { message: value, .. } if *value == message))
+    && !observed_delivery(records, message)
+}
+
+fn observed_exact_duplicate(records: &[EventRecord], message: MessageId) -> bool {
+  let declared = records.iter().any(|record| {
+    matches!(record, EventRecord::DuplicateCreated { message: value, .. } if *value == message)
+  });
+  let mut copies = records
+    .iter()
+    .filter_map(|record| match record {
+      EventRecord::Delivered {
+        message: value,
+        copy,
+        ..
+      } if *value == message => Some(*copy),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+  copies.sort_unstable();
+  declared && copies == [0, 1]
+}
+
+fn observed_reorder(records: &[EventRecord], first: MessageId, second: MessageId) -> bool {
+  let first_selected = records
+    .iter()
+    .any(|record| matches!(record, EventRecord::Reordered { message, .. } if *message == first));
+  let second_selected = records
+    .iter()
+    .any(|record| matches!(record, EventRecord::Reordered { message, .. } if *message == second));
+  let first_position = records.iter().position(
+    |record| matches!(record, EventRecord::Delivered { message, .. } if *message == first),
+  );
+  let second_position = records.iter().position(
+    |record| matches!(record, EventRecord::Delivered { message, .. } if *message == second),
+  );
+  first_selected
+    && second_selected
+    && matches!((first_position, second_position), (Some(first), Some(second)) if second < first)
+}
+
+fn observed_drop(records: &[EventRecord], message: MessageId, expected: DropReason) -> bool {
+  records.iter().any(|record| {
+    matches!(record, EventRecord::Dropped { message: value, reason, .. } if *value == message && *reason == expected)
+  }) && !observed_delivery(records, message)
+}
+
+fn observed_delivery(records: &[EventRecord], message: MessageId) -> bool {
+  records.iter().any(
+    |record| matches!(record, EventRecord::Delivered { message: value, .. } if *value == message),
+  )
+}
+
+fn observed_delay(records: &[EventRecord], message: MessageId) -> bool {
+  let sent_at = records.iter().find_map(|record| match record {
+    EventRecord::SendAccepted {
+      at_nanos,
+      message: value,
+      ..
+    } if *value == message => Some(*at_nanos),
+    _ => None,
+  });
+  let delivered_at = records.iter().find_map(|record| match record {
+    EventRecord::Delivered {
+      at_nanos,
+      message: value,
+      ..
+    } if *value == message => Some(*at_nanos),
+    _ => None,
+  });
+  matches!((sent_at, delivered_at), (Some(sent), Some(delivered)) if delivered > sent)
+}
+
+fn observed_joint_fault(
+  records: &[EventRecord], message: MessageId, expected_deadlines: [u64; 2],
+) -> bool {
+  let declared_duplicate = records.iter().any(|record| {
+    matches!(record, EventRecord::DuplicateCreated { message: value, .. } if *value == message)
+  });
+  let mut reordered_copies = records
+    .iter()
+    .filter_map(|record| match record {
+      EventRecord::Reordered {
+        message: value,
+        copy,
+        ..
+      } if *value == message => Some(*copy),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+  reordered_copies.sort_unstable();
+  let mut stale_drops = records
+    .iter()
+    .filter_map(|record| match record {
+      EventRecord::Dropped {
+        at_nanos,
+        message: value,
+        copy,
+        reason: DropReason::StaleLink,
+      } if *value == message => Some((*copy, *at_nanos)),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+  stale_drops.sort_unstable();
+  let expected = vec![(0, expected_deadlines[0]), (1, expected_deadlines[1])];
+  declared_duplicate
+    && reordered_copies == [0, 1]
+    && stale_drops == expected
+    && !observed_delivery(records, message)
 }
 
 fn matrix_policy(
@@ -816,7 +964,9 @@ mod tests {
     assert_eq!(byte_limited.pending_bytes(), 0);
 
     let mut record_topology = topology(SimulationLimits::new(4, 2, 16, 1, 8).unwrap());
-    record_topology.add_link(link, policy(1, 0, 0, 0, 0)).unwrap();
+    record_topology
+      .add_link(link, policy(1, 0, 0, 0, 0))
+      .unwrap();
     let mut record_limited = Simulator::new(21, record_topology).unwrap();
     assert!(record_limited.send(link, 8).is_err());
     assert_eq!(record_limited.pending_events(), 0);
