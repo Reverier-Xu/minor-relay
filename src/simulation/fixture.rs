@@ -240,16 +240,42 @@ impl<'a> SimulationEvidenceSource<'a> {
   }
 }
 
+struct SimulationEvents<'source, 'data> {
+  source: &'source SimulationEvidenceSource<'data>,
+  indices: std::ops::Range<usize>,
+}
+
+impl Iterator for SimulationEvents<'_, '_> {
+  type Item = Result<NormalizedEvent, SourceError>;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    self
+      .indices
+      .next()
+      .map(|index| self.source.normalize(index))
+  }
+
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    self.indices.size_hint()
+  }
+}
+
+impl ExactSizeIterator for SimulationEvents<'_, '_> {}
+
 impl NormalizedEventSource for SimulationEvidenceSource<'_> {
-  fn prevalidate(&self) -> Result<usize, SourceError> {
+  fn prevalidated_events(
+    &self,
+  ) -> Result<
+    Box<dyn ExactSizeIterator<Item = Result<NormalizedEvent, SourceError>> + '_>,
+    SourceError,
+  > {
     for index in 0..self.len() {
       self.normalize(index)?;
     }
-    Ok(self.len())
-  }
-
-  fn event(&self, index: usize) -> Result<NormalizedEvent, SourceError> {
-    self.normalize(index)
+    Ok(Box::new(SimulationEvents {
+      source: self,
+      indices: 0..self.len(),
+    }))
   }
 }
 
@@ -364,10 +390,13 @@ mod tests {
     let fixture = ScenarioFixture::network_fault_matrix().unwrap();
     let records = all_records();
     let source = SimulationEvidenceSource::records(&fixture, &records);
-    assert_eq!(source.prevalidate(), Ok(records.len()));
-    let kinds = (0..records.len())
-      .map(|index| source.event(index).unwrap().kind())
-      .collect::<Vec<_>>();
+    let events = source
+      .prevalidated_events()
+      .unwrap()
+      .collect::<Result<Vec<_>, _>>()
+      .unwrap();
+    assert_eq!(events.len(), records.len());
+    let kinds = events.iter().map(|event| event.kind()).collect::<Vec<_>>();
     assert_eq!(
       kinds,
       [
@@ -389,23 +418,11 @@ mod tests {
         EventKind::Dropped,
       ],
     );
-    assert_eq!(
-      source.event(0).unwrap().path_alias().as_deref(),
-      Some("path-1")
-    );
-    assert_eq!(
-      source.event(5).unwrap().fault_alias().as_deref(),
-      Some("fault-1")
-    );
-    assert_eq!(
-      source.event(7).unwrap().node_alias().as_deref(),
-      Some("node-2")
-    );
-    assert_eq!(
-      source.event(8).unwrap().endpoint_alias().as_deref(),
-      Some("endpoint-5")
-    );
-    assert_eq!(source.event(0).unwrap().payload_len(), Some(64));
+    assert_eq!(events[0].path_alias().as_deref(), Some("path-1"));
+    assert_eq!(events[5].fault_alias().as_deref(), Some("fault-1"));
+    assert_eq!(events[7].node_alias().as_deref(), Some("node-2"));
+    assert_eq!(events[8].endpoint_alias().as_deref(), Some("endpoint-5"));
+    assert_eq!(events[0].payload_len(), Some(64));
   }
 
   #[test]
