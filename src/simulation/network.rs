@@ -501,6 +501,12 @@ pub(crate) struct MatrixRun {
   decision_fingerprint: u64,
 }
 
+impl MatrixRun {
+  pub(crate) fn records(&self) -> &[EventRecord] {
+    &self.snapshot.records
+  }
+}
+
 pub(crate) fn matrix_seed_range() -> SimResult<std::ops::Range<u64>> {
   let count = parse_env_u64("MINOR_RELAY_SIM_SEEDS", 100)?;
   if !(1..=100_000).contains(&count) {

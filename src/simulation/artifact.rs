@@ -202,6 +202,7 @@ impl ArtifactBytes {
 pub(crate) enum ArtifactError {
   ForbiddenField(ForbiddenFieldClass),
   Redaction(RedactionError),
+  Simulation(crate::simulation::topology::SimulationError),
   ReplaySeedMismatch,
   InvalidLimits,
   EventCountOverflow,
@@ -216,6 +217,12 @@ impl From<RedactionError> for ArtifactError {
       RedactionError::ForbiddenField(class) => Self::ForbiddenField(class),
       other => Self::Redaction(other),
     }
+  }
+}
+
+impl From<crate::simulation::topology::SimulationError> for ArtifactError {
+  fn from(value: crate::simulation::topology::SimulationError) -> Self {
+    Self::Simulation(value)
   }
 }
 
