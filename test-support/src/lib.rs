@@ -567,6 +567,9 @@ pub struct ReplaySpec {
   kind: ReplayKind,
 }
 
+const SIMULATION_MATRIX_GATE_TEST: &str =
+  "simulation::network::tests::simulation_network_fault_matrix_gate";
+
 impl ReplaySpec {
   pub const fn cargo_test(test: CargoTestId) -> Self {
     Self {
@@ -645,7 +648,10 @@ impl ReplaySpec {
         "test".to_owned(),
         "--locked".to_owned(),
         "--lib".to_owned(),
-        "simulation_network_fault_matrix".to_owned(),
+        SIMULATION_MATRIX_GATE_TEST.to_owned(),
+        "--".to_owned(),
+        "--ignored".to_owned(),
+        "--exact".to_owned(),
       ],
       ReplayKind::FuzzCorpus { target, digest } => vec![
         "fuzz".to_owned(),
@@ -904,6 +910,7 @@ pub enum ArtifactError {
   Source(SourceError),
   InvalidLimits,
   EventCountOverflow,
+  EventCountMismatch,
   EncodingOverflow,
   ByteCeiling,
   FixedFieldsExceedByteCeiling,
@@ -939,14 +946,21 @@ pub fn build_failure_artifact_with_limits(
   hasher.update(total_u64.to_be_bytes());
 
   let mut windows = EventWindows::new(limits.event_ceiling);
+  let mut consumed_events = 0_usize;
   for event in &mut events {
     let event = event?;
+    consumed_events = consumed_events
+      .checked_add(1)
+      .ok_or(ArtifactError::EventCountOverflow)?;
     event.validate_alias_roles()?;
     let encoded = encode_event(event)?;
     let encoded_len = u32::try_from(encoded.len()).map_err(|_| ArtifactError::EncodingOverflow)?;
     hasher.update(encoded_len.to_be_bytes());
     hasher.update(encoded);
     windows.push(event);
+  }
+  if consumed_events != total_events {
+    return Err(ArtifactError::EventCountMismatch);
   }
   let event_digest = EventDigest(hasher.finalize().into());
 
@@ -1446,6 +1460,44 @@ mod tests {
 
   impl ExactSizeIterator for FixedEvents<'_> {}
 
+  struct MismatchedSource {
+    events: Vec<NormalizedEvent>,
+    advertised: usize,
+  }
+
+  struct MismatchedEvents<'a> {
+    events: std::slice::Iter<'a, NormalizedEvent>,
+    advertised: usize,
+  }
+
+  impl Iterator for MismatchedEvents<'_> {
+    type Item = Result<NormalizedEvent, SourceError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+      self.events.next().copied().map(Ok)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+      (self.advertised, Some(self.advertised))
+    }
+  }
+
+  impl ExactSizeIterator for MismatchedEvents<'_> {}
+
+  impl NormalizedEventSource for MismatchedSource {
+    fn prevalidated_events(
+      &self,
+    ) -> Result<
+      Box<dyn ExactSizeIterator<Item = Result<NormalizedEvent, SourceError>> + '_>,
+      SourceError,
+    > {
+      Ok(Box::new(MismatchedEvents {
+        events: self.events.iter(),
+        advertised: self.advertised,
+      }))
+    }
+  }
+
   impl NormalizedEventSource for FixedSource {
     fn prevalidated_events(
       &self,
@@ -1531,6 +1583,25 @@ mod tests {
       )),
     );
     assert_eq!(source.event_reads.get(), 0);
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_rejects_inexact_event_streams() {
+    for source in [
+      MismatchedSource {
+        events: vec![state_event(1)],
+        advertised: 2,
+      },
+      MismatchedSource {
+        events: vec![state_event(1), state_event(2)],
+        advertised: 1,
+      },
+    ] {
+      assert_eq!(
+        build_failure_artifact(&manifest(ProducerKind::Property), &source),
+        Err(ArtifactError::EventCountMismatch),
+      );
+    }
   }
 
   #[test]
