@@ -286,6 +286,9 @@ impl Simulator {
   }
 
   pub(crate) fn partition(&mut self, link: LinkKey, partition: PartitionId) -> SimResult<()> {
+    if self.topology.link(link)?.is_partitioned(partition) {
+      return Ok(());
+    }
     self.require_record_capacity(1)?;
     self.topology.partition(link, partition)?;
     let generation = self.topology.link(link)?.generation();
@@ -298,6 +301,9 @@ impl Simulator {
   }
 
   pub(crate) fn heal(&mut self, link: LinkKey, partition: PartitionId) -> SimResult<()> {
+    if !self.topology.link(link)?.is_partitioned(partition) {
+      return Ok(());
+    }
     self.require_record_capacity(1)?;
     self.topology.heal(link, partition)?;
     let generation = self.topology.link(link)?.generation();
@@ -840,7 +846,10 @@ mod tests {
       REQUIRED_FAULTS, Simulator, matrix_seed_range, observed_exact_duplicate, observed_loss,
       observed_reorder, reorder_deadline, run_fault_matrix_seed,
     },
-    topology::{AddressId, LinkKey, LinkPolicy, NodeKey, PartitionId, SimulationLimits, Topology},
+    topology::{
+      AddressId, LinkKey, LinkPolicy, NodeKey, PartitionId, SimulationError, SimulationLimits,
+      Topology,
+    },
   };
 
   fn limits(events: usize, bytes: usize) -> SimulationLimits {
@@ -1118,6 +1127,32 @@ mod tests {
     assert!(delivered_messages(simulator.records()).contains(&reverse));
     assert!(has_drop(simulator.records(), stale, DropReason::StaleLink));
     assert!(delivered_messages(simulator.records()).contains(&current));
+  }
+
+  #[test]
+  fn simulation_network_idempotent_topology_commands_emit_no_transition() {
+    let limits = SimulationLimits::new(4, 4, 32, 1, 8).unwrap();
+    let mut topology = topology(limits);
+    let link = LinkKey::new(NodeKey::new(1), NodeKey::new(2));
+    let active = PartitionId::new(1);
+    topology.add_link(link, policy(5, 0, 0, 0, 0)).unwrap();
+    let mut simulator = Simulator::new(11, topology).unwrap();
+
+    simulator.partition(link, active).unwrap();
+    let transitioned = simulator.snapshot();
+    simulator.partition(link, active).unwrap();
+    simulator.heal(link, PartitionId::new(2)).unwrap();
+
+    assert!(simulator.snapshot() == transitioned);
+    assert_eq!(simulator.heal(link, active), Err(SimulationError::Capacity));
+    assert!(
+      simulator
+        .snapshot()
+        .topology
+        .link(link)
+        .unwrap()
+        .is_partitioned(active)
+    );
   }
 
   #[test]
