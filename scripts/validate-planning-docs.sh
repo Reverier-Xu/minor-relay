@@ -56,8 +56,8 @@ verify_frozen_document docs/adr/0007-core-responsibility-and-metadata.md cdc4851
 verify_frozen_document docs/roadmap.md 12e95f6275643b46380845df556223838f7325552e8e3a2bc0ca4d065731e7fd
 verify_frozen_document docs/development-gates.md 1398e24224b0a1dc2a2bbeb1041b6090addd6ca004490687c7fe0dae2073ae5e
 verify_frozen_document docs/implementation-plan.md c716bafbcb8ab34dddf9d26b918cdeb37bbc1376d9e427031e981ae909f788f0
-verify_frozen_document docs/api-manifest.md abcf2436c707dcca0fea6f000d85e50ca60ae5f3eb369a4679da57e9b50bccf9
-verify_frozen_document docs/api-inventory.toml e4bd4c90f37ab74ea7487605b1ebf0b6e1f828f22fbacafc5a87dfc12aa2ef85
+verify_frozen_document docs/api-manifest.md f05e65cd78ba238f0a92fe4f8bd2e4ce01c8de1026e71cfdc59ca739849e9caf
+verify_frozen_document docs/api-inventory.toml 9b5f6174725554fc4f174bf3c1be920b596f3217c45fb2e8cb8b5d3a65facf59
 verify_frozen_document docs/decision-register.toml 196721e8aa89decd64abdf734b953c072e9cf4d1439ce39eeee20bd2866c65b5
 verify_frozen_document docs/scenario-catalog.toml 1216beeaa2c5db5acaac9b87d7988d37cefaeb6a8d7aad1bc36447f7414a66f0
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
@@ -312,6 +312,8 @@ check_api_inventory() {
     and (.events | length) > 0 and (.events | unique | length) == (.events | length)
     and (.extension_traits | length) > 0 and (.extension_traits | unique | length) == (.extension_traits | length)
     and (.required_reexports | length) > 0 and (.required_reexports | unique | length) == (.required_reexports | length)
+    and ((.commands + .queries + .events) | length) == ((.commands + .queries + .events) | unique | length)
+    and (. as $inventory | all(($inventory.commands + $inventory.queries + $inventory.events)[]; . as $operation | (($inventory.extension_traits + $inventory.required_reexports) | index($operation)) == null))
     and ([.required_reexports[] | select(. == "OutboundPacket")] | length) == 1
     and ([.required_reexports[] | select(. == "ResourceName")] | length) == 1
     and ([.extension_traits[] | select(. == "StoreSnapshot")] | length) == 1
@@ -330,6 +332,7 @@ check_api_inventory() {
   done < <(jq -r '.queries[]' "$inventory")
   while IFS= read -r item; do
     rg -Fq "pub struct $item" "$rust_blocks" || return 1
+    rg -Fq "impl Event for $item" "$rust_blocks" || return 1
   done < <(jq -r '.events[]' "$inventory")
   while IFS= read -r item; do
     rg -Fq "pub trait $item" "$rust_blocks" || return 1
@@ -376,10 +379,11 @@ check_evidence_sets() {
           and ($shard.cadences | length) > 0
           and ($shard.cadences | unique | length) == ($shard.cadences | length)
           and all($shard.cadences[]; . == "merge" or . == "gate" or . == "nightly" or . == "weekly" or . == "release")
+          and ($shard.cadences | index("merge")) != null
           and ($shard.cadences | index("gate")) != null
           and all($shard.depends_on[]; . as $dependency | ($shards | has($dependency)) and $dependency != $shard.id)
           and acyclic($shard.id; [])
-          and path_seconds($shard.id) <= 1800
+          and path_seconds($shard.id) <= 600
         )
     )
   ' "$file" >/dev/null
@@ -512,9 +516,24 @@ if [[ ${1:-} == "--self-test" ]]; then
     fail "cyclic-shard negative fixture was accepted"
   fi
 
+  jq '.shard[1].depends_on = [.shard[2].id]' "$TMP/evidence-impact.json" > "$TMP/negative-slow-merge-path.json"
+  if check_evidence_sets "$TMP/negative-slow-merge-path.json"; then
+    fail "overlong merge critical path was accepted"
+  fi
+
+  jq '.shard[1].cadences = ["gate"]' "$TMP/evidence-impact.json" > "$TMP/negative-missing-merge-cadence.json"
+  if check_evidence_sets "$TMP/negative-missing-merge-cadence.json"; then
+    fail "shard without merge cadence was accepted"
+  fi
+
   jq '.commands[0] = "NodeBuilder"' "$TMP/api-inventory.json" > "$TMP/negative-api-inventory.json"
   if check_api_inventory "$TMP/negative-api-inventory.json"; then
     fail "cross-category API inventory substitution was accepted"
+  fi
+
+  jq '(.events[0]) as $event | (.required_reexports | index("NodeBuilder")) as $index | .events[0] = "NodeBuilder" | .required_reexports[$index] = $event' "$TMP/api-inventory.json" > "$TMP/negative-event-category.json"
+  if check_api_inventory "$TMP/negative-event-category.json"; then
+    fail "cross-category event substitution was accepted"
   fi
 
   jq '.threat[0].residual = ""' "$TMP/threat-model.json" > "$TMP/negative-missing-residual.json"

@@ -1,7 +1,7 @@
 schema = "relay.woooo.tech/schemas/api-inventory-v1"
 status = "accepted"
 document = "docs/api-manifest.md"
-sha256 = "abcf2436c707dcca0fea6f000d85e50ca60ae5f3eb369a4679da57e9b50bccf9"
+sha256 = "f05e65cd78ba238f0a92fe4f8bd2e4ce01c8de1026e71cfdc59ca739849e9caf"
 
 node_handle_signatures = [
   "pub async fn command<C: Command>(&self, command: C) -> Result<C::Output>;",
@@ -123,6 +123,7 @@ required_reexports = [
   "RouteHandle",
   "RouteStatusView",
   "RouteState",
+  "LocalNodeView",
   "NodeMetadataPatch",
   "MemberView",
   "ConnectivityStatus",
