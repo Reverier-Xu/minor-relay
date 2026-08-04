@@ -103,6 +103,24 @@ jobs:
       - name: cargo test
         run: cargo +stable test --workspace --all-features --locked
 
+  container:
+    name: container
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: build quality image
+        run: docker build --file .github/docker/quality.Dockerfile --tag minor-relay-quality:${{ github.sha }} .
+
+      - name: run container quality and simulator gate
+        run: >-
+          docker run --rm
+          --volume "${GITHUB_WORKSPACE}/.git:/workspace/.git:ro"
+          minor-relay-quality:${{ github.sha }}
+
   dependency-policy:
     name: dependency-policy
     runs-on: ubuntu-latest
