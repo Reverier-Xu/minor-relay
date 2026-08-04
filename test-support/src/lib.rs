@@ -367,8 +367,12 @@ impl NormalizedEvent {
 }
 
 pub trait NormalizedEventSource {
-  fn prevalidate(&self) -> Result<usize, SourceError>;
-  fn event(&self, index: usize) -> Result<NormalizedEvent, SourceError>;
+  fn prevalidated_events(
+    &self,
+  ) -> Result<
+    Box<dyn ExactSizeIterator<Item = Result<NormalizedEvent, SourceError>> + '_>,
+    SourceError,
+  >;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -964,10 +968,8 @@ pub fn build_failure_artifact(
 pub fn build_failure_artifact_with_limits(
   manifest: &EvidenceManifest, source: &impl NormalizedEventSource, limits: ArtifactLimits,
 ) -> Result<ArtifactBytes, ArtifactError> {
-  let total_events = source.prevalidate()?;
-  for index in 0..total_events {
-    source.event(index)?.validate_alias_roles()?;
-  }
+  let mut events = source.prevalidated_events()?;
+  let total_events = events.len();
   let total_u64 = u64::try_from(total_events).map_err(|_| ArtifactError::EventCountOverflow)?;
   let domain_len =
     u16::try_from(EVENT_DIGEST_DOMAIN.len()).map_err(|_| ArtifactError::EncodingOverflow)?;
@@ -978,8 +980,8 @@ pub fn build_failure_artifact_with_limits(
   hasher.update(total_u64.to_be_bytes());
 
   let mut windows = EventWindows::new(limits.event_ceiling);
-  for index in 0..total_events {
-    let event = source.event(index)?;
+  for event in &mut events {
+    let event = event?;
     event.validate_alias_roles()?;
     let encoded = encode_event(event)?;
     let encoded_len = u32::try_from(encoded.len()).map_err(|_| ArtifactError::EncodingOverflow)?;
@@ -1464,19 +1466,39 @@ mod tests {
     event_reads: Cell<usize>,
   }
 
-  impl NormalizedEventSource for FixedSource {
-    fn prevalidate(&self) -> Result<usize, SourceError> {
-      self.preflight?;
-      Ok(self.events.len())
+  struct FixedEvents<'a> {
+    events: std::slice::Iter<'a, NormalizedEvent>,
+    reads: &'a Cell<usize>,
+  }
+
+  impl Iterator for FixedEvents<'_> {
+    type Item = Result<NormalizedEvent, SourceError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+      let event = self.events.next().copied()?;
+      self.reads.set(self.reads.get() + 1);
+      Some(Ok(event))
     }
 
-    fn event(&self, index: usize) -> Result<NormalizedEvent, SourceError> {
-      self.event_reads.set(self.event_reads.get() + 1);
-      self
-        .events
-        .get(index)
-        .copied()
-        .ok_or(SourceError::InvalidEventIndex)
+    fn size_hint(&self) -> (usize, Option<usize>) {
+      self.events.size_hint()
+    }
+  }
+
+  impl ExactSizeIterator for FixedEvents<'_> {}
+
+  impl NormalizedEventSource for FixedSource {
+    fn prevalidated_events(
+      &self,
+    ) -> Result<
+      Box<dyn ExactSizeIterator<Item = Result<NormalizedEvent, SourceError>> + '_>,
+      SourceError,
+    > {
+      self.preflight?;
+      Ok(Box::new(FixedEvents {
+        events: self.events.iter(),
+        reads: &self.event_reads,
+      }))
     }
   }
 
@@ -1531,6 +1553,7 @@ mod tests {
           .starts_with(b"{\"schema\":\"relay.woooo.tech/schemas/failure-replay\"")
       );
       assert_eq!(artifact.producer(), producer);
+      assert_eq!(source.event_reads.get(), 1);
       assert!(artifact.as_bytes().len() <= MAX_ARTIFACT_BYTES);
     }
   }
