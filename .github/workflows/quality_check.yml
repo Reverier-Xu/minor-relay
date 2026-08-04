@@ -57,6 +57,18 @@ jobs:
         with:
           tool: taplo-cli@0.10.0
 
+      - name: install ripgrep
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz \
+            --output /tmp/ripgrep.tar.gz
+          echo '33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c  /tmp/ripgrep.tar.gz' \
+            | sha256sum --check --strict
+          tar --extract --gzip --file /tmp/ripgrep.tar.gz --directory /tmp
+          install -m 0755 /tmp/ripgrep-15.2.0-x86_64-unknown-linux-musl/rg \
+            "${HOME}/.cargo/bin/rg"
+          test "$(rg --version | head -n 1)" = "ripgrep 15.2.0"
+
       - name: install jq
         run: |
           curl --fail --location --silent --show-error \
