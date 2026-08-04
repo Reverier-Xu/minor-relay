@@ -1,14 +1,324 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::simulation::{
+  event::{DropReason, EventRecord},
+  redaction::{
+    ArtifactCandidate, EndpointAlias, FaultAlias, NodeAlias, NormalizedDropReason, NormalizedEvent,
+    PathAlias, RedactionError, ScenarioAliasKind,
+  },
+  topology::{AddressId, LinkKey, NodeKey, PartitionId},
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ScenarioFixture {
+  nodes: BTreeMap<NodeKey, u16>,
+  node_aliases: BTreeSet<u16>,
+  endpoints: BTreeMap<AddressId, u16>,
+  endpoint_aliases: BTreeSet<u16>,
+  paths: BTreeMap<LinkKey, u16>,
+  path_aliases: BTreeSet<u16>,
+  faults: BTreeMap<PartitionId, u16>,
+  fault_aliases: BTreeSet<u16>,
+}
+
+impl ScenarioFixture {
+  pub(crate) fn empty() -> Self {
+    Self {
+      nodes: BTreeMap::new(),
+      node_aliases: BTreeSet::new(),
+      endpoints: BTreeMap::new(),
+      endpoint_aliases: BTreeSet::new(),
+      paths: BTreeMap::new(),
+      path_aliases: BTreeSet::new(),
+      faults: BTreeMap::new(),
+      fault_aliases: BTreeSet::new(),
+    }
+  }
+
+  pub(crate) fn network_fault_matrix() -> Result<Self, RedactionError> {
+    let mut fixture = Self::empty();
+    for ordinal in 1..=4_u16 {
+      fixture.register_node(NodeKey::new(ordinal), ordinal)?;
+      fixture.register_endpoint(AddressId::new(u32::from(ordinal) * 10), ordinal)?;
+    }
+    fixture.register_endpoint(AddressId::new(99), 5)?;
+    for (ordinal, (from, to)) in [
+      (1, 2),
+      (2, 3),
+      (3, 4),
+      (4, 1),
+      (1, 4),
+      (2, 4),
+      (1, 3),
+      (4, 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+      fixture.register_path(
+        LinkKey::new(NodeKey::new(from), NodeKey::new(to)),
+        u16::try_from(ordinal + 1).map_err(|_| RedactionError::InvalidAlias)?,
+      )?;
+    }
+    for ordinal in 1..=3_u32 {
+      fixture.register_fault(
+        PartitionId::new(ordinal),
+        u16::try_from(ordinal).map_err(|_| RedactionError::InvalidAlias)?,
+      )?;
+    }
+    Ok(fixture)
+  }
+
+  pub(crate) fn register_node(
+    &mut self, source: NodeKey, ordinal: u16,
+  ) -> Result<(), RedactionError> {
+    register_alias(
+      &mut self.nodes,
+      &mut self.node_aliases,
+      source,
+      ordinal,
+      ScenarioAliasKind::Node,
+    )
+  }
+
+  pub(crate) fn register_endpoint(
+    &mut self, source: AddressId, ordinal: u16,
+  ) -> Result<(), RedactionError> {
+    register_alias(
+      &mut self.endpoints,
+      &mut self.endpoint_aliases,
+      source,
+      ordinal,
+      ScenarioAliasKind::Endpoint,
+    )
+  }
+
+  pub(crate) fn register_path(
+    &mut self, source: LinkKey, ordinal: u16,
+  ) -> Result<(), RedactionError> {
+    register_alias(
+      &mut self.paths,
+      &mut self.path_aliases,
+      source,
+      ordinal,
+      ScenarioAliasKind::Path,
+    )
+  }
+
+  pub(crate) fn register_fault(
+    &mut self, source: PartitionId, ordinal: u16,
+  ) -> Result<(), RedactionError> {
+    register_alias(
+      &mut self.faults,
+      &mut self.fault_aliases,
+      source,
+      ordinal,
+      ScenarioAliasKind::Fault,
+    )
+  }
+
+  pub(crate) fn normalize_candidates<'a>(
+    &self, candidates: impl IntoIterator<Item = ArtifactCandidate<'a>>,
+  ) -> Result<Vec<NormalizedEvent>, RedactionError> {
+    let mut normalized = Vec::new();
+    for candidate in candidates {
+      match candidate {
+        ArtifactCandidate::Simulation(record) => normalized.push(self.normalize_record(record)?),
+        ArtifactCandidate::Forbidden(value) => {
+          return Err(RedactionError::ForbiddenField(value.class()));
+        }
+      }
+    }
+    Ok(normalized)
+  }
+
+  pub(crate) fn normalize_record(
+    &self, record: &EventRecord,
+  ) -> Result<NormalizedEvent, RedactionError> {
+    match *record {
+      EventRecord::SendAccepted {
+        at_nanos,
+        message,
+        link,
+        copies,
+        bytes,
+      } => Ok(NormalizedEvent::SendAccepted {
+        at_nanos,
+        message: message.value(),
+        path: self.path(link)?,
+        copies,
+        payload_len: bytes,
+      }),
+      EventRecord::Lost { at_nanos, message } => Ok(NormalizedEvent::Lost {
+        at_nanos,
+        message: message.value(),
+      }),
+      EventRecord::DuplicateCreated { at_nanos, message } => {
+        Ok(NormalizedEvent::DuplicateCreated {
+          at_nanos,
+          message: message.value(),
+        })
+      }
+      EventRecord::Reordered {
+        at_nanos,
+        message,
+        copy,
+      } => Ok(NormalizedEvent::Reordered {
+        at_nanos,
+        message: message.value(),
+        copy,
+      }),
+      EventRecord::Delivered {
+        at_nanos,
+        message,
+        copy,
+      } => Ok(NormalizedEvent::Delivered {
+        at_nanos,
+        message: message.value(),
+        copy,
+      }),
+      EventRecord::Dropped {
+        at_nanos,
+        message,
+        copy,
+        reason,
+      } => Ok(NormalizedEvent::Dropped {
+        at_nanos,
+        message: message.value(),
+        copy,
+        reason: normalize_drop_reason(reason),
+      }),
+      EventRecord::Partitioned {
+        at_nanos,
+        link,
+        partition,
+        generation,
+      } => Ok(NormalizedEvent::Partitioned {
+        at_nanos,
+        path: self.path(link)?,
+        fault: self.fault(partition)?,
+        generation,
+      }),
+      EventRecord::Healed {
+        at_nanos,
+        link,
+        partition,
+        generation,
+      } => Ok(NormalizedEvent::Healed {
+        at_nanos,
+        path: self.path(link)?,
+        fault: self.fault(partition)?,
+        generation,
+      }),
+      EventRecord::Restarted {
+        at_nanos,
+        node,
+        boot_epoch,
+      } => Ok(NormalizedEvent::Restarted {
+        at_nanos,
+        node: self.node(node)?,
+        boot_epoch,
+      }),
+      EventRecord::AddressChanged {
+        at_nanos,
+        node,
+        address,
+        generation,
+      } => Ok(NormalizedEvent::AddressChanged {
+        at_nanos,
+        node: self.node(node)?,
+        endpoint: self.endpoint(address)?,
+        generation,
+      }),
+      EventRecord::ClockSkewChanged {
+        at_nanos,
+        node,
+        skew_nanos,
+      } => Ok(NormalizedEvent::ClockSkewChanged {
+        at_nanos,
+        node: self.node(node)?,
+        skew_nanos,
+      }),
+      EventRecord::QueueRejected {
+        at_nanos,
+        message,
+        copies,
+        bytes,
+      } => Ok(NormalizedEvent::QueueRejected {
+        at_nanos,
+        message: message.value(),
+        copies,
+        payload_len: bytes,
+      }),
+    }
+  }
+
+  fn node(&self, source: NodeKey) -> Result<NodeAlias, RedactionError> {
+    let ordinal = resolve_alias(&self.nodes, source, ScenarioAliasKind::Node)?;
+    NodeAlias::new(ordinal)
+  }
+
+  fn endpoint(&self, source: AddressId) -> Result<EndpointAlias, RedactionError> {
+    let ordinal = resolve_alias(&self.endpoints, source, ScenarioAliasKind::Endpoint)?;
+    EndpointAlias::new(ordinal)
+  }
+
+  fn path(&self, source: LinkKey) -> Result<PathAlias, RedactionError> {
+    let ordinal = resolve_alias(&self.paths, source, ScenarioAliasKind::Path)?;
+    PathAlias::new(ordinal)
+  }
+
+  fn fault(&self, source: PartitionId) -> Result<FaultAlias, RedactionError> {
+    let ordinal = resolve_alias(&self.faults, source, ScenarioAliasKind::Fault)?;
+    FaultAlias::new(ordinal)
+  }
+}
+
+fn register_alias<T: Copy + Ord>(
+  sources: &mut BTreeMap<T, u16>, aliases: &mut BTreeSet<u16>, source: T, ordinal: u16,
+  kind: ScenarioAliasKind,
+) -> Result<(), RedactionError> {
+  if ordinal == 0 {
+    return Err(RedactionError::InvalidAlias);
+  }
+  if sources.contains_key(&source) {
+    return Err(RedactionError::DuplicateSource(kind));
+  }
+  if aliases.contains(&ordinal) {
+    return Err(RedactionError::DuplicateAlias(kind));
+  }
+  sources.insert(source, ordinal);
+  aliases.insert(ordinal);
+  Ok(())
+}
+
+fn resolve_alias<T: Copy + Ord>(
+  sources: &BTreeMap<T, u16>, source: T, kind: ScenarioAliasKind,
+) -> Result<u16, RedactionError> {
+  sources
+    .get(&source)
+    .copied()
+    .ok_or(RedactionError::UnknownAlias(kind))
+}
+
+const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
+  match reason {
+    DropReason::Blocked => NormalizedDropReason::Blocked,
+    DropReason::StaleLink => NormalizedDropReason::StaleLink,
+    DropReason::StaleBoot => NormalizedDropReason::StaleBoot,
+    DropReason::StaleAddress => NormalizedDropReason::StaleAddress,
+    DropReason::Offline => NormalizedDropReason::Offline,
+  }
+}
+
 #[cfg(test)]
 mod tests {
+  use super::ScenarioFixture;
   use crate::simulation::{
     event::{DropReason, EventRecord, MessageId},
-    redaction::{
-      ArtifactCandidate, EventKind, NormalizedEvent, RedactionError, ScenarioAliasKind,
-    },
+    redaction::{ArtifactCandidate, EventKind, NormalizedEvent, RedactionError, ScenarioAliasKind},
     topology::{AddressId, LinkKey, NodeKey, PartitionId},
   };
-
-  use super::ScenarioFixture;
 
   fn all_records() -> Vec<EventRecord> {
     let left = NodeKey::new(1);
@@ -106,7 +416,10 @@ mod tests {
 
     assert_eq!(normalized.len(), records.len());
     assert_eq!(
-      normalized.iter().map(NormalizedEvent::kind).collect::<Vec<_>>(),
+      normalized
+        .iter()
+        .map(NormalizedEvent::kind)
+        .collect::<Vec<_>>(),
       [
         EventKind::SendAccepted,
         EventKind::Lost,
@@ -127,10 +440,13 @@ mod tests {
       ],
     );
     assert!(normalized.iter().all(|event| event.at_nanos() > 0));
-    assert_eq!(normalized[0].path_alias(), Some("path-1"));
-    assert_eq!(normalized[5].fault_alias(), Some("fault-1"));
-    assert_eq!(normalized[7].node_alias(), Some("node-2"));
-    assert_eq!(normalized[8].endpoint_alias(), Some("endpoint-5"));
+    assert_eq!(normalized[0].path_alias().as_deref(), Some("path-1"));
+    assert_eq!(normalized[5].fault_alias().as_deref(), Some("fault-1"));
+    assert_eq!(normalized[7].node_alias().as_deref(), Some("node-2"));
+    assert_eq!(
+      normalized[8].endpoint_alias().as_deref(),
+      Some("endpoint-5")
+    );
     assert_eq!(normalized[0].payload_len(), Some(64));
     assert_eq!(normalized[10].payload_len(), Some(128));
   }
