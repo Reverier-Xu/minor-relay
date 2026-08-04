@@ -108,6 +108,26 @@ verification_ids = ["VERIFY-G01-03", "VERIFY-G01-04", "VERIFY-G01-05", "VERIFY-G
 threat_ids = ["THR-025"]
 
 [[path_rule]]
+id = "IMPACT-FAILURE-ARTIFACT"
+globs = [
+  "src/simulation/mod.rs",
+  "src/simulation/artifact.rs",
+  "src/simulation/fixture.rs",
+  "src/simulation/redaction.rs",
+  "src/simulation/scenario.rs",
+  "tests/fixtures/failure-artifacts/**",
+]
+precedence = 300
+owner_task = "T-G01-04"
+verification_ids = [
+  "VERIFY-G01-03",
+  "VERIFY-G01-04",
+  "VERIFY-G01-05",
+  "VERIFY-G10-09",
+]
+threat_ids = ["THR-013", "THR-024", "THR-025"]
+
+[[path_rule]]
 id = "IMPACT-FACADE"
 globs = [
   "src/lib.rs",
