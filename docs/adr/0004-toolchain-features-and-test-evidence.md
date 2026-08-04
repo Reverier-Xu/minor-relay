@@ -293,8 +293,14 @@ artifact as a substitute for redaction.
 ### Failure Artifact Schema
 
 Failure artifacts use deterministic bounded JSON tagged
-`relay.woooo.tech/schemas/failure-replay`. The serializer accepts only an allowlisted evidence model;
-production record types and secret-bearing types cannot be generically serialized into it.
+`relay.woooo.tech/schemas/failure-replay`. The producer-neutral serializer and closed replay model live
+in the workspace's `minor-relay-test-support` library. That package is `publish = false`, is consumed
+only through development/test dependencies, and does not enter the `minor_relay` facade or production
+dependency graph. Property, simulation, fuzz, crash, E2E, and soak producers use the same recorder;
+producer-owned private adapters convert source events into its sealed evidence model.
+
+The serializer accepts only an allowlisted evidence model; production record types and secret-bearing
+types cannot be generically serialized into it.
 
 Allowed fields include:
 
@@ -329,7 +335,8 @@ ReplaySpec { executable_id, argv: [validated literal argument, ...] }
 `executable_id` is a closed enum such as `cargo-test`, `simulation`, or `fuzz-corpus`; it is not a path.
 Arguments have fixed count, length, character, and value rules per executable. Replay never invokes a
 shell, concatenates a command string, derives a path from hostile data, or honors environment variables
-from the artifact.
+from the artifact. Test-support APIs are internal package APIs rather than `minor_relay` public API;
+changes to their sealed evidence or replay models still require T-G01-04 ownership and regression review.
 
 Local failure artifacts go under ignored `target/minor-relay-failures/`. CI uploads the same secret-safe
 artifact for seven days. Only minimized, reviewed regression fixtures enter the repository.

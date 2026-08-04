@@ -14,6 +14,7 @@ relevant_roots = [
   "tests/**",
   "fuzz/**",
   "examples/**",
+  "test-support/**",
 ]
 
 # Rules may overlap. Exactly one matching rule with the greatest precedence owns a path.
@@ -32,6 +33,7 @@ precedence = 200
 owner_task = "T-G00-04"
 verification_ids = [
   "VERIFY-G01-03",
+  "VERIFY-G01-04",
   "VERIFY-G01-05",
   "VERIFY-G02-03",
   "VERIFY-G08-02",
@@ -115,6 +117,7 @@ globs = [
   "src/simulation/fixture.rs",
   "src/simulation/redaction.rs",
   "src/simulation/scenario.rs",
+  "test-support/**",
   "tests/fixtures/failure-artifacts/**",
 ]
 precedence = 300
