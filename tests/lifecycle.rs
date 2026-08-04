@@ -9,15 +9,17 @@ use std::{
 };
 
 use minor_relay::{
-  BoxFuture, Command, Digest, Error, EventOptions, ExtensionRegistry, GetNodeStatus, MonotonicTime,
-  NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind,
-  PublicKey, Query, Result, Shutdown, ShutdownOutcome, Signature, WaitForShutdown,
+  BoxFuture, Command, Digest, Error, ErrorKind, EventOptions, ExtensionRegistry, GetNodeStatus,
+  MonotonicTime, NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext,
+  ProviderErrorKind, PublicKey, Query, Result, Shutdown, ShutdownOutcome, ShutdownReason,
+  Signature, WaitForShutdown,
   extension::{
     Clock, CommitOutcome, CreatedKey, Entropy, KeyCreateState, KeyDeleteState, KeyHandle,
     KeyOperationId, KeyProvider, ReconcileOutcome, Storage, StorageFactory, StoreRequirements,
     StoreTransaction, TransactionId,
   },
 };
+use tokio::sync::Notify;
 
 #[derive(Debug)]
 struct VirtualClock {
@@ -80,9 +82,36 @@ impl Entropy for SequenceEntropy {
   }
 }
 
+#[derive(Debug, Default)]
+struct DropTracker {
+  count: AtomicUsize,
+  changed: Notify,
+}
+
+impl DropTracker {
+  fn record(&self) {
+    self.count.fetch_add(1, Ordering::SeqCst);
+    self.changed.notify_waiters();
+  }
+
+  fn count(&self) -> usize {
+    self.count.load(Ordering::SeqCst)
+  }
+
+  async fn wait_for_all(&self) {
+    loop {
+      let changed = self.changed.notified();
+      if self.count() == 2 {
+        return;
+      }
+      changed.await;
+    }
+  }
+}
+
 #[derive(Debug)]
 struct DeclarationOnlyStorage {
-  drops: Option<Arc<AtomicUsize>>,
+  drops: Option<Arc<DropTracker>>,
 }
 
 impl DeclarationOnlyStorage {
@@ -90,7 +119,7 @@ impl DeclarationOnlyStorage {
     Self { drops: None }
   }
 
-  fn tracked(drops: Arc<AtomicUsize>) -> Self {
+  fn tracked(drops: Arc<DropTracker>) -> Self {
     Self { drops: Some(drops) }
   }
 }
@@ -98,7 +127,7 @@ impl DeclarationOnlyStorage {
 impl Drop for DeclarationOnlyStorage {
   fn drop(&mut self) {
     if let Some(drops) = &self.drops {
-      drops.fetch_add(1, Ordering::SeqCst);
+      drops.record();
     }
   }
 }
@@ -113,7 +142,7 @@ impl StorageFactory for DeclarationOnlyStorage {
 
 #[derive(Debug)]
 struct DeclarationOnlyKeys {
-  drops: Option<Arc<AtomicUsize>>,
+  drops: Option<Arc<DropTracker>>,
 }
 
 impl DeclarationOnlyKeys {
@@ -121,7 +150,7 @@ impl DeclarationOnlyKeys {
     Self { drops: None }
   }
 
-  fn tracked(drops: Arc<AtomicUsize>) -> Self {
+  fn tracked(drops: Arc<DropTracker>) -> Self {
     Self { drops: Some(drops) }
   }
 }
@@ -129,7 +158,7 @@ impl DeclarationOnlyKeys {
 impl Drop for DeclarationOnlyKeys {
   fn drop(&mut self) {
     if let Some(drops) = &self.drops {
-      drops.fetch_add(1, Ordering::SeqCst);
+      drops.record();
     }
   }
 }
@@ -342,9 +371,41 @@ fn g1_lifecycle_start_without_tokio_returns_not_ready() {
   );
 }
 
+#[test]
+fn g1_lifecycle_runtime_loss_publishes_failed_terminal_state() {
+  let runtime = tokio::runtime::Builder::new_current_thread()
+    .enable_all()
+    .build()
+    .unwrap();
+  let handle = runtime.block_on(start_node());
+  assert_eq!(
+    runtime
+      .block_on(handle.query(GetNodeStatus::new()))
+      .unwrap(),
+    NodeStatus::Running
+  );
+
+  drop(runtime);
+
+  let observer = tokio::runtime::Builder::new_current_thread()
+    .enable_all()
+    .build()
+    .unwrap();
+  observer.block_on(async {
+    assert_eq!(
+      handle.query(GetNodeStatus::new()).await.unwrap(),
+      NodeStatus::Failed
+    );
+    assert_eq!(
+      handle.query(WaitForShutdown::new()).await.unwrap(),
+      ShutdownReason::Fatal(ErrorKind::Internal),
+    );
+  });
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_shutdown_releases_retained_providers() {
-  let drops = Arc::new(AtomicUsize::new(0));
+  let drops = Arc::new(DropTracker::default());
   let handle = NodeBuilder::new(
     Arc::new(DeclarationOnlyStorage::tracked(Arc::clone(&drops))),
     Arc::new(DeclarationOnlyKeys::tracked(Arc::clone(&drops))),
@@ -357,12 +418,12 @@ async fn g1_lifecycle_shutdown_releases_retained_providers() {
 
   handle.command(Shutdown::new()).await.unwrap();
 
-  assert_eq!(drops.load(Ordering::SeqCst), 2);
+  assert_eq!(drops.count(), 2);
 }
 
 #[tokio::test]
 async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
-  let drops = Arc::new(AtomicUsize::new(0));
+  let drops = Arc::new(DropTracker::default());
   let handle = NodeBuilder::new(
     Arc::new(DeclarationOnlyStorage::tracked(Arc::clone(&drops))),
     Arc::new(DeclarationOnlyKeys::tracked(Arc::clone(&drops))),
@@ -374,14 +435,11 @@ async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
   .unwrap();
 
   drop(handle);
-  for _ in 0..16 {
-    if drops.load(Ordering::SeqCst) == 2 {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  tokio::time::timeout(Duration::from_secs(1), drops.wait_for_all())
+    .await
+    .unwrap();
 
-  assert_eq!(drops.load(Ordering::SeqCst), 2);
+  assert_eq!(drops.count(), 2);
 }
 
 async fn start_node() -> NodeHandle {
