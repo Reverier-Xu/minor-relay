@@ -10,6 +10,7 @@ yanked       = "deny"
 [licenses]
 allow                = ["Apache-2.0", "BlueOak-1.0.0", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.8
+include-dev          = true
 
 [licenses.private]
 ignore = true

@@ -125,5 +125,8 @@ jobs:
       - name: verify cargo-deny
         run: test "$(cargo deny --version)" = "cargo-deny 0.20.2"
 
+      - name: verify resolved dependency graph
+        run: scripts/check-dependency-graph.sh
+
       - name: cargo deny
         run: cargo deny --locked check
