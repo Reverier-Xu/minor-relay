@@ -1,18 +1,22 @@
 use std::{
+  future::Future,
   sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
   },
+  task::{Context, Poll, Waker},
   time::{Duration, SystemTime},
 };
 
 use minor_relay::{
-  BoxFuture, Clock, Command, CommitOutcome, CreatedKey, Digest, Entropy, Error, EventOptions,
-  ExtensionRegistry, GetNodeStatus, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
-  KeyProvider, MonotonicTime, NodeBuilder, NodeConfig, NodeHandle, NodeStatus,
-  ProviderErrorContext, ProviderErrorKind, PublicKey, Query, ReconcileOutcome, Result, Shutdown,
-  ShutdownOutcome, Signature, Storage, StorageFactory, StoreRequirements, StoreTransaction,
-  TransactionId, WaitForShutdown,
+  BoxFuture, Command, Digest, Error, EventOptions, ExtensionRegistry, GetNodeStatus, MonotonicTime,
+  NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey,
+  Query, Result, Shutdown, ShutdownOutcome, Signature, WaitForShutdown,
+  extension::{
+    Clock, CommitOutcome, CreatedKey, Entropy, KeyCreateState, KeyDeleteState, KeyHandle,
+    KeyOperationId, KeyProvider, ReconcileOutcome, Storage, StorageFactory, StoreRequirements,
+    StoreTransaction, TransactionId,
+  },
 };
 
 #[derive(Debug)]
@@ -77,7 +81,27 @@ impl Entropy for SequenceEntropy {
 }
 
 #[derive(Debug)]
-struct DeclarationOnlyStorage;
+struct DeclarationOnlyStorage {
+  drops: Option<Arc<AtomicUsize>>,
+}
+
+impl DeclarationOnlyStorage {
+  fn new() -> Self {
+    Self { drops: None }
+  }
+
+  fn tracked(drops: Arc<AtomicUsize>) -> Self {
+    Self { drops: Some(drops) }
+  }
+}
+
+impl Drop for DeclarationOnlyStorage {
+  fn drop(&mut self) {
+    if let Some(drops) = &self.drops {
+      drops.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+}
 
 impl StorageFactory for DeclarationOnlyStorage {
   fn open<'a>(
@@ -88,7 +112,27 @@ impl StorageFactory for DeclarationOnlyStorage {
 }
 
 #[derive(Debug)]
-struct DeclarationOnlyKeys;
+struct DeclarationOnlyKeys {
+  drops: Option<Arc<AtomicUsize>>,
+}
+
+impl DeclarationOnlyKeys {
+  fn new() -> Self {
+    Self { drops: None }
+  }
+
+  fn tracked(drops: Arc<AtomicUsize>) -> Self {
+    Self { drops: Some(drops) }
+  }
+}
+
+impl Drop for DeclarationOnlyKeys {
+  fn drop(&mut self) {
+    if let Some(drops) = &self.drops {
+      drops.fetch_add(1, Ordering::SeqCst);
+    }
+  }
+}
 
 impl KeyProvider for DeclarationOnlyKeys {
   fn create_ed25519<'a>(
@@ -171,8 +215,8 @@ fn g1_lifecycle_provider_scaffold_matches_builder_signature() {
   fn assert_dependencies(_storage: Arc<dyn StorageFactory>, _keys: Arc<dyn KeyProvider>) {}
 
   assert_dependencies(
-    Arc::new(DeclarationOnlyStorage),
-    Arc::new(DeclarationOnlyKeys),
+    Arc::new(DeclarationOnlyStorage::new()),
+    Arc::new(DeclarationOnlyKeys::new()),
   );
 }
 
@@ -279,12 +323,47 @@ async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
   );
 }
 
+#[test]
+fn g1_lifecycle_start_without_tokio_returns_not_ready() {
+  let builder = NodeBuilder::new(
+    Arc::new(DeclarationOnlyStorage::new()),
+    Arc::new(DeclarationOnlyKeys::new()),
+  )
+  .clock(Arc::new(VirtualClock::new()))
+  .entropy(Arc::new(SequenceEntropy::new(vec![7; 32])));
+  let mut start = Box::pin(builder.start());
+  let waker = Waker::noop();
+  let mut context = Context::from_waker(waker);
+
+  let result = Future::poll(start.as_mut(), &mut context);
+
+  assert!(matches!(result, Poll::Ready(Err(error)) if error.kind() == minor_relay::ErrorKind::NotReady));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g1_lifecycle_shutdown_releases_retained_providers() {
+  let drops = Arc::new(AtomicUsize::new(0));
+  let handle = NodeBuilder::new(
+    Arc::new(DeclarationOnlyStorage::tracked(Arc::clone(&drops))),
+    Arc::new(DeclarationOnlyKeys::tracked(Arc::clone(&drops))),
+  )
+  .clock(Arc::new(VirtualClock::new()))
+  .entropy(Arc::new(SequenceEntropy::new(vec![7; 32])))
+  .start()
+  .await
+  .unwrap();
+
+  handle.command(Shutdown::new()).await.unwrap();
+
+  assert_eq!(drops.load(Ordering::SeqCst), 2);
+}
+
 async fn start_node() -> NodeHandle {
   let clock = Arc::new(VirtualClock::new());
   let entropy = Arc::new(SequenceEntropy::new(vec![7; 32]));
   NodeBuilder::new(
-    Arc::new(DeclarationOnlyStorage),
-    Arc::new(DeclarationOnlyKeys),
+    Arc::new(DeclarationOnlyStorage::new()),
+    Arc::new(DeclarationOnlyKeys::new()),
   )
   .config(NodeConfig::new())
   .extensions(ExtensionRegistry::new())
