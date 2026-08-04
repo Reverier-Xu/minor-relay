@@ -106,6 +106,20 @@ impl Error {
       context,
     }
   }
+
+  pub(crate) const fn unsupported(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::Unsupported,
+      context,
+    }
+  }
+
+  pub(crate) const fn internal(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::Internal,
+      context,
+    }
+  }
 }
 
 impl fmt::Debug for Error {

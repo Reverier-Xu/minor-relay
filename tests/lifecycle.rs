@@ -9,9 +9,10 @@ use std::{
 use minor_relay::{
   BoxFuture, Clock, Command, CommitOutcome, CreatedKey, Digest, Entropy, Error, EventOptions,
   ExtensionRegistry, GetNodeStatus, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
-  KeyProvider, MonotonicTime, NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey, Query,
-  ReconcileOutcome, Result, Shutdown, ShutdownOutcome, Signature, Storage, StorageFactory,
-  StoreRequirements, StoreTransaction, TransactionId, WaitForShutdown,
+  KeyProvider, MonotonicTime, NodeBuilder, NodeConfig, NodeHandle, NodeStatus,
+  ProviderErrorContext, ProviderErrorKind, PublicKey, Query, ReconcileOutcome, Result, Shutdown,
+  ShutdownOutcome, Signature, Storage, StorageFactory, StoreRequirements, StoreTransaction,
+  TransactionId, WaitForShutdown,
 };
 
 #[derive(Debug)]
@@ -223,14 +224,17 @@ async fn g1_lifecycle_cloned_handles_share_runtime_status() {
 async fn start_node() -> NodeHandle {
   let clock = Arc::new(VirtualClock::new());
   let entropy = Arc::new(SequenceEntropy::new(vec![7; 32]));
-  NodeBuilder::new(Arc::new(DeclarationOnlyStorage), Arc::new(DeclarationOnlyKeys))
-    .config(NodeConfig::new())
-    .extensions(ExtensionRegistry::new())
-    .clock(clock)
-    .entropy(entropy)
-    .start()
-    .await
-    .unwrap()
+  NodeBuilder::new(
+    Arc::new(DeclarationOnlyStorage),
+    Arc::new(DeclarationOnlyKeys),
+  )
+  .config(NodeConfig::new())
+  .extensions(ExtensionRegistry::new())
+  .clock(clock)
+  .entropy(entropy)
+  .start()
+  .await
+  .unwrap()
 }
 
 fn provider_error(context: ProviderErrorContext) -> Error {

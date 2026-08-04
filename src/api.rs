@@ -2,10 +2,10 @@ use std::{
   fmt,
   future::Future,
   pin::Pin,
-  time::{Duration, SystemTime},
+  time::{Duration, Instant, SystemTime},
 };
 
-use crate::Result;
+use crate::{Error, ProviderErrorContext, ProviderErrorKind, Result};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -49,4 +49,47 @@ pub trait Clock: fmt::Debug + Send + Sync + 'static {
 
 pub trait Entropy: fmt::Debug + Send + Sync + 'static {
   fn fill(&self, output: &mut [u8]) -> Result<()>;
+}
+
+#[derive(Debug)]
+pub(crate) struct SystemClock {
+  origin: Instant,
+}
+
+impl SystemClock {
+  pub(crate) fn new() -> Self {
+    Self {
+      origin: Instant::now(),
+    }
+  }
+}
+
+impl Clock for SystemClock {
+  fn utc_now(&self) -> SystemTime {
+    SystemTime::now()
+  }
+
+  fn monotonic_now(&self) -> MonotonicTime {
+    let nanos = u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    MonotonicTime::from_nanos_since_origin(nanos)
+  }
+
+  fn sleep_until<'a>(&'a self, deadline: MonotonicTime) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
+      let now = self.monotonic_now();
+      if let Some(duration) = deadline.checked_duration_since(now) {
+        tokio::time::sleep(duration).await;
+      }
+    })
+  }
+}
+
+#[derive(Debug)]
+pub(crate) struct SystemEntropy;
+
+impl Entropy for SystemEntropy {
+  fn fill(&self, output: &mut [u8]) -> Result<()> {
+    getrandom::fill(output)
+      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::Entropy))
+  }
 }
