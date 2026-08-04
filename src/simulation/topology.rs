@@ -270,6 +270,10 @@ impl LinkState {
     !self.partitions.is_empty()
   }
 
+  pub(crate) fn is_partitioned(&self, partition: PartitionId) -> bool {
+    self.partitions.contains(&partition)
+  }
+
   pub(crate) const fn generation(&self) -> u32 {
     self.generation
   }
