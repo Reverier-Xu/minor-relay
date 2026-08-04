@@ -197,14 +197,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G01-05"
 verification_id = "VERIFY-G01-05"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-05"
 owner_task = "T-G01-05"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g1-closure.sh"]
 timeout_seconds = 1800
 
 [[task]]
