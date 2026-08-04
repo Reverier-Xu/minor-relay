@@ -8,6 +8,11 @@ deciders: minor-relay maintainers
 
 # Reconcile Durable Transactions and Order Replicated State with HLC
 
+> **Amended by ADR-0007.** Conditional metadata storage, key-provider reconciliation, JSON testing,
+> redb production, and explicit migrations remain active. General application state, HLC and peer-clock
+> health, future quarantine, business tombstone cleanup, relay-owned storage quotas, and
+> wall-clock-independent retention are superseded.
+
 ## Context
 
 Identity admission, routed delivery, replicated state, labels, revocation, and active leave all need

@@ -8,6 +8,11 @@ deciders: minor-relay maintainers
 
 # Negotiate Feature Labels and Provide Bounded Durable Delivery
 
+> **Amended by ADR-0007.** Framing, canonical encoding, negotiation, routing safety, and authenticated
+> transport remain active. Application request/reply semantics, payload persistence, durable payload
+> acceptance, transparent replay/resume, fixed business payload ceilings, and core-owned trace capacity
+> are superseded by ephemeral traced packet streams.
+
 ## Context
 
 `minor-relay` needs one bounded wire envelope for authentication, direct requests, trust sync,
