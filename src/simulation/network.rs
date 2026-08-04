@@ -55,6 +55,11 @@ pub(crate) struct SimulationSnapshot {
   now_nanos: u64,
   max_pending_events: usize,
   max_pending_bytes: usize,
+  pending_events: usize,
+  pending_bytes: usize,
+  reserved_records: usize,
+  next_message: u64,
+  next_enqueue: u64,
 }
 
 pub(crate) struct Simulator {
@@ -370,6 +375,11 @@ impl Simulator {
       now_nanos: self.now_nanos,
       max_pending_events: self.max_observed_pending_events,
       max_pending_bytes: self.max_observed_pending_bytes,
+      pending_events: self.pending.len(),
+      pending_bytes: self.pending_bytes,
+      reserved_records: self.reserved_records,
+      next_message: self.next_message,
+      next_enqueue: self.next_enqueue,
     }
   }
 
@@ -462,6 +472,209 @@ fn reorder_deadline(deadline: u64, window: u64) -> SimResult<u64> {
     .ok_or(SimulationError::Overflow)
 }
 
+const FAULT_LOSS: u32 = 1 << 0;
+const FAULT_DUPLICATE: u32 = 1 << 1;
+const FAULT_REORDER: u32 = 1 << 2;
+const FAULT_BLOCKED: u32 = 1 << 3;
+const FAULT_STALE_LINK: u32 = 1 << 4;
+const FAULT_STALE_BOOT: u32 = 1 << 5;
+const FAULT_STALE_ADDRESS: u32 = 1 << 6;
+const FAULT_PARTITION: u32 = 1 << 7;
+const FAULT_HEAL: u32 = 1 << 8;
+const FAULT_RESTART: u32 = 1 << 9;
+const FAULT_ADDRESS_CHANGE: u32 = 1 << 10;
+const FAULT_CLOCK_SKEW: u32 = 1 << 11;
+const FAULT_DELIVERY: u32 = 1 << 12;
+const FAULT_DIRECTED: u32 = 1 << 13;
+const FAULT_JOINT: u32 = 1 << 14;
+pub(crate) const REQUIRED_FAULTS: u32 = (1 << 15) - 1;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MatrixRun {
+  snapshot: SimulationSnapshot,
+  faults: u32,
+  decision_fingerprint: u64,
+}
+
+pub(crate) fn matrix_seed_range() -> SimResult<std::ops::Range<u64>> {
+  let count = parse_env_u64("MINOR_RELAY_SIM_SEEDS", 100)?;
+  if !(1..=100_000).contains(&count) {
+    return Err(SimulationError::InvalidLimit);
+  }
+  let first = parse_env_u64("MINOR_RELAY_SIM_SEED", 0)?;
+  let end = first.checked_add(count).ok_or(SimulationError::Overflow)?;
+  Ok(first..end)
+}
+
+pub(crate) fn run_fault_matrix_seed(seed: u64) -> SimResult<MatrixRun> {
+  let limits = crate::simulation::topology::SimulationLimits::new(4, 64, 8_192, 512, 256)?;
+  let mut topology = Topology::new(limits);
+  for value in 1..=4 {
+    topology.add_node(NodeKey::new(value), AddressId::new(u32::from(value) * 10))?;
+  }
+
+  let loss = LinkKey::new(NodeKey::new(1), NodeKey::new(2));
+  let duplicate = LinkKey::new(NodeKey::new(2), NodeKey::new(3));
+  let reorder = LinkKey::new(NodeKey::new(3), NodeKey::new(4));
+  let partitioned = LinkKey::new(NodeKey::new(4), NodeKey::new(1));
+  let reverse = LinkKey::new(NodeKey::new(1), NodeKey::new(4));
+  let restarted = LinkKey::new(NodeKey::new(2), NodeKey::new(4));
+  let readdressed = LinkKey::new(NodeKey::new(1), NodeKey::new(3));
+  let joint = LinkKey::new(NodeKey::new(4), NodeKey::new(2));
+  topology.add_link(loss, matrix_policy(1, 0, 1_000_000, 0, 0, 0)?)?;
+  topology.add_link(duplicate, matrix_policy(1, 0, 0, 1_000_000, 0, 0)?)?;
+  topology.add_link(reorder, matrix_policy(1, 0, 0, 0, 1_000_000, 10)?)?;
+  topology.add_link(partitioned, matrix_policy(5, 0, 0, 0, 0, 0)?)?;
+  topology.add_link(reverse, matrix_policy(5, 0, 0, 0, 0, 0)?)?;
+  topology.add_link(restarted, matrix_policy(4, 0, 0, 0, 0, 0)?)?;
+  topology.add_link(readdressed, matrix_policy(4, 0, 0, 0, 0, 0)?)?;
+  topology.add_link(joint, matrix_policy(3, 20, 0, 1_000_000, 1_000_000, 10)?)?;
+
+  let mut simulator = Simulator::new(seed, topology)?;
+  let lost_message = simulator.send(loss, 8)?;
+  let duplicated_message = simulator.send(duplicate, 8)?;
+  let reordered_first = simulator.send(reorder, 8)?;
+  let reordered_second = simulator.send(reorder, 8)?;
+  simulator.run()?;
+
+  simulator.partition(partitioned, PartitionId::new(1))?;
+  let blocked_message = simulator.send(partitioned, 8)?;
+  simulator.heal(partitioned, PartitionId::new(1))?;
+  let stale_link_message = simulator.send(partitioned, 8)?;
+  simulator.partition(partitioned, PartitionId::new(2))?;
+  simulator.heal(partitioned, PartitionId::new(2))?;
+  let reverse_message = simulator.send(reverse, 8)?;
+  simulator.send(partitioned, 8)?;
+  simulator.run()?;
+
+  let stale_boot_message = simulator.send(restarted, 8)?;
+  simulator.restart(NodeKey::new(4))?;
+  simulator.run()?;
+  simulator.send(restarted, 8)?;
+  simulator.run()?;
+
+  let stale_address_message = simulator.send(readdressed, 8)?;
+  simulator.change_address(NodeKey::new(3), AddressId::new(99))?;
+  simulator.run()?;
+  simulator.send(readdressed, 8)?;
+  simulator.run()?;
+
+  let skew = if seed & 1 == 0 { 17 } else { -17 };
+  simulator.set_clock_skew(NodeKey::new(2), skew)?;
+  let joint_message = simulator.send(joint, 32)?;
+  simulator.partition(joint, PartitionId::new(3))?;
+  simulator.heal(joint, PartitionId::new(3))?;
+  simulator.run()?;
+
+  let records = simulator.records();
+  let mut faults = 0_u32;
+  let mut joint_duplicate = false;
+  let mut joint_reorder = false;
+  let mut joint_stale = false;
+  let mut blocked_observed = false;
+  let mut reverse_delivered = false;
+  for record in records {
+    match record {
+      EventRecord::Lost { message, .. } if *message == lost_message => faults |= FAULT_LOSS,
+      EventRecord::DuplicateCreated { message, .. } => {
+        faults |= FAULT_DUPLICATE;
+        joint_duplicate |= *message == joint_message;
+      }
+      EventRecord::Reordered { message, .. } => {
+        faults |= FAULT_REORDER;
+        joint_reorder |= *message == joint_message;
+      }
+      EventRecord::Dropped {
+        message,
+        reason: DropReason::Blocked,
+        ..
+      } => {
+        faults |= FAULT_BLOCKED;
+        blocked_observed |= *message == blocked_message;
+      }
+      EventRecord::Dropped {
+        message,
+        reason: DropReason::StaleLink,
+        ..
+      } => {
+        faults |= FAULT_STALE_LINK;
+        joint_stale |= *message == joint_message;
+      }
+      EventRecord::Dropped {
+        message,
+        reason: DropReason::StaleBoot,
+        ..
+      } if *message == stale_boot_message => faults |= FAULT_STALE_BOOT,
+      EventRecord::Dropped {
+        message,
+        reason: DropReason::StaleAddress,
+        ..
+      } if *message == stale_address_message => faults |= FAULT_STALE_ADDRESS,
+      EventRecord::Partitioned { .. } => faults |= FAULT_PARTITION,
+      EventRecord::Healed { .. } => faults |= FAULT_HEAL,
+      EventRecord::Restarted { .. } => faults |= FAULT_RESTART,
+      EventRecord::AddressChanged { .. } => faults |= FAULT_ADDRESS_CHANGE,
+      EventRecord::ClockSkewChanged { .. } => faults |= FAULT_CLOCK_SKEW,
+      EventRecord::Delivered { message, .. } => {
+        faults |= FAULT_DELIVERY;
+        reverse_delivered |= *message == reverse_message;
+      }
+      _ => {}
+    }
+  }
+  let delivered = records
+    .iter()
+    .filter_map(|record| match record {
+      EventRecord::Delivered { message, .. } => Some(*message),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+  if blocked_observed && reverse_delivered {
+    faults |= FAULT_DIRECTED;
+  }
+  if joint_duplicate && joint_reorder && joint_stale {
+    faults |= FAULT_JOINT;
+  }
+  if delivered.iter().position(|value| *value == reordered_second)
+    < delivered.iter().position(|value| *value == reordered_first)
+    && delivered.iter().filter(|value| **value == duplicated_message).count() == 2
+    && !delivered.contains(&lost_message)
+    && records.iter().any(|record| {
+      matches!(record, EventRecord::Dropped { message, reason: DropReason::StaleLink, .. } if *message == stale_link_message)
+    })
+  {
+    faults |= FAULT_REORDER | FAULT_DUPLICATE | FAULT_LOSS | FAULT_STALE_LINK;
+  }
+
+  let decision_fingerprint = decision_word(seed, joint_message, joint, 0, 3);
+  Ok(MatrixRun {
+    snapshot: simulator.snapshot(),
+    faults,
+    decision_fingerprint,
+  })
+}
+
+fn matrix_policy(
+  delay: u64, jitter: u64, loss: u32, duplicate: u32, reorder: u32, window: u64,
+) -> SimResult<crate::simulation::topology::LinkPolicy> {
+  crate::simulation::topology::LinkPolicy::new(
+    std::time::Duration::from_nanos(delay),
+    std::time::Duration::from_nanos(jitter),
+    loss,
+    duplicate,
+    reorder,
+    std::time::Duration::from_nanos(window),
+  )
+}
+
+fn parse_env_u64(name: &str, default: u64) -> SimResult<u64> {
+  match std::env::var(name) {
+    Ok(value) => value.parse().map_err(|_| SimulationError::InvalidLimit),
+    Err(std::env::VarError::NotPresent) => Ok(default),
+    Err(std::env::VarError::NotUnicode(_)) => Err(SimulationError::InvalidLimit),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use std::{collections::BTreeSet, time::Duration};
@@ -538,6 +751,11 @@ mod tests {
     assert_eq!(snapshot.now_nanos, 10);
     assert!(snapshot.max_pending_events <= 4);
     assert!(snapshot.max_pending_bytes <= 32);
+    assert_eq!(snapshot.pending_events, 0);
+    assert_eq!(snapshot.pending_bytes, 0);
+    assert_eq!(snapshot.reserved_records, 0);
+    assert!(snapshot.next_message > 0);
+    assert!(snapshot.next_enqueue > 0);
   }
 
   #[test]
@@ -560,6 +778,46 @@ mod tests {
         ..
       })
     ));
+  }
+
+  #[test]
+  fn simulation_network_overflow_paths_are_atomic() {
+    let mut topology = topology(limits(8, 1_024));
+    let normal = LinkKey::new(NodeKey::new(1), NodeKey::new(2));
+    let overflow = LinkKey::new(NodeKey::new(2), NodeKey::new(3));
+    topology.add_link(normal, policy(1, 0, 0, 0, 0)).unwrap();
+    topology
+      .add_link(
+        overflow,
+        LinkPolicy::new(
+          Duration::from_nanos(u64::MAX),
+          Duration::ZERO,
+          0,
+          0,
+          0,
+          Duration::ZERO,
+        )
+        .unwrap(),
+      )
+      .unwrap();
+    let mut simulator = Simulator::new(15, topology).unwrap();
+    simulator.send(normal, 1).unwrap();
+    simulator.run().unwrap();
+
+    let before_deadline = simulator.snapshot();
+    assert!(simulator.send(overflow, 1).is_err());
+    assert_eq!(simulator.snapshot(), before_deadline);
+
+    simulator.next_message = u64::MAX;
+    let before_message = simulator.snapshot();
+    assert!(simulator.send(normal, 1).is_err());
+    assert_eq!(simulator.snapshot(), before_message);
+
+    simulator.next_message = 1;
+    simulator.next_enqueue = u64::MAX;
+    let before_enqueue = simulator.snapshot();
+    assert!(simulator.send(normal, 1).is_err());
+    assert_eq!(simulator.snapshot(), before_enqueue);
   }
 
   #[test]
