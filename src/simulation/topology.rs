@@ -431,6 +431,7 @@ pub(crate) enum SimulationError {
   UnknownEndpoint,
   UnknownLink,
   Overflow,
+  Invariant,
 }
 
 pub(crate) type SimResult<T> = Result<T, SimulationError>;
