@@ -12,6 +12,12 @@ if (($# != 0)); then
   exit 2
 fi
 
+MANIFEST_DIGEST=$(sha256sum Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
+[[ $MANIFEST_DIGEST == fd70b46cc7ad0272c23dbe76cc9de9155925522a41bcb333fe41ea7c0696c6d0 ]] || {
+  printf 'Cargo manifest or lockfile differs from the reviewed G1 baseline\n' >&2
+  exit 1
+}
+
 EXPECTED=$(cat <<'EOF'
 autocfg@1.5.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 bit-set@0.8.0 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
