@@ -196,7 +196,7 @@ check_argv_policy() {
 }
 check_argv_policy "$TMP/task-verification.json" || fail "unsafe, altered, or unbounded verification argv/Q"
 TASK_MANIFEST_DIGEST=$(jq -cS '.' "$TMP/task-verification.json" | sha256sum | awk '{print $1}')
-[[ $TASK_MANIFEST_DIGEST == 8283a7f0e2ae30e66255fb31c27d04eb90b8c34900a1f0b4972f1c4019b4d89c ]] || fail "task readiness/argv manifest differs from frozen handoff"
+[[ $TASK_MANIFEST_DIGEST == b07719c5ecf5bf9cb3791f0dbc735b4795abf096530747360e838f4bfd7b6df4 ]] || fail "task readiness/argv manifest differs from frozen handoff"
 
 check_threat_shape() {
   local file=$1

@@ -189,7 +189,7 @@ argv = [
   "cargo",
   "test",
   "--locked",
-  "--lib",
+  "--workspace",
   "simulation_failure_artifact_security",
 ]
 timeout_seconds = 1800
