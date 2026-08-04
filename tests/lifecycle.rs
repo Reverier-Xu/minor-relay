@@ -8,8 +8,8 @@ use std::{
 
 use minor_relay::{
   BoxFuture, Clock, Command, CommitOutcome, CreatedKey, Digest, Entropy, Error, EventOptions,
-  GetNodeStatus, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId, KeyProvider,
-  MonotonicTime, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey, Query,
+  ExtensionRegistry, GetNodeStatus, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
+  KeyProvider, MonotonicTime, NodeBuilder, NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey, Query,
   ReconcileOutcome, Result, Shutdown, ShutdownOutcome, Signature, Storage, StorageFactory,
   StoreRequirements, StoreTransaction, TransactionId, WaitForShutdown,
 };
@@ -197,6 +197,40 @@ fn g1_lifecycle_event_capacity_is_bounded() {
 
   assert!(EventOptions::new().capacity(0).is_err());
   assert!(EventOptions::new().capacity(1_025).is_err());
+}
+
+#[tokio::test]
+async fn g1_lifecycle_public_builder_starts_running_runtime() {
+  let handle = start_node().await;
+
+  assert_eq!(
+    handle.query(GetNodeStatus::new()).await.unwrap(),
+    NodeStatus::Running,
+  );
+}
+
+#[tokio::test]
+async fn g1_lifecycle_cloned_handles_share_runtime_status() {
+  let first = start_node().await;
+  let second = first.clone();
+
+  assert_eq!(
+    first.query(GetNodeStatus::new()).await.unwrap(),
+    second.query(GetNodeStatus::new()).await.unwrap(),
+  );
+}
+
+async fn start_node() -> NodeHandle {
+  let clock = Arc::new(VirtualClock::new());
+  let entropy = Arc::new(SequenceEntropy::new(vec![7; 32]));
+  NodeBuilder::new(Arc::new(DeclarationOnlyStorage), Arc::new(DeclarationOnlyKeys))
+    .config(NodeConfig::new())
+    .extensions(ExtensionRegistry::new())
+    .clock(clock)
+    .entropy(entropy)
+    .start()
+    .await
+    .unwrap()
 }
 
 fn provider_error(context: ProviderErrorContext) -> Error {
