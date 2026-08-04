@@ -80,9 +80,11 @@ impl SimulationLimits {
     max_nodes: usize, max_pending_events: usize, max_pending_bytes: usize,
     max_recorded_events: usize, max_message_bytes: usize,
   ) -> SimResult<Self> {
+    let max_recordable_bytes = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
     if !(1..=MAX_NODES).contains(&max_nodes)
       || max_pending_events == 0
       || max_pending_bytes == 0
+      || max_pending_bytes > max_recordable_bytes
       || max_recorded_events == 0
       || max_message_bytes == 0
       || max_message_bytes > max_pending_bytes
@@ -181,6 +183,32 @@ impl LinkPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EndpointStamp {
+  node: NodeKey,
+  address: AddressId,
+  boot_epoch: u32,
+  address_generation: u32,
+}
+
+impl EndpointStamp {
+  pub(crate) const fn node(self) -> NodeKey {
+    self.node
+  }
+
+  pub(crate) const fn address(self) -> AddressId {
+    self.address
+  }
+
+  pub(crate) const fn boot_epoch(self) -> u32 {
+    self.boot_epoch
+  }
+
+  pub(crate) const fn address_generation(self) -> u32 {
+    self.address_generation
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NodeState {
   address: AddressId,
   boot_epoch: u32,
@@ -198,6 +226,31 @@ impl NodeState {
       clock_skew_nanos: 0,
       running: true,
     }
+  }
+
+  const fn stamp(self, node: NodeKey) -> EndpointStamp {
+    EndpointStamp {
+      node,
+      address: self.address,
+      boot_epoch: self.boot_epoch,
+      address_generation: self.address_generation,
+    }
+  }
+
+  pub(crate) const fn running(self) -> bool {
+    self.running
+  }
+
+  pub(crate) const fn boot_epoch(self) -> u32 {
+    self.boot_epoch
+  }
+
+  pub(crate) const fn address(self) -> AddressId {
+    self.address
+  }
+
+  pub(crate) const fn address_generation(self) -> u32 {
+    self.address_generation
   }
 }
 
@@ -299,6 +352,61 @@ impl Topology {
     link.partitions.remove(&partition);
     link.generation = generation;
     Ok(())
+  }
+
+  pub(crate) fn restart(&mut self, key: NodeKey) -> SimResult<u32> {
+    let node = self
+      .nodes
+      .get_mut(&key)
+      .ok_or(SimulationError::UnknownNode)?;
+    let boot_epoch = node
+      .boot_epoch
+      .checked_add(1)
+      .ok_or(SimulationError::Overflow)?;
+    node.boot_epoch = boot_epoch;
+    node.running = true;
+    Ok(boot_epoch)
+  }
+
+  pub(crate) fn change_address(&mut self, key: NodeKey, address: AddressId) -> SimResult<u32> {
+    let node = self
+      .nodes
+      .get_mut(&key)
+      .ok_or(SimulationError::UnknownNode)?;
+    let generation = node
+      .address_generation
+      .checked_add(1)
+      .ok_or(SimulationError::Overflow)?;
+    node.address = address;
+    node.address_generation = generation;
+    Ok(generation)
+  }
+
+  pub(crate) fn set_clock_skew(&mut self, key: NodeKey, skew_nanos: i64) -> SimResult<()> {
+    let node = self
+      .nodes
+      .get_mut(&key)
+      .ok_or(SimulationError::UnknownNode)?;
+    node.clock_skew_nanos = skew_nanos;
+    Ok(())
+  }
+
+  pub(crate) fn observed_utc(&self, key: NodeKey, base_utc_nanos: u64) -> SimResult<u64> {
+    let node = self.nodes.get(&key).ok_or(SimulationError::UnknownNode)?;
+    if node.clock_skew_nanos >= 0 {
+      base_utc_nanos
+        .checked_add(node.clock_skew_nanos.unsigned_abs())
+        .ok_or(SimulationError::Overflow)
+    } else {
+      base_utc_nanos
+        .checked_sub(node.clock_skew_nanos.unsigned_abs())
+        .ok_or(SimulationError::Overflow)
+    }
+  }
+
+  pub(crate) fn stamp(&self, key: NodeKey) -> SimResult<EndpointStamp> {
+    let node = self.nodes.get(&key).ok_or(SimulationError::UnknownNode)?;
+    Ok(node.stamp(key))
   }
 
   pub(crate) fn link(&self, key: LinkKey) -> SimResult<&LinkState> {

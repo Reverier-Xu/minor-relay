@@ -191,6 +191,15 @@ impl EventLog {
     &self.records
   }
 
+  pub(crate) fn can_reserve(&self, reserved: usize, additional: usize) -> bool {
+    self
+      .records
+      .len()
+      .checked_add(reserved)
+      .and_then(|value| value.checked_add(additional))
+      .is_some_and(|value| value <= self.max_records)
+  }
+
   pub(crate) fn digest(&self) -> Digest {
     let mut hasher = Sha256::new();
     hasher.update((EVENT_STREAM_DOMAIN.len() as u16).to_be_bytes());
