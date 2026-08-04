@@ -31,6 +31,7 @@ globs = ["Cargo.toml", "Cargo.lock"]
 precedence = 200
 owner_task = "T-G00-04"
 verification_ids = [
+  "VERIFY-G01-03",
   "VERIFY-G01-05",
   "VERIFY-G02-03",
   "VERIFY-G08-02",
@@ -99,6 +100,14 @@ verification_ids = ["VERIFY-G01-05", "VERIFY-G10-08"]
 threat_ids = ["THR-025", "THR-029"]
 
 [[path_rule]]
+id = "IMPACT-SIMULATION"
+globs = ["src/simulation/**"]
+precedence = 200
+owner_task = "T-G01-03"
+verification_ids = ["VERIFY-G01-03", "VERIFY-G01-04", "VERIFY-G01-05", "VERIFY-G10-08"]
+threat_ids = ["THR-025"]
+
+[[path_rule]]
 id = "IMPACT-FACADE"
 globs = [
   "src/lib.rs",
@@ -110,7 +119,7 @@ globs = [
 ]
 precedence = 300
 owner_task = "T-G10-08"
-verification_ids = ["VERIFY-G01-05", "VERIFY-G09-07", "VERIFY-G10-08"]
+verification_ids = ["VERIFY-G01-03", "VERIFY-G01-05", "VERIFY-G09-07", "VERIFY-G10-08"]
 threat_ids = ["THR-014", "THR-023", "THR-029"]
 
 [[path_rule]]

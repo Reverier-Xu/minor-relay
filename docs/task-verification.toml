@@ -151,14 +151,22 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G01-03"
 verification_id = "VERIFY-G01-03"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-03"
 owner_task = "T-G01-03"
-state = "planned"
-argv = []
+state = "ready"
+argv = [
+  "cargo",
+  "--config",
+  "env.MINOR_RELAY_SIM_SEEDS=\"1000\"",
+  "test",
+  "--locked",
+  "--lib",
+  "simulation_network_fault_matrix",
+]
 timeout_seconds = 1800
 
 [[task]]
