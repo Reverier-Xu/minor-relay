@@ -17,32 +17,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: rust
+  format:
+    name: format
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 3
 
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: install nightly rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: nightly
           components: rustfmt
 
-      - name: install stable rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
       - name: install taplo
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
         with:
-          tool: taplo-cli
-
-      - name: cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+          tool: taplo-cli@0.10.0
 
       - name: taplo fmt
         run: taplo fmt --check
@@ -50,11 +43,87 @@ jobs:
       - name: cargo fmt
         run: cargo +nightly fmt --all -- --check
 
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RUSTFLAGS: -Dwarnings
+      RUSTDOCFLAGS: -Dwarnings
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: install MSRV toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - name: verify MSRV
+        run: test "$(rustc +1.97.1 --version --verbose | awk '$1 == "release:" { print $2 }')" = "1.97.1"
+
       - name: cargo check
-        run: cargo check --workspace --all-targets --all-features --locked
+        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace --all-features --locked
+        run: cargo +1.97.1 test --workspace --all-features --locked
+
+  stable:
+    name: stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RUSTFLAGS: -Dwarnings
+      RUSTDOCFLAGS: -Dwarnings
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: install stable rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: report stable toolchain
+        run: rustc +stable --version --verbose
+
+      - name: cargo check
+        run: cargo +stable check --workspace --all-targets --all-features --locked
+
+      - name: cargo clippy
+        run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo +stable test --workspace --all-features --locked
+
+  dependency-policy:
+    name: dependency-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: install stable rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+
+      - name: install cargo-deny
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: verify cargo-deny
+        run: test "$(cargo deny --version)" = "cargo-deny 0.20.2"
+
+      - name: cargo deny
+        run: cargo deny --locked check
