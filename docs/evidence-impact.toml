@@ -47,7 +47,12 @@ id = "IMPACT-WORKFLOWS"
 globs = [".github/**"]
 precedence = 200
 owner_task = "T-G10-07"
-verification_ids = ["VERIFY-G01-05", "VERIFY-G10-07", "VERIFY-G10-09", "VERIFY-G10-12"]
+verification_ids = [
+  "VERIFY-G01-05",
+  "VERIFY-G10-07",
+  "VERIFY-G10-09",
+  "VERIFY-G10-12",
+]
 threat_ids = ["THR-025", "THR-026", "THR-027", "THR-029"]
 
 [[path_rule]]
@@ -112,7 +117,12 @@ id = "IMPACT-SIMULATION"
 globs = ["src/simulation/**"]
 precedence = 200
 owner_task = "T-G01-03"
-verification_ids = ["VERIFY-G01-03", "VERIFY-G01-04", "VERIFY-G01-05", "VERIFY-G10-08"]
+verification_ids = [
+  "VERIFY-G01-03",
+  "VERIFY-G01-04",
+  "VERIFY-G01-05",
+  "VERIFY-G10-08",
+]
 threat_ids = ["THR-025"]
 
 [[path_rule]]
@@ -148,7 +158,12 @@ globs = [
 ]
 precedence = 300
 owner_task = "T-G10-08"
-verification_ids = ["VERIFY-G01-03", "VERIFY-G01-05", "VERIFY-G09-07", "VERIFY-G10-08"]
+verification_ids = [
+  "VERIFY-G01-03",
+  "VERIFY-G01-05",
+  "VERIFY-G09-07",
+  "VERIFY-G10-08",
+]
 threat_ids = ["THR-014", "THR-023", "THR-029"]
 
 [[path_rule]]
@@ -255,7 +270,7 @@ threat_ids = [
 ]
 
 [[path_rule]]
-id = "IMPACT-STATE"
+id = "IMPACT-METADATA-LEGACY-PATH"
 globs = ["src/state/**"]
 precedence = 200
 owner_task = "T-G07-06"

@@ -11,14 +11,14 @@ first = 1
 verification_id = "VERIFY-G00-01"
 kind = "documentation"
 cases = [
-  { title = "Ratify identity and TLS channel binding", acceptance = "Accepted ADR fixes canonical NodeId and ClusterId syntax, immutable Ed25519 bindings, TLS 1.3 CertificateVerify validation, RFC 9266 exporter binding, role-separated transcript proofs, and fail-closed collision handling.", threats = [
+  { title = "Ratify identity and TLS channel binding", acceptance = "Accepted ADR fixes canonical NodeId and ClusterId syntax, immutable Ed25519 bindings, TLS 1.3 CertificateVerify validation, RFC 9266 exporter binding, role-separated transcript proofs, and fail-closed collision handling.", rebaseline = "ADR-0007", threats = [
     "THR-001",
     "THR-002",
     "THR-003",
     "THR-004",
     "THR-013",
   ] },
-  { title = "Ratify single-use admission and member recovery", acceptance = "Accepted ADR fixes ten-minute memory-only credentials, one committed subject per generation, committed/aborted/unknown reconciliation, lost-response recovery through member authentication, credential-free reconnect, and fail-closed key loss.", threats = [
+  { title = "Ratify single-use admission and member recovery", acceptance = "Accepted ADR fixes ten-minute memory-only credentials, one committed subject per generation, committed/aborted/unknown reconciliation, lost-result recovery through member authentication, credential-free reconnect, and fail-closed key loss.", rebaseline = "ADR-0007", threats = [
     "THR-001",
     "THR-002",
     "THR-004",
@@ -36,15 +36,15 @@ first = 3
 verification_id = "VERIFY-G00-02"
 kind = "documentation"
 cases = [
-  { title = "Ratify bounded deterministic wire decoding", acceptance = "Accepted ADR fixes the 16-byte prelude, opaque schema and kind IDs, deterministic CBOR rules, tag grammar, body and collection limits, and rejection before oversized allocation or dispatch.", threats = [
+  { title = "Ratify bounded deterministic wire decoding", acceptance = "Accepted ADR fixes the 16-byte prelude, opaque schema and kind IDs, deterministic CBOR rules, tag grammar, body and collection limits, and rejection before oversized allocation or dispatch.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-014",
   ] },
-  { title = "Ratify authenticated feature intersection", acceptance = "Accepted ADR fixes signed offers, definition digests, dependency closure, conflict rejection, required-label handling, minimum numeric limits, exact selection bytes, and no automatic fallback.", threats = [
+  { title = "Ratify authenticated feature intersection", acceptance = "Accepted ADR fixes signed offers, definition digests, dependency closure, conflict rejection, required-label handling, minimum numeric limits, exact selection bytes, and no automatic fallback.", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-014",
   ] },
-  { title = "Ratify bounded durable delivery", acceptance = "Accepted ADR fixes one TraceId, source-signed ordinals 0 through 3, 15-hop DATA and receipt limits, persist-before-write, destination acceptance before ACK, duplicate re-ACK, quotas, and 24-hour conservative retention.", threats = [
+  { title = "Ratify opaque packet stream delivery", acceptance = "Accepted ADR fixes immediate core TraceId allocation, exact-node or resource-selector targets, caller-selected load balancing and routing, ordered constant-memory body streaming, synchronous current-process admission acknowledgement or route error, asynchronous route status, explicit interruption, and no body persistence or continuation.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-009",
     "THR-011",
@@ -60,11 +60,11 @@ first = 6
 verification_id = "VERIFY-G00-03"
 kind = "documentation"
 cases = [
-  { title = "Ratify conditional transaction reconciliation", acceptance = "Accepted ADR fixes immutable snapshots, unsigned-byte scans, base-revision and per-key CAS, cross-family atomic batches, TxnId receipts, committed/aborted/unknown outcomes, locked reopen reconciliation, and capability refusal.", threats = [
+  { title = "Ratify conditional transaction reconciliation", acceptance = "Accepted ADR fixes immutable snapshots, unsigned-byte scans, base-revision and per-key CAS, cross-family atomic batches, TxnId receipts, committed/aborted/unknown outcomes, locked reopen reconciliation, and capability refusal.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "Ratify HLC quarantine migration and cleanup rules", acceptance = "Accepted ADR fixes checked HLC transitions, persisted watermarks, clock-health rules, five-second future quarantine, conservative durable age, immutable migration graphs, never-automatic tombstone deletion, and exact-CAS acknowledged cleanup.", threats = [
+  { title = "Ratify metadata storage and wall-clock rules", acceptance = "Accepted ADR fixes owner-revision node metadata, signed resource timestamp/writer/removal/digest ordering, host SystemTime discontinuity risk, provider-owned immutable snapshots, exact lookup, ordered streaming scans, conditional transactions, reconciliation, capabilities, canonical TransactionId text, JSON test storage, redb production storage, and the open SPI.", rebaseline = "ADR-0007", threats = [
     "THR-011",
     "THR-022",
     "THR-023",
@@ -79,11 +79,11 @@ first = 1
 verification_id = "VERIFY-G00-04"
 kind = "documentation"
 cases = [
-  { title = "Ratify toolchain feature and dependency policy", acceptance = "Accepted ADR and Cargo metadata fix Rust 1.97.1, publish=false during development, additive json and redb features, unconditional security behavior, approved package families, locked resolutions, and one TLS provider.", threats = [
+  { title = "Ratify toolchain feature and dependency policy", acceptance = "Accepted ADR and Cargo metadata fix Rust 1.97.1, publish=false during development, additive json and redb features, unconditional security behavior, approved package families, locked resolutions, and one TLS provider.", rebaseline = "ADR-0007", threats = [
     "THR-027",
     "THR-029",
   ] },
-  { title = "Ratify evidence budgets and secret-safe replay", acceptance = "Accepted ADR fixes property, simulation, fuzz, crash, soak, and release budgets; reviewed corpus promotion; bounded allowlisted artifacts; closed replay argv; no automatic reruns; and exact-SHA release-token validation.", threats = [
+  { title = "Ratify evidence budgets and secret-safe replay", acceptance = "Accepted ADR fixes property, simulation, fuzz, crash, soak, and release budgets; reviewed corpus promotion; bounded allowlisted artifacts; closed replay argv; no automatic reruns; and exact-SHA release-token validation.", rebaseline = "ADR-0007", threats = [
     "THR-013",
     "THR-024",
     "THR-025",
@@ -100,10 +100,10 @@ first = 3
 verification_id = "VERIFY-G00-05"
 kind = "documentation"
 cases = [
-  { title = "Ratify the isolated sixteen-node OCI profile", acceptance = "Accepted ADR fixes the Linux host class, OCI engine lineage, container limits, redb volumes, two-network isolation, unimpaired bridge probes, public-facade harness boundary, exact 32-edge topology, clocks, readiness, and quiescence.", threats = [
+  { title = "Ratify the revised sixteen-node OCI profile", acceptance = "Accepted ADR fixes the same isolated host and 125-sample method but replaces the workload with fixed admission, opaque packet delivery, node-owner revision convergence, and generic resource tuple convergence observed only through the public facade.", rebaseline = "ADR-0007", threats = [
     "THR-028",
   ] },
-  { title = "Ratify the complete 125-sample SLO ledger", acceptance = "Accepted ADR fixes five fresh runs, 25 ordered samples per run, deterministic 4 KiB payloads, concurrent public polling, elapsed time at most 10000 ms for every sample, predeclared IDs, raw observations, and no post-start exclusion or replacement.", threats = [
+  { title = "Ratify the complete revised SLO ledger", acceptance = "Five fresh runs of 25 samples retain raw observations and no exclusion; every sample performs the ADR-0007 admission, packet, node metadata, and resource metadata workload within 10000 ms, while 1,024-node results remain functional and trend evidence only.", rebaseline = "ADR-0007", threats = [
     "THR-026",
     "THR-027",
     "THR-028",
@@ -118,9 +118,9 @@ first = 8
 verification_id = "VERIFY-G00-06"
 kind = "validation"
 cases = [
-  { title = "Validate immutable scenario threat and API ownership", acceptance = "Planning validation rejects duplicate or malformed SC and THR IDs, reused IDs, missing scenario owners, duplicate constant owners, absent API signatures, and task references to unregistered scenarios.", threats = [
+  { title = "Validate stable ownership and rebaselined API", acceptance = "Planning validation preserves exactly 69 task and VERIFY IDs, 226 SC IDs, ten E2E IDs, and 29 THR IDs; verifies one owner and current ADR-0007 marker for every record; matches the packet/resource API inventory; and rejects stale public surface.", rebaseline = "ADR-0007", threats = [
   ] },
-  { title = "Validate mitigation and evidence-impact coverage", acceptance = "Planning validation proves every THR-001 through THR-029 has a mitigation or named residual risk, every scenario has verification ownership, every evidence-affecting production path is mapped, and every later task is dispatchable by its registered verification ID.", threats = [
+  { title = "Validate responsibility and evidence boundaries", acceptance = "Planning validation rejects active node-limit, business-record, peer-clock, body-persistence, built-in conversation, core storage-capacity, deployment, and whole-population API semantics while preserving fixed admission and complete scenario/threat/evidence ownership.", rebaseline = "ADR-0007", threats = [
     "THR-001",
     "THR-002",
     "THR-003",
@@ -161,7 +161,7 @@ first = 1
 verification_id = "VERIFY-G01-01"
 kind = "property"
 cases = [
-  { title = "Reject hostile envelopes before excess allocation", acceptance = "Properties reject invalid magic, lengths, flags, reserved bits, schemas, kinds, nesting, collections, duplicate fields, trailing values, and bodies above the prechecked limit without panic or allocation beyond the configured bound.", threats = [
+  { title = "Reject hostile envelopes before excess allocation", acceptance = "Properties reject invalid magic, lengths, flags, reserved bits, schemas, kinds, nesting, collections, duplicate fields, trailing values, and bodies above the prechecked limit without panic or allocation beyond the configured bound.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-014",
   ] },
@@ -175,11 +175,11 @@ first = 1
 verification_id = "VERIFY-G01-01"
 kind = "property"
 cases = [
-  { title = "Enforce canonical ID and tag namespaces", acceptance = "Generated valid NodeId, ClusterId, TraceId, and qualified tags round-trip byte-for-byte; invalid prefix, length, alphabet, case, whitespace, DNS, category, separator, or reserved-namespace inputs are rejected.", threats = [
+  { title = "Enforce canonical ID and tag namespaces", acceptance = "Generated valid NodeId, ClusterId, TraceId, and qualified tags round-trip byte-for-byte; invalid prefix, length, alphabet, case, whitespace, DNS, category, separator, or reserved-namespace inputs are rejected.", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-014",
   ] },
-  { title = "Encode deterministic prelude and CBOR bytes", acceptance = "Equivalent envelopes produce identical prelude and deterministic-CBOR bytes; golden vectors remain stable and non-shortest integers, indefinite items, duplicate keys, invalid key order, floats, and undeclared tags are rejected.", threats = [
+  { title = "Encode deterministic prelude and CBOR bytes", acceptance = "Equivalent envelopes produce identical prelude and deterministic-CBOR bytes; golden vectors remain stable and non-shortest integers, indefinite items, duplicate keys, invalid key order, floats, and undeclared tags are rejected.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-014",
   ] },
@@ -193,7 +193,7 @@ first = 2
 verification_id = "VERIFY-G01-02"
 kind = "integration"
 cases = [
-  { title = "Own node startup and shutdown lifecycle", acceptance = "The public builder starts one supervised runtime, cloned handles share it, shutdown is idempotent, wait reports termination, cancellation drains owned tasks, and no task, queue, listener, or placeholder add API remains after shutdown.", threats = [
+  { title = "Own node startup and shutdown lifecycle", acceptance = "The public builder starts one supervised runtime, cloned handles share it, shutdown is idempotent, wait reports termination, cancellation drains owned tasks, and no task, queue, listener, or placeholder add API remains after shutdown.", rebaseline = "ADR-0007", threats = [
   ] },
 ]
 
@@ -205,7 +205,7 @@ first = 3
 verification_id = "VERIFY-G01-02"
 kind = "contract"
 cases = [
-  { title = "Drive time and randomness through injected facades", acceptance = "Clock sleeps and monotonic reads advance deterministically under virtual time, entropy requests consume reproducible bytes, checked time arithmetic rejects overflow, and production lifecycle code has no ambient timing or randomness dependency.", threats = [
+  { title = "Drive time and randomness through injected facades", acceptance = "Clock sleeps and monotonic reads advance deterministically under virtual time, entropy packets consume reproducible bytes, checked time arithmetic rejects overflow, and production lifecycle code has no ambient timing or randomness dependency.", rebaseline = "ADR-0007", threats = [
     "THR-011",
   ] },
 ]
@@ -218,7 +218,7 @@ first = 3
 verification_id = "VERIFY-G01-03"
 kind = "simulation"
 cases = [
-  { title = "Replay a bounded directed network exactly", acceptance = "For each retained seed, the simulator produces the same ordered events and digest while enforcing directed-link state, virtual deadlines, bounded queues, and no wall-clock sleep.", threats = [
+  { title = "Replay a bounded directed network exactly", acceptance = "For each retained seed, the simulator produces the same ordered events and digest while enforcing directed-link resource metadata, virtual deadlines, bounded queues, and no wall-clock sleep.", rebaseline = "ADR-0007", threats = [
   ] },
 ]
 
@@ -230,7 +230,7 @@ first = 4
 verification_id = "VERIFY-G01-03"
 kind = "simulation"
 cases = [
-  { title = "Model the complete deterministic fault matrix", acceptance = "Across 1000 gate seeds, scenarios independently and jointly exercise delay, loss, duplication, reorder, one-way links, partitions, healing, restart, and address change while preserving configured bounds and deterministic replay.", threats = [
+  { title = "Model the complete deterministic fault matrix", acceptance = "Across 1000 gate seeds, scenarios independently and jointly exercise delay, loss, duplication, reorder, one-way links, partitions, healing, restart, and address change while preserving configured bounds and deterministic replay.", rebaseline = "ADR-0007", threats = [
   ] },
 ]
 
@@ -242,11 +242,11 @@ first = 4
 verification_id = "VERIFY-G01-04"
 kind = "security"
 cases = [
-  { title = "Reject secrets and bound failure artifacts", acceptance = "Artifact construction rejects every forbidden credential, key, handle, proof, exporter, transcript, payload, address, path, environment, and hostile-text field before hashing; event and byte limits produce deterministic first/last truncation.", threats = [
+  { title = "Reject secrets and bound failure artifacts", acceptance = "Artifact construction rejects every forbidden credential, key, handle, proof, exporter, transcript, packet body, address, path, environment, and hostile-text field before hashing; event and byte limits produce deterministic first/last truncation.", rebaseline = "ADR-0007", threats = [
     "THR-013",
     "THR-024",
   ] },
-  { title = "Replay failures without command injection", acceptance = "Replay accepts only allowlisted executable IDs and validated literal argv, rejects shell syntax, hostile paths and oversized arguments, normalizes ephemeral values, and emits byte-identical simulation artifacts for the same seed and manifest.", threats = [
+  { title = "Replay failures without command injection", acceptance = "Replay accepts only allowlisted executable IDs and validated literal argv, rejects shell syntax, hostile paths and oversized arguments, normalizes ephemeral values, and emits byte-identical simulation artifacts for the same seed and manifest.", rebaseline = "ADR-0007", threats = [
     "THR-024",
   ] },
 ]
@@ -259,9 +259,9 @@ first = 6
 verification_id = "VERIFY-G01-05"
 kind = "closure"
 cases = [
-  { title = "Close the public foundation facade", acceptance = "An external-crate test uses only manifest reexports to construct and shut down a node; private protocol, runtime, storage, and simulator types remain inaccessible and the placeholder add export is absent.", threats = [
+  { title = "Close the public foundation facade", acceptance = "An external-crate test uses only manifest reexports to construct and shut down a node; private protocol, runtime, storage, and simulator types remain inaccessible and the placeholder add export is absent.", rebaseline = "ADR-0007", threats = [
   ] },
-  { title = "Close MSRV stable dependency and lint gates", acceptance = "Rust 1.97.1 and current stable pass locked Q with zero warnings, cargo-deny accepts the reviewed graph, production unwrap and expect are denied, and CI rejects unlocked or policy-violating dependencies.", threats = [
+  { title = "Close MSRV stable dependency and lint gates", acceptance = "Rust 1.97.1 and current stable pass locked Q with zero warnings, cargo-deny accepts the reviewed graph, production unwrap and expect are denied, and CI rejects unlocked or policy-violating dependencies.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-029",
   ] },
@@ -275,7 +275,7 @@ first = 1
 verification_id = "VERIFY-G02-01"
 kind = "contract"
 cases = [
-  { title = "Enforce conditional atomic storage semantics", acceptance = "The reusable contract proves immutable snapshots, exact lookup, empty and all-0xff prefix ordering, base-revision and per-key conflicts, cross-family all-or-nothing batches, TxnId idempotence and digest conflict, and exact committed, aborted, and unknown reconciliation.", threats = [
+  { title = "Enforce conditional atomic storage semantics", acceptance = "The reusable contract proves immutable snapshots, exact lookup, empty and all-0xff prefix ordering, base-revision and per-key conflicts, cross-family all-or-nothing batches, TxnId idempotence and digest conflict, and exact committed, aborted, and unknown reconciliation.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
@@ -289,7 +289,7 @@ first = 1
 verification_id = "VERIFY-G02-01"
 kind = "contract"
 cases = [
-  { title = "Retain receipts while durable references exist", acceptance = "Receipt cleanup conflicts while any owner record, pending operation, provider intent, migration, or unknown outcome references its TxnId; an old unreferenced receipt is removed only after conservative age and cannot authorize TxnId reuse.", threats = [
+  { title = "Retain receipts while durable references exist", acceptance = "Receipt cleanup conflicts while any owner record, pending operation, provider intent, migration, or unknown outcome references its TxnId; an old unreferenced receipt is removed only after conservative age and cannot authorize TxnId reuse.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-023",
   ] },
@@ -303,13 +303,13 @@ first = 2
 verification_id = "VERIFY-G02-02"
 kind = "security"
 cases = [
-  { title = "Commit unique identity genesis and admission records", acceptance = "Properties and fault cases prove immutable IdentityBinding keys, one ClusterGenesis on an empty store, unique CredentialUse and AdmissionGrant keys, exact indeterminate-commit reconciliation, and no second subject for one credential generation.", threats = [
+  { title = "Commit unique identity genesis and admission records", acceptance = "Properties and fault cases prove immutable IdentityBinding keys, one ClusterGenesis on an empty store, unique CredentialUse and AdmissionGrant keys, exact indeterminate-commit reconciliation, and no second subject for one credential generation.", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-005",
     "THR-015",
     "THR-020",
   ] },
-  { title = "Keep key-provider material secret and referenced", acceptance = "Provider creation returns only an opaque durable handle and public key; restart verifies the recorded key, missing or mismatched keys stop networking, diagnostics redact private material, and no definitely or indeterminately referenced handle is deleted.", threats = [
+  { title = "Keep key-provider material secret and referenced", acceptance = "Provider creation returns only an opaque durable handle and public key; restart verifies the recorded key, missing or mismatched keys stop networking, diagnostics redact private material, and no definitely or indeterminately referenced handle is deleted.", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-013",
     "THR-015",
@@ -325,7 +325,7 @@ first = 4
 verification_id = "VERIFY-G02-03"
 kind = "integration"
 cases = [
-  { title = "Persist immutable checksummed JSON generations", acceptance = "The JSON adapter holds one alias-safe lifetime lock, writes a deterministic complete generation to a unique same-directory name, validates the full parent and checksum chain on reopen, reports its exact capability level, and never overwrites a final generation.", threats = [
+  { title = "Persist immutable checksummed JSON generations", acceptance = "The JSON adapter holds one alias-safe lifetime lock, writes a deterministic complete generation to a unique same-directory name, validates the full parent and checksum chain on reopen, reports its exact capability level, and never overwrites a final generation.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
@@ -339,7 +339,7 @@ first = 2
 verification_id = "VERIFY-G02-03"
 kind = "platform"
 cases = [
-  { title = "Build and test every complete feature combination", acceptance = "Pinned cargo-hack check and test pass for no-default, default json, redb-only when available, and all-feature combinations; json remains additive and test-only, and no feature disables authentication, bounds, canonical decoding, or redaction.", threats = [
+  { title = "Build and test every complete feature combination", acceptance = "Pinned cargo-hack check and test pass for no-default, default json, redb-only when available, and all-feature combinations; json remains additive and test-only, and no feature disables authentication, bounds, canonical decoding, or redaction.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-029",
   ] },
@@ -353,12 +353,12 @@ first = 5
 verification_id = "VERIFY-G02-04"
 kind = "crash"
 cases = [
-  { title = "Recover JSON commits at every durability boundary", acceptance = "Subprocess faults before and after create, write, file flush, unique rename, directory barrier, result delivery, cleanup deletion, and cleanup barrier reopen to the exact old, new, or unresolved state; committed receipts remain reconcilable and every final chain stays valid.", threats = [
+  { title = "Recover JSON commits at every durability boundary", acceptance = "Subprocess faults before and after create, write, file flush, unique rename, directory barrier, result delivery, cleanup deletion, and cleanup barrier reopen to the exact old, new, or unresolved resource metadata; committed receipts remain reconcilable and every final chain stays valid.", rebaseline = "ADR-0007", threats = [
     "THR-015",
     "THR-020",
     "THR-021",
   ] },
-  { title = "Recover key creation and deletion intents safely", acceptance = "Faults at every provider and storage boundary preserve creation or deletion evidence, reconcile Present, Absent, or Unknown outcomes idempotently, prohibit new references after a deletion intent, and never delete a handle referenced by any committed generation.", threats = [
+  { title = "Recover key creation and deletion intents safely", acceptance = "Faults at every provider and storage boundary preserve creation or deletion evidence, reconcile Present, Absent, or Unknown outcomes idempotently, prohibit new references after a deletion intent, and never delete a handle referenced by any committed generation.", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-013",
     "THR-020",
@@ -375,7 +375,7 @@ first = 7
 verification_id = "VERIFY-G02-05"
 kind = "security"
 cases = [
-  { title = "Fail closed on native lock corruption and path faults", acceptance = "Native tests reject concurrent and aliased opens, invalid highest generations, duplicate or broken chains, unknown schemas, permission failures, unsafe directory barriers, failed deletion cleanup, and unrelated-file mutation while releasing the lock after process exit.", threats = [
+  { title = "Fail closed on native lock corruption and path faults", acceptance = "Native tests reject concurrent and aliased opens, invalid highest generations, duplicate or broken chains, unknown schemas, permission failures, unsafe directory barriers, failed deletion cleanup, and unrelated-file mutation while releasing the lock after process exit.", rebaseline = "ADR-0007", threats = [
     "THR-021",
   ] },
 ]
@@ -388,7 +388,7 @@ first = 3
 verification_id = "VERIFY-G02-05"
 kind = "platform"
 cases = [
-  { title = "Enforce platform capability claims in CI", acceptance = "Linux, macOS, and Windows execute the native JSON suite; unsupported OS-crash durability returns UnsupportedCapability, Unix claims require an observed directory barrier, and workflow evidence includes act when available or complete local Q plus a passing pushed run without rerun masking.", threats = [
+  { title = "Enforce platform capability claims in CI", acceptance = "Linux, macOS, and Windows execute the native JSON suite; unsupported OS-crash durability returns UnsupportedCapability, Unix claims require an observed directory barrier, and workflow evidence includes act when available or complete local Q plus a passing pushed run without rerun masking.", rebaseline = "ADR-0007", threats = [
     "THR-021",
     "THR-026",
     "THR-029",
@@ -402,19 +402,19 @@ first = 1
 verification_id = "VERIFY-G03-01"
 kind = "security"
 cases = [
-  { title = "reject invalid feature registry graphs", acceptance = "registry construction rejects duplicate labels, missing dependencies, dependency cycles, asymmetric or self conflicts, and duplicate limit ownership before network I/O", threats = [
+  { title = "reject invalid feature registry graphs", acceptance = "registry construction rejects duplicate labels, missing dependencies, dependency cycles, asymmetric or self conflicts, and duplicate limit ownership before network I/O", rebaseline = "ADR-0007", threats = [
     "THR-014",
   ] },
-  { title = "reject mutated feature definitions", acceptance = "handshake rejects any changed fingerprint, dependency, conflict, limit, handler owner, definition digest, or reserved namespace while accepting the frozen fixture unchanged", threats = [
+  { title = "reject mutated feature definitions", acceptance = "handshake rejects any changed fingerprint, dependency, conflict, limit, handler owner, definition digest, or reserved namespace while accepting the frozen fixture unchanged", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
-  { title = "freeze canonical authentication vectors", acceptance = "both roles produce the exact golden transcript and selection bytes for canonical offers, and any field or ordering mutation fails verification", threats = [
+  { title = "freeze canonical authentication vectors", acceptance = "both roles produce the exact golden transcript and selection bytes for canonical offers, and any field or ordering mutation fails verification", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-007",
     "THR-014",
   ] },
-  { title = "reject malformed handshake state transitions", acceptance = "join and member handshakes reject duplicate, unknown mandatory, out-of-order, role-swapped, identity-equal, or non-canonical messages without signing or admitting", threats = [
+  { title = "reject malformed handshake resource metadata transitions", acceptance = "join and member handshakes reject duplicate, unknown mandatory, out-of-order, role-swapped, identity-equal, or non-canonical messages without signing or admitting", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-003",
     "THR-014",
@@ -429,10 +429,10 @@ first = 5
 verification_id = "VERIFY-G03-02"
 kind = "integration"
 cases = [
-  { title = "complete a real exporter-bound WSS join", acceptance = "two loopback nodes complete TLS 1.3 with CertificateVerify validation, derive the same RFC 9266 exporter locally, authenticate both identities, and persist admission", threats = [
+  { title = "complete a real exporter-bound WSS join", acceptance = "two loopback nodes complete TLS 1.3 with CertificateVerify validation, derive the same RFC 9266 exporter locally, authenticate both identities, and persist admission", rebaseline = "ADR-0007", threats = [
     "THR-003",
   ] },
-  { title = "serve a direct request only after authentication", acceptance = "a manifest-defined request succeeds over real WSS after mutual authentication, while application frames before authentication and frames from an unauthenticated replacement connection are rejected", threats = [
+  { title = "stream a direct packet only after authentication", acceptance = "An exact-node packet obtains its core TraceId before body delivery, streams ordered bytes over the authenticated session, and is rejected before incoming-stream admission on unauthenticated or replacement connections.", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-004",
   ] },
@@ -446,15 +446,15 @@ first = 7
 verification_id = "VERIFY-G03-03"
 kind = "fault"
 cases = [
-  { title = "reconcile definitely aborted admission commits", acceptance = "faulting every pre-commit boundary leaves binding, credential use, and grant all absent and releases the still-valid credential generation for one later attempt", threats = [
+  { title = "reconcile definitely aborted admission commits", acceptance = "faulting every pre-commit boundary leaves binding, credential use, and grant all absent and releases the still-valid credential generation for one later attempt", rebaseline = "ADR-0007", threats = [
     "THR-005",
     "THR-015",
   ] },
-  { title = "quarantine unknown admission outcomes", acceptance = "every indeterminate commit result blocks credential reuse, rotation, signing, and networking until authoritative reopen finds the exact complete transaction or proves absence", threats = [
+  { title = "block indeterminate admission outcomes", acceptance = "Every indeterminate admission commit blocks credential reuse, rotation, signing, and networking until authoritative reopen finds the exact complete transaction or proves absence; this is transaction reconciliation, not a general metadata holding policy.", rebaseline = "ADR-0007", threats = [
     "THR-005",
     "THR-015",
   ] },
-  { title = "recover a committed admission after response loss", acceptance = "dropping the final response still permits the same identity to recover its stored grant through member authentication, and no schedule commits two subjects for one issuer generation", threats = [
+  { title = "recover committed admission after result loss", acceptance = "Dropping the final admission result still permits the same identity to recover its stored grant through member authentication, and no schedule commits two subjects for one issuer generation.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-005",
     "THR-015",
@@ -469,23 +469,23 @@ first = 10
 verification_id = "VERIFY-G03-04"
 kind = "property"
 cases = [
-  { title = "select identical features across offer permutations", acceptance = "all supported and required offer orderings produce one canonically sorted dependency-closed intersection with byte-identical selections at both peers", threats = [
+  { title = "select identical features across offer permutations", acceptance = "all supported and required offer orderings produce one canonically sorted dependency-closed intersection with byte-identical selections at both peers", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
-  { title = "handle unknown feature labels without fallback", acceptance = "an unknown optional label remains transcript-bound but unselected, while an unknown required label closes the connection without retrying a weaker offer", threats = [
+  { title = "handle unknown feature labels without fallback", acceptance = "an unknown optional label remains transcript-bound but unselected, while an unknown required label closes the connection without retrying a weaker offer", rebaseline = "ADR-0007", threats = [
     "THR-007",
   ] },
-  { title = "reject unsatisfied dependencies and conflicts", acceptance = "fixed-point dependency pruning is deterministic and authentication fails whenever a required label is pruned or a conflict pair remains selected", threats = [
+  { title = "reject unsatisfied dependencies and conflicts", acceptance = "fixed-point dependency pruning is deterministic and authentication fails whenever a required label is pruned or a conflict pair remains selected", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
-  { title = "negotiate numeric limits at exact boundaries", acceptance = "legal floor and ceiling offers select their exact minimum, while missing, duplicate, unknown mandatory, or out-of-range limits reject before session activation", threats = [
+  { title = "negotiate numeric limits at exact boundaries", acceptance = "legal floor and ceiling offers select their exact minimum, while missing, duplicate, unknown mandatory, or out-of-range limits reject before session activation", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-009",
     "THR-014",
   ] },
-  { title = "reconnect without credential or downgrade", acceptance = "after credential rotation and disconnect, both nodes reconnect using fresh exporter-bound member proofs with the prior exact feature policy and never consult a join credential or weaken the offer", threats = [
+  { title = "reconnect without credential or downgrade", acceptance = "after credential rotation and disconnect, both nodes reconnect using fresh exporter-bound member proofs with the prior exact feature policy and never consult a join credential or weaken the offer", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-003",
     "THR-007",
@@ -500,14 +500,14 @@ first = 15
 verification_id = "VERIFY-G03-05"
 kind = "concurrency"
 cases = [
-  { title = "multiplex concurrent requests in both directions", acceptance = "both peers complete concurrent requests over one session and every response resolves only its originating correlation without loss, swap, or duplicate completion", threats = [
+  { title = "stream packets concurrently in both directions", acceptance = "Both peers stream concurrent packets over one session; each incoming stream preserves authenticated endpoints, TraceId, metadata, and byte order without a core conversation correlation.", rebaseline = "ADR-0007", threats = [
     "THR-012",
   ] },
-  { title = "reject invalid request correlations", acceptance = "unknown, reused, direction-swapped, and already-completed correlation identifiers return the manifest session error without dispatching or completing another request", threats = [
+  { title = "derive caller-owned return packets", acceptance = "A caller can swap authenticated endpoints and reuse the incoming TraceId for another packet; core assigns no return meaning and never completes another stream by correlation.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-012",
   ] },
-  { title = "bound in-flight request ownership", acceptance = "the negotiated in-flight limit is never exceeded, excess requests receive a typed overload result, and cancellation or disconnect releases every correlation slot", threats = [
+  { title = "bound incoming stream ownership", acceptance = "Configured incoming-stream and task capacities are never exceeded; saturation returns typed backpressure, and cancellation or disconnect releases every slot with explicit stream failure.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-012",
   ] },
@@ -521,22 +521,22 @@ first = 18
 verification_id = "VERIFY-G03-06"
 kind = "security"
 cases = [
-  { title = "reject replayed authentication material", acceptance = "replayed nonces, credential proofs, signatures, and complete prior handshake messages fail on a fresh TLS connection without consuming or admitting a credential", threats = [
+  { title = "reject replayed authentication material", acceptance = "replayed nonces, credential proofs, signatures, and complete prior handshake messages fail on a fresh TLS connection without consuming or admitting a credential", rebaseline = "ADR-0007", threats = [
     "THR-002",
   ] },
-  { title = "reject channel and identity misbinding", acceptance = "wrong exporter, reflected role proof, wrong cluster, substituted public key, conflicting expected key, and identical endpoint identities all close the connection", threats = [
+  { title = "reject channel and identity misbinding", acceptance = "wrong exporter, reflected role proof, wrong cluster, substituted public key, conflicting expected key, and identical endpoint identities all close the connection", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-004",
   ] },
-  { title = "reject unsupported wire discriminators", acceptance = "unknown schema, kind, flag, reserved-bit, and selection identifiers fail closed with no decoder fallback, alternate offer, persistence, or dispatch", threats = [
+  { title = "reject unsupported wire discriminators", acceptance = "unknown schema, kind, flag, reserved-bit, and selection identifiers fail closed with no decoder fallback, alternate offer, persistence, or dispatch", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
-  { title = "reject noncanonical and malformed frames", acceptance = "text frames, length mismatches, trailing bytes, duplicate CBOR fields, noncanonical integers, invalid map order, and malformed identities are rejected before application dispatch", threats = [
+  { title = "reject noncanonical and malformed frames", acceptance = "text frames, length mismatches, trailing bytes, duplicate CBOR fields, noncanonical integers, invalid map order, and malformed identities are rejected before application dispatch", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-014",
   ] },
-  { title = "enforce hostile and admission resource ceilings", acceptance = "concurrent source/global attempts, fixed-window edges, normalized-source aliases, full/expired bucket tables, rollback/discontinuity, oversized bodies, nesting, collections, fragmentation, and stalled authentication obey exact ADR-0006 count, rate, byte, allocation, task, reservation, and deadline bounds without consuming a rejected credential", threats = [
+  { title = "enforce hostile and admission resource ceilings", acceptance = "concurrent source/global attempts, fixed-window edges, normalized-source aliases, full/expired bucket tables, rollback/discontinuity, oversized bodies, nesting, collections, fragmentation, and stalled authentication obey exact ADR-0006 count, rate, byte, allocation, task, reservation, and deadline bounds without consuming a rejected credential", rebaseline = "ADR-0007", threats = [
     "THR-001",
     "THR-009",
     "THR-010",
@@ -552,18 +552,18 @@ first = 1
 verification_id = "VERIFY-G04-01"
 kind = "contract"
 cases = [
-  { title = "register transport extensions by canonical tag", acceptance = "transport registration accepts one valid owner-domain tag and rejects duplicate, malformed, reserved-domain, or conflicting registrations before use", threats = [
+  { title = "register transport extensions by canonical tag", acceptance = "transport registration accepts one valid owner-domain tag and rejects duplicate, malformed, reserved-domain, or conflicting registrations before use", rebaseline = "ADR-0007", threats = [
     "THR-014",
   ] },
-  { title = "register discovery extensions without central switching", acceptance = "two independent discovery implementations resolve through the registry while duplicate and invalid registrations fail deterministically", threats = [
+  { title = "register discovery extensions without central switching", acceptance = "two independent discovery implementations resolve through the registry while duplicate and invalid registrations fail deterministically", rebaseline = "ADR-0007", threats = [
     "THR-014",
   ] },
-  { title = "require authenticated transport results", acceptance = "no transport implementation can activate a session without returning the exact mutually authenticated cluster and peer identity binding expected by the caller", threats = [
+  { title = "require authenticated transport results", acceptance = "no transport implementation can activate a session without returning the exact mutually authenticated cluster and peer identity binding expected by the caller", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-004",
     "THR-016",
   ] },
-  { title = "preserve secure WSS behavior through registries", acceptance = "the built-in registered WSS transport passes the secure two-node join, request, disconnect, and member-reconnect regression without bypassing authentication", threats = [
+  { title = "preserve secure WSS behavior through registries", acceptance = "the built-in registered WSS transport passes the secure two-node join, packet, disconnect, and member-reconnect regression without bypassing authentication", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-007",
   ] },
@@ -577,18 +577,18 @@ first = 5
 verification_id = "VERIFY-G04-02"
 kind = "integration"
 cases = [
-  { title = "bind endpoint candidates to authenticated identity", acceptance = "an observed address becomes a candidate only for the authenticated NodeId and cannot create, replace, or rebind an identity record", threats = [
+  { title = "bind endpoint candidates to authenticated identity", acceptance = "an observed address becomes a candidate only for the authenticated NodeId and cannot create, replace, or rebind an identity record", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-016",
   ] },
-  { title = "merge endpoint candidates deterministically", acceptance = "duplicate and reordered observations yield one identity-scoped candidate set with stable provenance and no candidate crossing between peers", threats = [
+  { title = "merge endpoint candidates deterministically", acceptance = "duplicate and reordered observations yield one identity-scoped candidate set with stable provenance and no candidate crossing between peers", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-016",
   ] },
-  { title = "expire stale endpoint candidates", acceptance = "the injected clock expires candidates at the exact configured boundary without deleting trust or affecting fresh candidates for the same identity", threats = [
+  { title = "expire stale endpoint candidates", acceptance = "the injected clock expires candidates at the exact configured boundary without deleting trust or affecting fresh candidates for the same identity", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
-  { title = "readdress an authenticated member", acceptance = "after address replacement the peer reconnects at the new candidate using the same exact trusted key, while stale and attacker-supplied addresses cannot authorize a session", threats = [
+  { title = "readdress an authenticated member", acceptance = "after address replacement the peer reconnects at the new candidate using the same exact trusted key, while stale and attacker-supplied addresses cannot authorize a session", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-006",
     "THR-016",
@@ -603,14 +603,14 @@ first = 9
 verification_id = "VERIFY-G04-03"
 kind = "concurrency"
 cases = [
-  { title = "resolve simultaneous crossed dials", acceptance = "all dial and authentication completion orderings choose the same single session owner from durable identities and session data", threats = [
+  { title = "resolve simultaneous crossed dials", acceptance = "all dial and authentication completion orderings choose the same single session owner from durable identities and session data", rebaseline = "ADR-0007", threats = [
     "THR-016",
   ] },
-  { title = "drain the replaced authenticated session", acceptance = "the losing crossed-dial session stops accepting new work, completes or cancels owned work exactly once, and closes after the winner is active", threats = [
+  { title = "drain the replaced authenticated session", acceptance = "the losing crossed-dial session stops accepting new work, completes or cancels owned work exactly once, and closes after the winner is active", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-016",
   ] },
-  { title = "converge crossed dials after restart and readdress", acceptance = "restart, stale candidates, and concurrent readdressed dials converge to one authenticated session without oscillation, duplicate ownership, or address-based identity choice", threats = [
+  { title = "converge crossed dials after restart and readdress", acceptance = "restart, stale candidates, and concurrent readdressed dials converge to one authenticated session without oscillation, duplicate ownership, or address-based identity choice", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-016",
   ] },
@@ -624,20 +624,20 @@ first = 12
 verification_id = "VERIFY-G04-04"
 kind = "lifecycle"
 cases = [
-  { title = "enforce outbound queue count and byte bounds", acceptance = "queue admission atomically checks message count and encoded bytes, returns the typed overload error at either boundary, and never partially enqueues a rejected message", threats = [
+  { title = "enforce outbound queue count and byte bounds", acceptance = "queue admission atomically checks message count and encoded bytes, returns the typed overload error at either boundary, and never partially enqueues a rejected message", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-010",
     "THR-012",
   ] },
-  { title = "terminate unresponsive peers with bounded keepalive", acceptance = "a peer missing the configured keepalive response is closed at the injected-clock deadline and cannot retain a task or queue slot indefinitely", threats = [
+  { title = "terminate unresponsive peers with bounded keepalive", acceptance = "a peer missing the configured keepalive result is closed at the injected-clock deadline and cannot retain a task or queue slot indefinitely", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-012",
   ] },
-  { title = "expire only genuinely idle sessions", acceptance = "idle sessions close at the exact deadline while authenticated traffic and owned in-flight work update activity without allowing a malicious peer to create unbounded lifetime or work", threats = [
+  { title = "expire only genuinely idle sessions", acceptance = "idle sessions close at the exact deadline while authenticated traffic and owned in-flight work update activity without allowing a malicious peer to create unbounded lifetime or work", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-012",
   ] },
-  { title = "complete bounded session shutdown", acceptance = "shutdown stops admission of new work, drains or cancels queued and in-flight work according to the manifest contract, closes transports, and leaves no session tasks or correlations", threats = [
+  { title = "complete bounded session shutdown", acceptance = "shutdown stops admission of new work, drains or cancels queued and in-flight work according to the manifest contract, closes transports, and leaves no session tasks or correlations", rebaseline = "ADR-0007", threats = [
     "THR-010",
   ] },
 ]
@@ -650,19 +650,19 @@ first = 16
 verification_id = "VERIFY-G04-05"
 kind = "integration"
 cases = [
-  { title = "persist an issuer-signed trust snapshot", acceptance = "a joiner verifies the issuer, cluster, revision, ordered bindings, version, and signature and durably persists every nonconflicting binding before alternate-peer trust", threats = [
+  { title = "persist an issuer-signed trust snapshot", acceptance = "a joiner verifies the issuer, cluster, revision, ordered bindings, version, and signature and durably persists every nonconflicting binding before alternate-peer trust", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-017",
   ] },
-  { title = "disseminate the admitted binding to online members", acceptance = "every online member verifies and persists the exact admission grant and NodeId-to-key binding before acknowledging sync, and all trust views return the same pair", threats = [
+  { title = "disseminate the admitted binding to online members", acceptance = "every online member verifies and persists the exact admission grant and NodeId-to-key binding before acknowledging sync, and all trust views return the same pair", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-017",
   ] },
-  { title = "catch up trust after an offline restart", acceptance = "a member offline during admission restarts, learns the exact binding through normal bounded trust anti-entropy, persists it, and then authenticates the new member", threats = [
+  { title = "catch up trust after an offline restart", acceptance = "a member offline during admission restarts, learns the exact binding through normal bounded trust anti-entropy, persists it, and then authenticates the new member", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-017",
   ] },
-  { title = "reject conflicting trust evidence", acceptance = "invalid signatures, wrong clusters, untrusted issuers, reused admission identifiers, stale conflicting snapshots, and NodeId key substitutions fail closed without selecting a winner", threats = [
+  { title = "reject conflicting trust evidence", acceptance = "invalid signatures, wrong clusters, untrusted issuers, reused admission identifiers, stale conflicting snapshots, and NodeId key substitutions fail closed without selecting a winner", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-006",
     "THR-012",
@@ -678,17 +678,17 @@ first = 20
 verification_id = "VERIFY-G04-06"
 kind = "e2e"
 cases = [
-  { title = "reconnect through an alternate trusted peer", acceptance = "after disconnecting the issuer, the admitted node and another member independently load and verify each other's exact key and establish a fresh credential-free member session", threats = [
+  { title = "reconnect through an alternate trusted peer", acceptance = "after disconnecting the issuer, the admitted node and another member independently load and verify each other's exact key and establish a fresh credential-free member session", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-006",
     "THR-017",
   ] },
-  { title = "accept the grant-carrying reconnect path", acceptance = "before background sync completes, an alternate peer verifies and persists the presented issuer-signed grant and both endpoints establish reciprocal trust before session acceptance", threats = [
+  { title = "accept the grant-carrying reconnect path", acceptance = "before background sync completes, an alternate peer verifies and persists the presented issuer-signed grant and both endpoints establish reciprocal trust before session acceptance", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-012",
     "THR-017",
   ] },
-  { title = "reconnect across outbound-only and readdressed paths", acceptance = "the issuer-disconnect, outbound-only, readdress, and crossed-dial public-facade targets each converge to one session bound to the expected peer key with no credential fallback", threats = [
+  { title = "reconnect across outbound-only and readdressed paths", acceptance = "the issuer-disconnect, outbound-only, readdress, and crossed-dial public-facade targets each converge to one session bound to the expected peer key with no credential fallback", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-006",
     "THR-016",
@@ -703,21 +703,21 @@ first = 1
 verification_id = "VERIFY-G05-01"
 kind = "security"
 cases = [
-  { title = "Reject descriptor signed by the wrong identity", acceptance = "Verification fails before storage when the descriptor signature does not match its bound NodeId and public key.", threats = [
+  { title = "Reject descriptor signed by the wrong identity", acceptance = "Verification fails before storage when the descriptor signature does not match its bound NodeId and public key.", rebaseline = "ADR-0007", threats = [
     "THR-012",
   ] },
-  { title = "Reject descriptor field mutation", acceptance = "Mutating any signed descriptor identity, endpoint, revision, or payload field invalidates the signature and leaves the stored descriptor unchanged.", threats = [
+  { title = "Reject descriptor field mutation", acceptance = "Mutating any signed descriptor identity, endpoint, revision, or packet body field invalidates the signature and leaves the stored descriptor unchanged.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
   ] },
-  { title = "Enforce monotonic descriptor revisions", acceptance = "A descriptor update is accepted only at the exact next revision; stale, repeated, and skipped revisions cannot replace the current record.", threats = [
+  { title = "Enforce monotonic descriptor revisions", acceptance = "A descriptor update is accepted only at the exact next revision; stale, repeated, and skipped revisions cannot replace the current record.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
-  { title = "Preserve signed removal markers", acceptance = "A retained removal marker defeats reordered or replayed older descriptors and cannot be replaced without a valid newer signed revision.", threats = [
+  { title = "Preserve signed removal markers", acceptance = "A retained removal marker defeats reordered or replayed older descriptors and cannot be replaced without a valid newer signed revision.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-006",
   ] },
-  { title = "Validate descriptor compatibility vectors", acceptance = "Current and previous descriptor fixtures decode to the expected canonical values, while unknown versions and byte mutations fail closed.", threats = [
+  { title = "Validate descriptor compatibility vectors", acceptance = "Current and previous descriptor fixtures decode to the expected canonical values, while unknown versions and byte mutations fail closed.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-009",
   ] },
@@ -731,18 +731,18 @@ first = 6
 verification_id = "VERIFY-G05-02"
 kind = "security"
 cases = [
-  { title = "Bound membership digest exchange", acceptance = "A normal anti-entropy tick emits no more than the configured digest entry and byte limits for the known member set.", threats = [
+  { title = "Page membership metadata exchange", acceptance = "A normal anti-entropy tick emits bounded pages and bytes without requiring a whole-member allocation or assuming a maximum population.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-010",
   ] },
-  { title = "Repair missing membership records", acceptance = "Peers with missing signed descriptors obtain and verify the exact current records within bounded normal anti-entropy ticks.", threats = [
+  { title = "Repair missing owner revisions", acceptance = "Repeated bounded pages repair every missing valid signed node-owner revision while cursors remain safe across concurrent observations.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
-  { title = "Replace stale membership records", acceptance = "A stale peer converges to the highest valid signed revision despite duplicate, reordered, and delayed digest messages.", threats = [
+  { title = "Replace stale owner revisions", acceptance = "A stale peer converges to the highest valid signed owner revision despite duplicate, reordered, delayed, and page-boundary changes.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-006",
   ] },
-  { title = "Reject dishonest membership digests", acceptance = "A malicious digest cannot install unsigned data, downgrade a valid revision, or cause requests beyond configured count and byte bounds.", threats = [
+  { title = "Reject dishonest membership pages", acceptance = "A malicious page cannot install unsigned data, downgrade a revision, loop a cursor, or exceed configured page, byte, queue, and task capacities.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-012",
   ] },
@@ -756,20 +756,20 @@ first = 10
 verification_id = "VERIFY-G05-03"
 kind = "security"
 cases = [
-  { title = "Select a deterministic sparse neighbor set", acceptance = "Equal signed membership inputs produce the same bounded neighbor plan with no self-edge or duplicate peer.", threats = [
+  { title = "Select a deterministic sparse neighbor set", acceptance = "Equal signed membership inputs produce the same bounded neighbor plan with no self-edge or duplicate peer.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-012",
   ] },
-  { title = "Keep reachability distinct from active topology", acceptance = "Directly reachable non-policy endpoints remain candidates only and do not create hidden sessions or full-mesh edges.", threats = [
+  { title = "Keep reachability distinct from active topology", acceptance = "Directly reachable non-policy endpoints remain candidates only and do not create hidden sessions or full-mesh edges.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-016",
   ] },
-  { title = "Maintain the sparse cycle under churn", acceptance = "Join, leave, and endpoint expiry sequences restore the configured sparse cycle without exceeding the peer bound.", threats = [
+  { title = "Maintain the sparse cycle under churn", acceptance = "Join, leave, and endpoint expiry sequences restore the configured sparse cycle without exceeding the peer bound.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-008",
     "THR-016",
   ] },
-  { title = "Bound slow neighbor maintenance", acceptance = "Slow or nonresponsive candidates cannot exceed pending-connect, queue, timeout, or concurrent maintenance limits.", threats = [
+  { title = "Bound slow neighbor maintenance", acceptance = "Slow or nonresponsive candidates cannot exceed pending-connect, queue, timeout, or concurrent maintenance limits.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-012",
   ] },
@@ -783,28 +783,28 @@ first = 14
 verification_id = "VERIFY-G05-04"
 kind = "security"
 cases = [
-  { title = "Enter recovery only for a missing policy edge", acceptance = "Recovery starts only after an expected policy neighbor is unavailable and never duplicates an active or pending session.", threats = [
+  { title = "Enter recovery for unreachable components", acceptance = "Recovery activates whenever known online members remain in mutually unreachable authenticated components, including after a later membership or connectivity change.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-016",
   ] },
-  { title = "Run exactly three policy recovery rounds", acceptance = "An unresolved recovery executes three and only three fixed policy rounds before changing strategy.", threats = [
+  { title = "Apply configured recovery backoff", acceptance = "Recovery retries according to caller-configured wall-clock backoff and re-reads SystemTime after every wake, including rollback, freeze, and forward-jump cases.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-010",
   ] },
-  { title = "Bound candidates within each fixed round", acceptance = "Each fixed round attempts every eligible policy candidate at most once and records a deterministic bounded attempt set.", threats = [
+  { title = "Bound each recovery attempt", acceptance = "Each cycle obeys caller-selected neighbor, fan-out, connection, queue, and task capacities without relying on a population ceiling.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-012",
   ] },
-  { title = "Fan out only after fixed rounds fail", acceptance = "All-known-peer fan-out begins only after the third unsuccessful fixed round and excludes self, duplicates, active peers, and expired endpoints.", threats = [
+  { title = "Escalate through configured fan-out", acceptance = "When preferred candidates fail, recovery expands only through the configured bounded fan-out and authenticates NodeId before accepting a session.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-008",
     "THR-016",
   ] },
-  { title = "Stop recovery after replacement succeeds", acceptance = "The first authenticated policy-valid replacement cancels remaining attempts and emits no later recovery dial.", threats = [
+  { title = "Stop at authenticated path connectivity", acceptance = "Recovery quiesces once all known online members are connected through some authenticated path and never requires a full mesh.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-010",
   ] },
-  { title = "Preserve recovery attempt bounds across restart", acceptance = "Restart reconstructs the durable attempt log without repeating completed rounds or exceeding the configured all-known candidate bound.", threats = [
+  { title = "Reactivate recovery after change", acceptance = "A later edge loss, membership observation, readdress, immediate-recovery command, or restart reactivates one bounded recovery controller without storms.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-008",
     "THR-020",
@@ -819,16 +819,16 @@ first = 20
 verification_id = "VERIFY-G05-05"
 kind = "security"
 cases = [
-  { title = "Match the exact simulated recovery count", acceptance = "Across 1,000 deterministic seeds, an unresolved recovery records exactly 3P+K attempts for policy width P and eligible known-peer count K.", threats = [
+  { title = "Match configured recovery simulation", acceptance = "Seeded simulation matches configured neighbor, fan-out, and wall-clock backoff decisions and reaches authenticated path connectivity without a fixed-round product rule.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-012",
   ] },
-  { title = "Converge sixteen nodes after policy-edge loss", acceptance = "The sixteen-node simulation restores the required sparse graph under delay, duplication, reorder, and partition healing without hidden edges.", threats = [
+  { title = "Reconnect sixteen nodes after edge loss", acceptance = "The sixteen-node public-facade cluster restores authenticated path connectivity, streams metadata pages, and quiesces without constructing a full-population graph value.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-010",
     "THR-016",
   ] },
-  { title = "Count recovery through the public transport facade", acceptance = "The facade-only sixteen-node E2E observes exactly 3P+K transport attempts and cannot access private recovery state or inject a shortcut.", threats = [
+  { title = "Observe recovery through public transport", acceptance = "A counting transport observes bounded configured attempts and immediate recovery while policy inputs arrive incrementally and no test-only topology shortcut is used.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-028",
   ] },
@@ -842,35 +842,35 @@ first = 23
 verification_id = "VERIFY-G05-06"
 kind = "security"
 cases = [
-  { title = "Validate induced fifteen-node readiness", acceptance = "Public views on nodes 0 through 14 agree on reciprocal trust, exact signed descriptors, and the required induced 28-edge graph before admission.", threats = [
+  { title = "Validate induced fifteen-node readiness", acceptance = "Public views on nodes 0 through 14 agree on reciprocal trust, exact signed descriptors, and the required induced 28-edge graph before admission.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-017",
     "THR-028",
   ] },
-  { title = "Validate reciprocal node-fifteen trust", acceptance = "Nodes 0 through 14 expose node 15's exact NodeId-to-key grant and node 15 exposes all fifteen prior bindings through public queries.", threats = [
+  { title = "Validate reciprocal node-fifteen trust", acceptance = "Nodes 0 through 14 expose node 15's exact NodeId-to-key grant and node 15 exposes all fifteen prior bindings through public queries.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-017",
   ] },
-  { title = "Validate signed descriptor readiness", acceptance = "All sixteen public membership views expose the exact expected descriptor revision and digest for every node.", threats = [
+  { title = "Validate signed descriptor readiness", acceptance = "All sixteen public membership views expose the exact expected descriptor revision and digest for every node.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
   ] },
-  { title = "Validate the exact final topology", acceptance = "Every public topology view reports exactly the specified 32 undirected sessions, degree four, diameter three, and no extra or recovery edge.", threats = [
+  { title = "Validate the exact final topology", acceptance = "Every public topology view reports exactly the specified 32 undirected sessions, degree four, diameter three, and no extra or recovery edge.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-016",
     "THR-028",
   ] },
-  { title = "Survive the membership failure matrix", acceptance = "Partition healing, duplicate delivery, reorder, endpoint change, and process restart converge to identical trust, descriptor, and topology views within configured bounds.", threats = [
+  { title = "Survive the membership failure matrix", acceptance = "Partition healing, duplicate delivery, reorder, endpoint change, and process restart converge to identical trust, descriptor, and topology views within configured bounds.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-006",
     "THR-010",
     "THR-016",
   ] },
-  { title = "Reject readiness shortcuts", acceptance = "Readiness fails when any expected binding, descriptor, session, or edge is absent or extra, and the assertion uses only public facade observations.", threats = [
+  { title = "Reject readiness shortcuts", acceptance = "Readiness fails when any expected binding, descriptor, session, or edge is absent or extra, and the assertion uses only public facade observations.", rebaseline = "ADR-0007", threats = [
     "THR-017",
     "THR-028",
   ] },
-  { title = "Track the metadata convergence SLO", acceptance = "The sixteen-node trend run records admission and descriptor completion from public observations and fails any sample exceeding 10,000 milliseconds.", threats = [
+  { title = "Track the metadata convergence SLO", acceptance = "The sixteen-node trend run records admission and descriptor completion from public observations and fails any sample exceeding 10,000 milliseconds.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-028",
   ] },
@@ -884,21 +884,21 @@ first = 1
 verification_id = "VERIFY-G06-01"
 kind = "security"
 cases = [
-  { title = "Reject routed request signature mutation", acceptance = "Mutation of cluster, trace, source, destination, handler, feature requirements, payload, schema, or digest invalidates the source signature before route work.", threats = [
+  { title = "Reject packet route-context mutation", acceptance = "Mutation of cluster, TraceId, authenticated source, target, selected destination, protocol, metadata, route generation, or framing fails before forwarding; body bytes are never used as stored deduplication data.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-018",
   ] },
-  { title = "Reject fabricated attempt authorization", acceptance = "Only the source can authorize ordinals 0 through 3; wrong-key, out-of-range, reused-digest, and mutated authorization inputs fail closed.", threats = [
+  { title = "Reject unauthorized route transitions", acceptance = "Only authenticated core route state can select or advance a next hop; fabricated handles, stale generations, loops, and endpoint substitutions fail closed.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-012",
     "THR-018",
   ] },
-  { title = "Enforce hop decrement and no fan-out", acceptance = "Each accepted DATA edge decrements a remaining hop count no greater than 15 exactly once and writes to one next hop only.", threats = [
+  { title = "Enforce checked route progress", acceptance = "Every frame follows one caller-policy-selected next hop, checked loop and wire-field constraints, and bounded work; forwarders never branch a packet body.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-012",
     "THR-018",
   ] },
-  { title = "Bound crash-free DATA writes", acceptance = "Property tests prove four authorized logical attempts produce at most 60 DATA edge writes with no forwarder-created ordinal or branch.", threats = [
+  { title = "Bound forwarding work independent of stream length", acceptance = "Generated streams of arbitrary total length retain constant parser/buffer memory, finite queues/tasks, one selected route, and byte order under backpressure.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-018",
   ] },
@@ -912,19 +912,19 @@ first = 5
 verification_id = "VERIFY-G06-02"
 kind = "security"
 cases = [
-  { title = "Key journal entries by authenticated ordinal", acceptance = "Journal lookup binds source, TraceId, digest, and ordinal before route or quota work and rejects a retained key with conflicting immutable content.", threats = [
+  { title = "Store trace metadata without body bytes", acceptance = "Trace storage binds TraceId, authenticated endpoints, selected node, route attempts, progress, and terminal state while byte-for-byte inspection proves no packet body enters any metadata transaction.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-018",
   ] },
-  { title = "Pin DATA and receipt hops durably", acceptance = "A committed DATA entry retains one next hop and a committed receipt entry retains one predecessor across route changes and restart.", threats = [
+  { title = "Reconcile route metadata atomically", acceptance = "Selected destination and terminal transition reconcile by canonical TransactionId and digest after every commit ambiguity without implying durable body retention.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-020",
   ] },
-  { title = "Recover only ambiguous pending writes", acceptance = "Commit or socket ambiguity may replay only the same WritePending ordinal; Sent entries and forwarders never trigger autonomous retries.", threats = [
+  { title = "Preserve active stream metadata", acceptance = "Trace retention never removes active streams; disconnect or restart terminates them explicitly and no reopen path continues body consumption.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-020",
   ] },
-  { title = "Enforce journal quotas and compatibility", acceptance = "Count and reserved-byte quotas reject new traces atomically without evicting active records, while current and previous journal fixtures preserve identical ordinal and pinned-hop semantics.", threats = [
+  { title = "Enforce caller-selected trace metadata capacity", acceptance = "New route metadata receives typed backpressure at caller-selected finite capacity; terminal retention uses host wall time, never evicts active records, and never reserves bytes proportional to body length.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-012",
     "THR-019",
@@ -940,15 +940,15 @@ first = 9
 verification_id = "VERIFY-G06-03"
 kind = "security"
 cases = [
-  { title = "Persist DATA state before forwarding", acceptance = "Faults at every commit and DATA-write boundary prove no DATA socket write occurs before its journal entry is durably committed.", threats = [
+  { title = "Forward ordered frames with constant memory", acceptance = "Faults at every read, frame, queue, and write boundary preserve prefix order, bounded buffers, and one selected edge without requiring a body commit.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-020",
   ] },
-  { title = "Persist receipt state before reverse forwarding", acceptance = "Faults at every receipt boundary prove an ACK or rejection is written only after its authenticated ordinal and predecessor are durably committed.", threats = [
+  { title = "Propagate backpressure across hops", acceptance = "A slow destination stops upstream reads through bounded queues while tasks and memory remain within configured capacities and resume only when downstream progresses.", rebaseline = "ADR-0007", threats = [
     "THR-018",
     "THR-020",
   ] },
-  { title = "Replay only the pinned pending edge", acceptance = "After restart, recovery writes only the same pending DATA or receipt ordinal to its persisted hop, never branches or recomputes, and receipt paths remain at most 15 edges.", threats = [
+  { title = "Fail an interrupted route explicitly", acceptance = "Session replacement, disconnect, process loss, and route failure terminate the packet stream with a typed error; no alternate-path body replay or continuation occurs.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-018",
     "THR-020",
@@ -963,20 +963,20 @@ first = 12
 verification_id = "VERIFY-G06-04"
 kind = "security"
 cases = [
-  { title = "Durably reject unsupported routed dispatch", acceptance = "An unknown handler or unavailable required feature commits RejectedUnsupported, signs a rejection, and never reaches Accepted or invokes a handler.", threats = [
+  { title = "Reject unsupported incoming packets", acceptance = "An unknown protocol or unavailable required feature rejects incoming-stream admission before consumer invocation and records only bounded terminal route metadata.", rebaseline = "ADR-0007", threats = [
     "THR-012",
     "THR-018",
     "THR-020",
   ] },
-  { title = "Initiate handler dispatch at most once", acceptance = "Crash faults around Accepted and DispatchStarted prove the transition commits before invocation and no retained trace initiates its handler twice.", threats = [
+  { title = "Admit each incoming stream once", acceptance = "The destination authenticates endpoints and admits one bounded current-process incoming stream; duplicate or conflicting route openings cannot invoke a consumer twice.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-020",
   ] },
-  { title = "Re-ACK retained duplicate acceptance", acceptance = "An identical retained duplicate receives a fresh valid ACK or rejection for its authenticated ordinal without changing the stored outcome or invoking the handler.", threats = [
+  { title = "Acknowledge current-process admission only", acceptance = "A valid acknowledgement is emitted only after authentication and incoming-stream admission and carries no claim about durable body retention, caller observation, processing, return packet, or success.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-018",
   ] },
-  { title = "Prioritize duplicate and conflict lookup under full quota", acceptance = "At full count and byte quota, identical retained traces are re-ACKed, conflicting digests fail closed, and only genuinely new traces receive overload.", threats = [
+  { title = "Prioritize conflicts under saturation", acceptance = "At full incoming capacity, an existing identical opening reports its current status, conflicting immutable context fails closed, and genuinely new streams receive typed backpressure.", rebaseline = "ADR-0007", threats = [
     "THR-012",
     "THR-018",
   ] },
@@ -990,25 +990,25 @@ first = 16
 verification_id = "VERIFY-G06-05"
 kind = "security"
 cases = [
-  { title = "Bound four-ordinal retry progression", acceptance = "The facade-only routed E2E emits only ordinals 0 through 3 with the fixed jitter ceilings, preserves the ordinal across restart, and never bursts overdue retries.", threats = [
+  { title = "Complete synchronous delivery explicitly", acceptance = "Synchronous send waits until destination current-process stream admission or returns a typed route or stream error, with the selected node visible on success.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-018",
     "THR-020",
     "THR-028",
   ] },
-  { title = "Accept valid on-time and late ACKs", acceptance = "A valid retained ACK completes a pending request as Accepted, while an ACK after TimedOut records AcceptedLate without changing the caller's returned timeout.", threats = [
+  { title = "Return asynchronous route handles", acceptance = "Asynchronous send immediately returns a route handle whose query reports TraceId, selected node, progress, and terminal state without exposing body bytes.", rebaseline = "ADR-0007", threats = [
     "THR-018",
     "THR-019",
   ] },
-  { title = "Apply the exact retention deadline", acceptance = "Source, forwarder, and destination terminal records become cleanup-eligible at first durable commit plus 24 hours, and retries, duplicates, re-ACKs, route changes, and state transitions never refresh the deadline.", threats = [
+  { title = "Apply host-wall-clock trace retention", acceptance = "Terminal trace metadata becomes eligible at its configured SystemTime deadline; rollback, freeze, and forward jumps have the documented delay or immediate-due behavior.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-019",
   ] },
-  { title = "Retain records across clock uncertainty", acceptance = "Current-boot, prior-boot, unknown-commit, rollback, forward-jump, and discontinuity cases use a conservative elapsed-time lower bound and never delete a record early.", threats = [
+  { title = "Retain active streams across retention scans", acceptance = "Retention scans skip every active route regardless of wall-clock movement, capacity pressure, or terminal-record policy.", rebaseline = "ADR-0007", threats = [
     "THR-019",
     "THR-020",
   ] },
-  { title = "Handle post-expiry delivery explicitly", acceptance = "Cleanup never evicts active records; an ACK for an absent expired source trace is ignored, and a duplicate after destination expiry is testably eligible for new acceptance and dispatch.", threats = [
+  { title = "Prove no continuation after expiry or restart", acceptance = "After terminal metadata expires or a process restarts, status may be absent and duplicate evidence may be lost, but core never recreates, replays, or continues packet body bytes.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-019",
   ] },
@@ -1022,11 +1022,11 @@ first = 1
 verification_id = "VERIFY-G07-01"
 kind = "security"
 cases = [
-  { title = "Checked HLC transitions and exhaustion", acceptance = "Exercise every ordered local and first-remote HLC branch, rollback, duplicate input, logical rollover, physical rollover, and terminal exhaustion; duplicates do not bump twice and ClockExhausted performs no write.", threats = [
+  { title = "Order only by host SystemTime", acceptance = "Resource metadata uses host SystemTime directly; rollback can make later local work lose, freeze can delay deadlines indefinitely, and forward jumps can make work immediately due without any peer-clock authority.", rebaseline = "ADR-0007", threats = [
     "THR-011",
     "THR-012",
   ] },
-  { title = "Durable watermark and authenticated clock health", acceptance = "Fault every mutation, remote-acceptance, watermark, and response boundary; restart exposes old or new state atomically, while replayed, stale, unauthenticated, revoked, overflowing, or out-of-bound samples cannot advance time or authorize a local write.", threats = [
+  { title = "Re-read wall time after every wake", acceptance = "Ordering, retry, expiration, and retention code re-reads SystemTime after executor wakes and tests every discontinuity without claiming no-early-expiry or bounded elapsed time.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-011",
     "THR-020",
@@ -1042,7 +1042,7 @@ first = 3
 verification_id = "VERIFY-G07-01"
 kind = "property"
 cases = [
-  { title = "Clock sample, slew, and quarantine boundaries", acceptance = "Test exact RTT, age, offset, uncertainty, discontinuity, slew, saturation, 5-second future-skew, and 24-hour horizon boundaries with distinct-peer voting and deterministic median tie ordering.", threats = [
+  { title = "Expose no clock-consensus surface", acceptance = "Public inventory and behavior contain no causal timestamp, peer sampling, clock health, or future-write holding API; internal tests can inject wall-clock observations only.", rebaseline = "ADR-0007", threats = [
     "THR-011",
     "THR-012",
   ] },
@@ -1056,14 +1056,14 @@ first = 4
 verification_id = "VERIFY-G07-02"
 kind = "security"
 cases = [
-  { title = "Signed state record validation", acceptance = "Mutating or omitting each signed field, changing cluster, writer, key, schema, body, or signing key, and exceeding decode bounds is rejected before quarantine, comparison, digesting, or persistence.", threats = [
+  { title = "Validate signed resource records", acceptance = "Mutation of cluster, resource name, labels, timestamp, writer, removal rank, digest, or signature is rejected before comparison or persistence.", rebaseline = "ADR-0007", threats = [
     "THR-012",
   ] },
-  { title = "Strict LWW comparator algebra", acceptance = "Generated equal-time, equal-writer, value, tombstone, and digest-tie records satisfy totality, antisymmetry, transitivity, commutativity, associativity, and idempotence for every permutation.", threats = [
+  { title = "Prove timestamp-maximum tuple algebra", acceptance = "Generated records order by lexicographic maximum of signed SystemTime, canonical writer NodeId, removal rank, and canonical digest with totality, transitivity, commutativity, associativity, and idempotence.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
   ] },
-  { title = "Replay and equivocation convergence", acceptance = "Byte-identical replay is idempotent; same-writer same-HLC distinct bodies converge on the canonical digest maximum and emit exactly one bounded equivocation event without automatic cleanup or revoke.", threats = [
+  { title = "Converge equal-time and equivocal writes", acceptance = "Equal timestamps use deterministic writer, removal, and digest tie-breaks; byte-identical replay is idempotent and signed equivocation produces bounded evidence.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-012",
   ] },
@@ -1077,16 +1077,16 @@ first = 7
 verification_id = "VERIFY-G07-03"
 kind = "contract"
 cases = [
-  { title = "Atomic local state mutation", acceptance = "Put and delete conditionally commit the signed record and advanced watermark together; every injected crash or unknown outcome reopens to exactly the old or new pair and reconciles by transaction identity.", threats = [
+  { title = "Commit local resource metadata atomically", acceptance = "A local put or removal conditionally commits one signed resource record and transaction receipt; every crash or unknown outcome reopens to exactly old or new metadata.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "Atomic remote state acceptance", acceptance = "First remote acceptance atomically stores winner or history and the merged watermark; duplicate, losing, quarantined, and conflicting records cannot produce partial history or watermark advancement.", threats = [
+  { title = "Accept remote resource metadata atomically", acceptance = "A valid remote record atomically installs only when its tuple wins; losing records remain harmless and acceptance never promises a current or future win.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-006",
     "THR-020",
   ] },
-  { title = "State precondition conflict isolation", acceptance = "Concurrent exact-version puts, deletes, and remote merges produce one commit and typed conflicts; failed or indeterminate operations never overwrite a newer winner or reuse a transaction ID with another digest.", threats = [
+  { title = "Isolate conditional conflicts", acceptance = "Concurrent exact-version resource writes produce typed conflicts or one commit, never partial labels, transaction-ID digest reuse, or hidden causal ordering.", rebaseline = "ADR-0007", threats = [
     "THR-020",
   ] },
 ]
@@ -1099,11 +1099,11 @@ first = 10
 verification_id = "VERIFY-G07-04"
 kind = "integration"
 cases = [
-  { title = "Bounded delta and digest synchronization", acceptance = "Duplicate, reordered, truncated, and paged deltas converge to the strict winner while every handler enforces record, byte, page, task, and queue bounds and rejects forged records before merge.", threats = [
+  { title = "Synchronize resource metadata in bounded pages", acceptance = "Duplicate, reordered, truncated, and changing pages converge while enforcing record, byte, page, queue, and task capacities and validating signatures before comparison.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
   ] },
-  { title = "Normal-tick anti-entropy repair", acceptance = "After loss, restart, readdress, quarantine maturation, or digest disagreement, the ordinary anti-entropy tick repairs accepted state without reconnect-only logic, unbounded fan-out, or false convergence acknowledgement.", threats = [
+  { title = "Repair resources on the ordinary tick", acceptance = "Loss, restart, readdress, and digest disagreement repair through normal metadata synchronization without reconnect-only logic, future holding, or false convergence acknowledgement.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-011",
   ] },
@@ -1117,7 +1117,7 @@ first = 12
 verification_id = "VERIFY-G07-04"
 kind = "property"
 cases = [
-  { title = "State sync pagination convergence", acceptance = "For generated page boundaries and record permutations, repeated bounded sync reaches one stable digest and winner set, and a completed second pass transfers no authoritative changes.", threats = [
+  { title = "Converge across resource page boundaries", acceptance = "Generated page cursors and record permutations reach one stable winner set without materializing the full catalog; a second completed pass transfers no authoritative changes.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
 ]
@@ -1130,15 +1130,15 @@ first = 13
 verification_id = "VERIFY-G07-05"
 kind = "security"
 cases = [
-  { title = "Internal exact-tombstone cleanup CAS", acceptance = "An internal-only cleanup entry point requires the exact winning tombstone and non-default resurrection acknowledgement; stale expectations and races with newer put or delete return Conflict with no write, and no cleanup symbol is publicly exported.", threats = [
+  { title = "Preserve signed removal evidence", acceptance = "Removal is a signed resource tuple and remains convergence-eligible until exact metadata policy removes it; stale expectations and newer writes conflict without mutation.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-023",
   ] },
-  { title = "Internal cleanup atomic record removal", acceptance = "Fault every internal cleanup boundary and prove old-or-new removal of all local accepted winner, history, and quarantine records for the exact key, with no watermark reduction, absence version, replicated delete, unrelated mutation, or public API exposure.", threats = [
+  { title = "Clean only exact core metadata", acceptance = "Fault every cleanup boundary and prove old-or-new removal of the exact core record and trace references without following its URI or changing upper-layer objects.", rebaseline = "ADR-0007", threats = [
     "THR-021",
     "THR-023",
   ] },
-  { title = "Internal cleanup resurrection semantics", acceptance = "Internal tests prove surviving peer tombstones restore deletion, all-copy cleanup permits an offline stale value to win only after acknowledgement, and maintenance, TTL, migration, compaction, and connectivity code cannot invoke cleanup authority.", threats = [
+  { title = "Reject automatic or URI-following cleanup", acceptance = "Connectivity, retry, retention, migration, compaction, and leave paths cannot dereference resource URIs or delete caller data; stale signed metadata risk remains explicit.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-023",
   ] },
@@ -1152,18 +1152,18 @@ first = 16
 verification_id = "VERIFY-G07-06"
 kind = "e2e"
 cases = [
-  { title = "Eight-plus-eight partition convergence", acceptance = "Two eight-node components mutate identical and disjoint keys, values, tombstones, and quarantined records; after reconnection, normal ticks converge all 16 nodes to exact winner and tombstone versions through duplicate, reorder, restart, and maturation faults.", threats = [
+  { title = "Merge node and resource metadata after partition", acceptance = "Two eight-node components change owner-revision node records and generic resources; after healing, normal bounded pages converge node records by revision and resources by signed tuple.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-011",
     "THR-012",
   ] },
-  { title = "Membership ceiling functional replication and rejection", acceptance = "At configured limits below 1,024 and at the hard 1,024-member ceiling, concurrent final-slot admissions commit at most one member; every over-limit attempt returns InvalidInput/Overloaded before trust or membership persistence, while accepted membership, clock, digest, quarantine, and state workloads stay bounded and converge with no latency claim.", threats = [
+  { title = "Run the 1,024-node profile without a ceiling", acceptance = "All valid nodes in the 1,024 evidence profile participate subject only to fixed admission rate and caller/provider resources; pages converge and no over-population rejection or larger-scale latency claim exists.", rebaseline = "ADR-0007", threats = [
     "THR-005",
     "THR-010",
     "THR-011",
     "THR-012",
   ] },
-  { title = "Sixteen-node quantified state SLO", acceptance = "Only the exact 16-node ADR-0005 profile is latency-qualified: public readiness is healthy, no benchmark record is quarantined, and every measured exact winner or tombstone becomes readable by all 16 nodes within 10,000 milliseconds; larger-cluster results carry no quantified latency claim.", threats = [
+  { title = "Run the revised sixteen-node SLO workload", acceptance = "Only the exact 16-node profile is latency-qualified; each sample covers admission, packet delivery, owner-revision node metadata, and generic resource tuple convergence within 10000 ms.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-011",
   ] },
@@ -1177,11 +1177,11 @@ first = 1
 verification_id = "VERIFY-G08-01"
 kind = "contract"
 cases = [
-  { title = "All-record conditional storage parity", acceptance = "The JSON backend passes one reusable v2 contract covering snapshots, unsigned scans, base and per-key CAS, cross-family atomicity, receipts, capabilities, schema records, and durability for identity, trust, clock, membership, traces, state, and resources.", threats = [
+  { title = "All-family metadata storage parity", acceptance = "JSON passes one reusable contract covering provider-owned immutable snapshots, exact lookup, unsigned-byte ordered scan streams, base/per-key conditions, cross-family atomicity, receipts, reconciliation, capabilities, and every identity, trust, node, resource, route, key-intent, and schema metadata family.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "Unknown transaction reconciliation", acceptance = "Every post-submission cancellation and I/O fault returns Unknown until locked reopen proves the exact receipt or absence; writes remain frozen, transaction IDs cannot change digest, and referenced receipts are not cleaned.", threats = [
+  { title = "Unknown transaction reconciliation", acceptance = "Every post-submission cancellation and I/O fault returns Unknown until locked reopen proves the exact receipt or absence; writes remain frozen, transaction IDs cannot change digest, and referenced receipts are not cleaned.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
@@ -1195,7 +1195,7 @@ first = 3
 verification_id = "VERIFY-G08-01"
 kind = "contract"
 cases = [
-  { title = "Storage capability refusal", acceptance = "Opening with each unsupported durability, locking, scan, reconciliation, or migration requirement returns the exact typed capability error without mutation or silent semantic downgrade.", threats = [
+  { title = "Storage capability and exhaustion refusal", acceptance = "Opening with an unsupported durability, locking, ordered-scan, reconciliation, or migration requirement returns the typed capability error; provider resource exhaustion remains distinct from corruption and never truncates metadata.", rebaseline = "ADR-0007", threats = [
     "THR-021",
     "THR-029",
   ] },
@@ -1209,11 +1209,11 @@ first = 4
 verification_id = "VERIFY-G08-02"
 kind = "contract"
 cases = [
-  { title = "redb conditional transaction contract", acceptance = "With feature redb enabled, the adapter passes the unchanged v2 storage contract and exposes identical logical records, scan order, conflicts, receipts, and reconciliation outcomes as JSON.", threats = [
+  { title = "redb provider-owned snapshot contract", acceptance = "With redb enabled, the adapter passes the unchanged metadata contract and exposes identical exact lookups, unsigned-byte ordered scan streams, conflicts, receipts, reconciliation, capabilities, and typed exhaustion as JSON.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "redb feature isolation", acceptance = "Default, no-default, and redb builds prove redb code is absent when disabled and no concrete redb type appears in unconditional public signatures, errors, factories, or persisted logical records.", threats = [
+  { title = "redb feature isolation", acceptance = "Default, no-default, and redb builds prove redb code is absent when disabled and no concrete redb type appears in unconditional public signatures, errors, factories, or persisted logical records.", rebaseline = "ADR-0007", threats = [
     "THR-029",
   ] },
 ]
@@ -1226,7 +1226,7 @@ first = 6
 verification_id = "VERIFY-G08-02"
 kind = "platform-feature"
 cases = [
-  { title = "Storage feature powerset", acceptance = "Pinned cargo-hack check and test commands pass every supported default, no-default, JSON, redb, and combined feature selection with zero warnings and identical backend-neutral API signatures.", threats = [
+  { title = "Storage feature powerset", acceptance = "Pinned cargo-hack check and test commands pass every supported default, no-default, JSON, redb, and combined feature selection with zero warnings and identical backend-neutral API signatures.", rebaseline = "ADR-0007", threats = [
     "THR-029",
   ] },
 ]
@@ -1239,15 +1239,15 @@ first = 7
 verification_id = "VERIFY-G08-03"
 kind = "integration"
 cases = [
-  { title = "redb commit crash classification", acceptance = "Subprocess kills at every pre-commit, commit, durability, result-delivery, and reopen boundary classify exact committed, aborted, or unknown outcomes and never expose a partial cross-family transaction.", threats = [
+  { title = "redb commit crash classification", acceptance = "Subprocess kills at every pre-commit, commit, durability, result-delivery, and reopen boundary classify exact committed, aborted, or unknown outcomes and never expose a partial cross-family transaction.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "redb conflict and reconciliation integrity", acceptance = "Concurrent same-key and same-generation transactions produce exactly one commit; unknown outcomes reconcile to the matching receipt or proven absence, and transaction-ID digest conflicts fail closed.", threats = [
+  { title = "redb conflict and reconciliation integrity", acceptance = "Concurrent same-key and same-generation transactions produce exactly one commit; unknown outcomes reconcile to the matching receipt or proven absence, and transaction-ID digest conflicts fail closed.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "Provider intent and receipt cleanup parity", acceptance = "Create/delete intent faults on redb preserve every referenced key, reconcile provider and store outcomes, and remove receipts only after all owner, intent, migration, and unknown references are absent.", threats = [
+  { title = "Provider intent and receipt cleanup parity", acceptance = "Create/delete intent faults on redb preserve every referenced key, reconcile provider and store outcomes, and remove receipts only after all owner, intent, migration, and unknown references are absent.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
@@ -1261,14 +1261,14 @@ first = 10
 verification_id = "VERIFY-G08-04"
 kind = "security"
 cases = [
-  { title = "Migration graph validation", acceptance = "Registry construction rejects duplicate edges, cycles, ambiguous paths, unknown endpoints, missing decoders, implicit ordering, and downgrade requests before opening a write transaction.", threats = [
+  { title = "Migration graph validation", acceptance = "Registry construction rejects duplicate edges, cycles, ambiguous paths, unknown endpoints, missing decoders, implicit ordering, and downgrade paths before opening a metadata transaction.", rebaseline = "ADR-0007", threats = [
     "THR-022",
   ] },
-  { title = "Transactional migration interruption", acceptance = "Every explicit migration edge is faulted before and after its commit point on JSON and redb; reopen exposes the complete old or new schema, indexes, receipts, and records with no mixed state.", threats = [
+  { title = "Transactional migration interruption", acceptance = "Every explicit migration edge is faulted before and after its commit point on JSON and redb; reopen exposes the complete old or new schema, indexes, receipts, and records with no mixed resource metadata.", rebaseline = "ADR-0007", threats = [
     "THR-021",
     "THR-022",
   ] },
-  { title = "Migration replay and older-reader refusal", acceptance = "Applying every edge twice is a no-op only for the exact migration tag and implementation digest; mismatches and older readers fail closed without mutation or reverse migration.", threats = [
+  { title = "Migration replay and older-reader refusal", acceptance = "Applying every edge twice is a no-op only for the exact migration tag and implementation digest; mismatches and older readers fail closed without mutation or reverse migration.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-022",
   ] },
@@ -1282,11 +1282,11 @@ first = 13
 verification_id = "VERIFY-G08-05"
 kind = "e2e"
 cases = [
-  { title = "Mixed JSON and redb convergence", acceptance = "A mixed-backend cluster restarts during trust, trace, state, tombstone, and resource synchronization and converges to byte-identical logical views without backend-specific public behavior.", threats = [
+  { title = "Mixed JSON and redb metadata convergence", acceptance = "A mixed-backend cluster restarts during identity, trust, node, route, resource, key-intent, receipt, and schema synchronization and converges to byte-identical logical metadata views without backend-specific public behavior.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-021",
   ] },
-  { title = "Mixed-backend restart integrity", acceptance = "Repeated graceful and killed restarts preserve identity bindings, keys, clock watermarks, descriptors, journals, tombstones, values, receipts, and schema state as old or new atomically.", threats = [
+  { title = "Mixed-backend restart integrity", acceptance = "Repeated graceful and killed restarts preserve identity bindings, key intents, trust, node-owner revisions, trace metadata, generic resources, transaction receipts, and schema metadata as old or new atomically; no packet body is present.", rebaseline = "ADR-0007", threats = [
     "THR-021",
   ] },
 ]
@@ -1299,7 +1299,7 @@ first = 15
 verification_id = "VERIFY-G08-05"
 kind = "platform-feature"
 cases = [
-  { title = "Mixed-storage CI feature closure", acceptance = "Cargo-hack powersets and native workflow validation execute both mixed-storage tests with locked dependencies, no redb type leakage, no skipped backend contract, and zero warnings.", threats = [
+  { title = "Mixed-storage CI feature closure", acceptance = "Cargo-hack powersets and native workflow validation execute both mixed-storage tests with locked dependencies, no redb type leakage, no skipped backend contract, and zero warnings.", rebaseline = "ADR-0007", threats = [
     "THR-029",
   ] },
 ]
@@ -1312,18 +1312,18 @@ first = 1
 verification_id = "VERIFY-G09-01"
 kind = "security"
 cases = [
-  { title = "Label namespace ownership", acceptance = "Label parsing and mutation accept only bounded domain-qualified keys owned by the signer and reject spoofed domains, malformed names, reserved categories, and cross-owner updates before persistence.", threats = [
+  { title = "Label namespace ownership", acceptance = "Label parsing and mutation accept only bounded domain-qualified keys owned by the signer and reject spoofed domains, malformed names, reserved categories, and cross-owner updates before persistence.", rebaseline = "ADR-0007", threats = [
     "THR-012",
   ] },
-  { title = "Reserved resource categories", acceptance = "Platform, feature, session, and application resource tags are category-checked; application writers cannot create or overwrite reserved internal resources.", threats = [
+  { title = "Enforce reserved resource labels", acceptance = "Every resource supplies reserved type and URI label values plus optional namespaced custom labels; core treats values as opaque metadata and never follows the URI.", rebaseline = "ADR-0007", threats = [
     "THR-012",
     "THR-029",
   ] },
-  { title = "Per-key resource version order", acceptance = "Concurrent and reordered resource updates converge by exact owner, key, version, removal-marker, and digest rules; stale metadata cannot replace a newer accepted version.", threats = [
+  { title = "Order multiwriter resource versions", acceptance = "Concurrent and reordered writes converge by signed SystemTime, canonical writer NodeId, removal rank, and digest without a causal or freshness claim.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
   ] },
-  { title = "Resource vector compatibility", acceptance = "Current and previous resource fixtures round-trip canonically, reject signed-field mutation and unknown incompatible schemas, and preserve exact logical versions on JSON and redb.", threats = [
+  { title = "Resource vector compatibility", acceptance = "Current and previous resource fixtures round-trip canonically, reject signed-field mutation and unknown incompatible schemas, and preserve exact logical versions on JSON and redb.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-021",
     "THR-022",
@@ -1338,15 +1338,15 @@ first = 5
 verification_id = "VERIFY-G09-02"
 kind = "property"
 cases = [
-  { title = "Selector grammar bounds", acceptance = "Generated equality, inequality, set, non-set, existence, and non-existence selectors parse within documented token, key, value, nesting, and input limits and reject malformed or over-limit input without panic.", threats = [
+  { title = "Selector grammar bounds", acceptance = "Generated equality, inequality, set, non-set, existence, and non-existence selectors parse within documented token, key, value, nesting, and input limits and reject malformed or over-limit input without panic.", rebaseline = "ADR-0007", threats = [
     "THR-012",
   ] },
-  { title = "Selector canonicalization", acceptance = "Equivalent whitespace and operand forms normalize to one canonical representation while distinct operators and escaped values remain distinguishable and round-trip exactly.", threats = [
+  { title = "Selector canonicalization", acceptance = "Equivalent whitespace and operand forms normalize to one canonical representation while distinct operators and escaped values remain distinguishable and round-trip exactly.", rebaseline = "ADR-0007", threats = [
   ] },
-  { title = "Selector evaluator semantics", acceptance = "Property tests compare the implementation with a reference evaluator over absent, present, duplicate, reserved, and concurrently updated labels for every grammar operator.", threats = [
+  { title = "Selector evaluator semantics", acceptance = "Property tests compare the implementation with a reference evaluator over absent, present, duplicate, reserved, and concurrently updated labels for every grammar operator.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
-  { title = "Converged selector parity", acceptance = "After concurrent label changes converge, every member returns the same deterministically ordered node IDs for each selector without treating stale local observations as authoritative.", threats = [
+  { title = "Converged selector parity", acceptance = "After concurrent label changes converge, every member returns the same deterministically ordered node IDs for each selector without treating stale local observations as authoritative.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
 ]
@@ -1359,18 +1359,18 @@ first = 9
 verification_id = "VERIFY-G09-03"
 kind = "contract"
 cases = [
-  { title = "Atomic label batch mutation", acceptance = "A valid batch updates all requested label keys and the resource revision in one conditional JSON or redb transaction; any invalid item or stale revision writes nothing.", threats = [
+  { title = "Atomic label batch mutation", acceptance = "A valid batch updates all requested label keys and the resource revision in one conditional JSON or redb transaction; any invalid item or stale revision writes nothing.", rebaseline = "ADR-0007", threats = [
     "THR-020",
   ] },
-  { title = "Concurrent label mutation convergence", acceptance = "Concurrent batches against one revision produce one commit and typed conflicts, then normal metadata sync converges all members to the exact committed revision and digest.", threats = [
+  { title = "Concurrent label mutation convergence", acceptance = "Concurrent batches against one revision produce one commit and typed conflicts, then normal metadata sync converges all members to the exact committed revision and digest.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-020",
   ] },
-  { title = "Exactly one post-commit label event", acceptance = "Each known committed label batch emits one event after durability; aborts emit none, unknown outcomes emit none until reconciliation, and replay never duplicates the committed event.", threats = [
+  { title = "Exactly one post-commit label event", acceptance = "Each known committed label batch emits one event after durability; aborts emit none, unknown outcomes emit none until reconciliation, and replay never duplicates the committed event.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-020",
   ] },
-  { title = "Maintenance cannot erase labels", acceptance = "Disconnect, endpoint expiry, topology repair, anti-entropy, compaction, migration, and restart preserve label records and never emit a label-deletion event without an explicit committed mutation.", threats = [
+  { title = "Maintenance cannot erase labels", acceptance = "Disconnect, endpoint expiry, topology repair, anti-entropy, compaction, migration, and restart preserve label records and never emit a label-deletion event without an explicit committed mutation.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
 ]
@@ -1383,12 +1383,12 @@ first = 13
 verification_id = "VERIFY-G09-04"
 kind = "security"
 cases = [
-  { title = "Durable authorization-only revoke", acceptance = "The typed revoke conditionally commits the exact subject/key before closing sessions and rejecting new online operations or raw grants; existing admitted members, signed state/resource/descriptor content, and unrelated members are not deleted or reinterpreted.", threats = [
+  { title = "Durable authorization-only revoke", acceptance = "The typed revoke conditionally commits the exact subject/key before closing sessions and rejecting new online operations or raw grants; existing admitted members, signed node/resource metadata/descriptor content, and unrelated members are not deleted or reinterpreted.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-012",
     "THR-020",
   ] },
-  { title = "Revoke crash, delayed-grant/content convergence, and reconnect denial", acceptance = "Fault every JSON/redb revoke, result, close, restart, grant, anti-entropy, and reconnect boundary: a locally revoked issuer's newly presented raw grant is rejected, but a grant durably accepted elsewhere before revoke later converges as an independently trusted binding through a current member's snapshot; valid historical/delayed content converges, abort preserves trust, and Unknown reconciles.", threats = [
+  { title = "Revoke crash, delayed-grant/content convergence, and reconnect denial", acceptance = "Fault every JSON/redb revoke, result, close, restart, grant, anti-entropy, and reconnect boundary: a locally revoked issuer's newly presented raw grant is rejected, but a grant durably accepted elsewhere before revoke later converges as an independently trusted binding through a current member's snapshot; valid historical/delayed content converges, abort preserves trust, and Unknown reconciles.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
     "THR-020",
@@ -1404,15 +1404,15 @@ first = 15
 verification_id = "VERIFY-G09-05"
 kind = "security"
 cases = [
-  { title = "Sole public CleanupState operation", acceptance = "CleanupState is the only public cleanup operation or type, requires a domain-scoped key, exact winning tombstone version and digest, and non-default AcceptStaleReplicaResurrection acknowledgement; G7 cleanup machinery remains private.", threats = [
+  { title = "Expose exact resource removal", acceptance = "The public removal operation creates or conditionally cleans signed core metadata only and requires exact resource identity/version where stale evidence could reappear.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-023",
   ] },
-  { title = "Public cleanup local atomicity", acceptance = "Through CleanupState, fault every JSON and redb boundary and prove old-or-new local removal of winner, history, and quarantine records without reducing the HLC watermark, creating an absence version, emitting a replicated delete, or changing unrelated metadata.", threats = [
+  { title = "Keep resource removal atomic", acceptance = "JSON and redb faults prove old-or-new removal evidence and receipts without changing unrelated metadata, body bytes, or any object referenced by URI.", rebaseline = "ADR-0007", threats = [
     "THR-021",
     "THR-023",
   ] },
-  { title = "Public cleanup risk and no-auto boundary", acceptance = "CleanupState reports local irreversible risk, conflicts on a newer winner, permits acknowledged offline stale resurrection only after all reachable tombstones are explicitly removed, and cannot be invoked by maintenance, TTL, migration, compaction, or connectivity paths.", threats = [
+  { title = "Forbid automatic external cleanup", acceptance = "Removal reports stale-metadata risk and cannot be invoked by connectivity, retry, expiration, migration, compaction, or URI traversal.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-023",
   ] },
@@ -1426,19 +1426,19 @@ first = 18
 verification_id = "VERIFY-G09-06"
 kind = "security"
 cases = [
-  { title = "Active leave identity rotation", acceptance = "A public active-leave request creates a fresh node ID and key, never reuses the old identity, and returns an outcome binding the exact old and new identities.", threats = [
+  { title = "Rotate identity on active leave", acceptance = "Explicit active leave creates a fresh node ID and key, never reuses the old identity, and returns an outcome binding exact old and new identities.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-012",
   ] },
-  { title = "Leave key-provider reconciliation", acceptance = "Fault every key-creation, binding, deletion-intent, provider deletion, and reconciliation boundary; no referenced key is deleted and every unknown provider or storage outcome remains quarantined.", threats = [
+  { title = "Leave key-provider reconciliation", acceptance = "Fault every key-creation, binding, deletion-intent, provider deletion, and reconciliation boundary; no referenced key is deleted and every unknown provider or storage outcome remains blocked pending reconciliation.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "Old local cluster-state removal", acceptance = "After a committed leave, restart shows no old local trust, membership, session, trace, state, quarantine, resource, credential, or operation record while unrelated local data and the new identity remain intact.", threats = [
+  { title = "Remove old local core metadata only", acceptance = "After committed leave, restart shows no old local identity, trust, membership, session, trace, resource, credential, or operation metadata while upper-layer objects and unrelated core metadata remain intact.", rebaseline = "ADR-0007", threats = [
     "THR-021",
     "THR-023",
   ] },
-  { title = "JSON and redb leave restart parity", acceptance = "Subprocess crashes across the leave transition reopen to a reconciled recoverable phase on both backends, never a mixed identity, duplicate active key, or silently restored old membership.", threats = [
+  { title = "JSON and redb leave restart parity", acceptance = "Subprocess crashes across the leave transition reopen to a reconciled recoverable phase on both backends, never a mixed identity, duplicate active key, or silently restored old membership.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
@@ -1452,24 +1452,24 @@ first = 22
 verification_id = "VERIFY-G09-07"
 kind = "security"
 cases = [
-  { title = "Informational platform resources", acceptance = "Windows, macOS, and Linux nodes publish bounded versioned platform and supported-feature resources matching native runtime facts, and stale or forged owner records are rejected.", threats = [
+  { title = "Publish generic capability resources", acceptance = "Nodes publish only generic named resources with reserved type/URI and namespaced labels; no deployment platform meaning is built into core.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
     "THR-029",
   ] },
-  { title = "Session-scoped selected features", acceptance = "Selected-feature resources are keyed by peer pair and session generation, change on replacement or renegotiation, and disappear with the owning session without becoming node-wide capability claims.", threats = [
+  { title = "Report selected features in session metadata", acceptance = "Selected features remain authenticated session-scoped metadata and disappear with that session without becoming node-wide authorization claims.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-029",
   ] },
-  { title = "Resources never authorize negotiation", acceptance = "Mutating supported, platform, or selected-feature resources cannot enable a protocol, satisfy a required feature, authorize dispatch, or alter the signed handshake intersection.", threats = [
+  { title = "Keep resources separate from negotiation", acceptance = "Forged, stale, or future-dated resource labels never enable protocol behavior; only transcript-bound feature intersection authorizes it.", rebaseline = "ADR-0007", threats = [
     "THR-012",
     "THR-029",
   ] },
-  { title = "Facade-only explicit-operation E2E", acceptance = "An external-crate test performs labels, selection, revoke, CleanupState, events, and active leave using only public facade symbols and proves each committed operation persists across restart.", threats = [
+  { title = "Exercise core-only operations through the facade", acceptance = "An external crate streams packets, pages members/trust/topology/resources, selects a resource target, revokes, leaves, and observes events without business or deployment types.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
-  { title = "G9 public API closure", acceptance = "The public API inventory exposes the manifest operations, including exactly one CleanupState surface, while excluding internal G7 cleanup authority, backend records, transaction receipts, wire types, runtime channels, and concrete JSON or redb types.", threats = [
+  { title = "Close the rebaselined public API", acceptance = "Inventory exposes packet streams, route status, node revisions, generic resources, population pages, metadata storage SPI, and exact explicit operations while excluding superseded public tokens.", rebaseline = "ADR-0007", threats = [
     "THR-018",
     "THR-023",
     "THR-029",
@@ -1483,20 +1483,20 @@ first = 1
 verification_id = "VERIFY-G10-01"
 kind = "compatibility"
 cases = [
-  { title = "Freeze current golden vectors", acceptance = "Golden-vector tests reproduce every manifest-listed current wire and persisted vector byte-for-byte with immutable schema, kind, and tag IDs.", threats = [
+  { title = "Freeze current golden vectors", acceptance = "Golden-vector tests reproduce every manifest-listed current wire and persisted vector byte-for-byte with immutable schema, kind, and tag IDs.", rebaseline = "ADR-0007", threats = [
     "THR-014",
   ] },
-  { title = "Preserve previous-reader compatibility", acceptance = "Every manifest-listed previous reader accepts its compatible current vector, and an omitted reader or fixture fails the compatibility suite.", threats = [
+  { title = "Preserve previous-reader compatibility", acceptance = "Every manifest-listed previous reader accepts its compatible current vector, and an omitted reader or fixture fails the compatibility suite.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
-  { title = "Complete JSON migration chain", acceptance = "The JSON migration suite executes every declared edge twice and proves each injected interruption reopens as exactly the old or new schema.", threats = [
+  { title = "Complete JSON migration chain", acceptance = "The JSON migration suite executes every declared edge twice and proves each injected interruption reopens as exactly the old or new schema.", rebaseline = "ADR-0007", threats = [
     "THR-022",
   ] },
-  { title = "Complete redb migration chain", acceptance = "The redb migration suite executes every declared edge twice and rejects partial-family state after committed, aborted, and unknown outcomes.", threats = [
+  { title = "Complete redb migration chain", acceptance = "The redb migration suite executes every declared edge twice and rejects partial-family resource metadata after committed, aborted, and unknown outcomes.", rebaseline = "ADR-0007", threats = [
     "THR-022",
   ] },
-  { title = "Reject unsupported format versions", acceptance = "Unknown, ambiguous, cyclic, downgraded, and newer unsupported formats return only the frozen typed version errors without fallback decoding.", threats = [
+  { title = "Reject unsupported format versions", acceptance = "Unknown, ambiguous, cyclic, downgraded, and newer unsupported formats return only the frozen typed version errors without fallback decoding.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
     "THR-022",
@@ -1511,17 +1511,17 @@ first = 6
 verification_id = "VERIFY-G10-02"
 kind = "mixed-binary"
 cases = [
-  { title = "Prior initiator negotiates current responder", acceptance = "A prior-version initiator and current responder select the signed optional-feature intersection and expose identical pair-scoped definitions.", threats = [
+  { title = "Prior initiator negotiates current responder", acceptance = "A prior-version initiator and current responder select the signed optional-feature intersection and expose identical pair-scoped definitions.", rebaseline = "ADR-0007", threats = [
     "THR-007",
   ] },
-  { title = "Current initiator negotiates prior responder", acceptance = "A current initiator and prior-version responder select the same signed intersection with platform and feature parity.", threats = [
+  { title = "Current initiator negotiates prior responder", acceptance = "A current initiator and prior-version responder select the same signed intersection with platform and feature parity.", rebaseline = "ADR-0007", threats = [
     "THR-007",
   ] },
-  { title = "Reject incompatible required features", acceptance = "Both initiator roles reject unknown, conflicting, or unsupported required features without retrying a weaker offer.", threats = [
+  { title = "Reject incompatible required features", acceptance = "Both initiator roles reject unknown, conflicting, or unsupported required features without retrying a weaker offer.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
-  { title = "Clean up session-scoped compatibility resources", acceptance = "Disconnect and replacement remove the old generation's selected-feature resources, and no node-wide label authorizes negotiation or dispatch.", threats = [
+  { title = "Clean up session-scoped compatibility resources", acceptance = "Disconnect and replacement remove the old generation's selected-feature resources, and no node-wide label authorizes negotiation or dispatch.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
@@ -1535,11 +1535,11 @@ first = 10
 verification_id = "VERIFY-G10-03"
 kind = "decoder-fuzz"
 cases = [
-  { title = "Replay reviewed decoder corpora", acceptance = "wire_decode, persisted_decode, and selector replay every approved manifest entry exactly once in filename order and reject malformed or over-bound inputs without panic.", threats = [
+  { title = "Replay reviewed decoder corpora", acceptance = "wire_decode, persisted_decode, and selector replay every approved manifest entry exactly once in filename order and reject malformed or over-bound inputs without panic.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-024",
   ] },
-  { title = "Run bounded decoder fuzz targets", acceptance = "Each activated decoder target completes its required uninterrupted live-fuzz budget with the pinned toolchain, ten-second input timeout, 4 GiB RSS bound, and no unscreened corpus promotion.", threats = [
+  { title = "Run bounded decoder fuzz targets", acceptance = "Each activated decoder target completes its required uninterrupted live-fuzz budget with the pinned toolchain, ten-second input timeout, 4 GiB RSS bound, and no unscreened corpus promotion.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-010",
     "THR-013",
@@ -1556,17 +1556,17 @@ first = 12
 verification_id = "VERIFY-G10-04"
 kind = "state-machine-fuzz"
 cases = [
-  { title = "Fuzz admission state invariants", acceptance = "The admission target preserves single-subject generation binding, replay rejection, commit reconciliation, and secret-safe artifacts for every retained and live input.", threats = [
+  { title = "Fuzz admission state invariants", acceptance = "The admission target preserves single-subject generation binding, replay rejection, commit reconciliation, and secret-safe artifacts for every retained and live input.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-013",
     "THR-024",
   ] },
-  { title = "Fuzz feature-selection invariants", acceptance = "The feature_selection target rejects digest, dependency, conflict, limit, and required-feature mutations without downgrade or fallback.", threats = [
+  { title = "Fuzz feature-selection invariants", acceptance = "The feature_selection target rejects digest, dependency, conflict, limit, and required-feature mutations without downgrade or fallback.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-009",
     "THR-024",
   ] },
-  { title = "Fuzz routing state invariants", acceptance = "The routing target preserves ordinal, pinned-hop, persist-before-forward, duplicate re-ACK, retention, and quota invariants under every generated transition.", threats = [
+  { title = "Fuzz packet routing and stream invariants", acceptance = "Generated transitions preserve authenticated target selection, one route, byte order, backpressure, current-process acknowledgement meaning, explicit interruption, and no body persistence.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-010",
     "THR-019",
@@ -1582,11 +1582,11 @@ first = 15
 verification_id = "VERIFY-G10-05"
 kind = "observability"
 cases = [
-  { title = "Expose bounded public readiness and quiescence", acceptance = "Public facade tests observe exact trust, membership, topology, clock, quarantine, queue, task, storage, and resource baselines without private observer APIs.", threats = [
+  { title = "Expose bounded current responsibility status", acceptance = "Public observations cover trust, membership, paged topology/resources, routes, queues, tasks, and metadata storage without peer-clock, business-record, or whole-population surfaces.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-028",
   ] },
-  { title = "Redact production observations", acceptance = "Observability tests inject every forbidden credential, key, payload, address, path, selector, and hostile-string class and prove none enters logs, views, attestations, or replay arguments.", threats = [
+  { title = "Redact production observations", acceptance = "Observability tests inject every forbidden credential, key, packet body, address, path, selector, and hostile-string class and prove none enters logs, views, attestations, or replay arguments.", rebaseline = "ADR-0007", threats = [
     "THR-013",
     "THR-024",
   ] },
@@ -1600,18 +1600,18 @@ first = 17
 verification_id = "VERIFY-G10-06"
 kind = "soak"
 cases = [
-  { title = "Complete weekly eight-hour soak", acceptance = "The weekly churn, partition, slow-peer, clock, and resource suite runs uninterrupted for at least eight hours on one attested commit and records zero product failures or automatic retries.", threats = [
+  { title = "Complete weekly packet and metadata soak", acceptance = "The weekly soak runs at least eight hours of admission, session churn, packet streaming, node/resource convergence, wall-clock faults, and provider pressure on one immutable commit.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-025",
     "THR-026",
   ] },
-  { title = "Complete release twenty-four-hour soak", acceptance = "The release soak runs uninterrupted for at least twenty-four hours on the immutable candidate SHA and lock digest with every failure retained in its attempt lineage.", threats = [
+  { title = "Complete release packet and metadata soak", acceptance = "The release soak runs at least twenty-four hours on the candidate with every packet/metadata failure retained in attempt lineage.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-025",
     "THR-026",
     "THR-027",
   ] },
-  { title = "Return soak resources to baseline", acceptance = "After churn stops and quiescence completes, bounded tasks, queues, sessions, transactions, quarantine, file descriptors, and storage resources return to their declared baselines.", threats = [
+  { title = "Return revised resources to baseline", acceptance = "After churn stops, tasks, queues, sessions, streams, routes, transactions, files, and metadata scans return to declared finite baselines.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-019",
   ] },
@@ -1625,23 +1625,23 @@ first = 20
 verification_id = "VERIFY-G10-07"
 kind = "native-ci"
 cases = [
-  { title = "Pass MSRV and stable quality matrices", acceptance = "Rust 1.97.1 and current stable complete Q with all targets, all features, locked dependencies, zero warnings, and attestations bound to the tested commit.", threats = [
+  { title = "Pass MSRV and stable quality matrices", acceptance = "Rust 1.97.1 and current stable complete Q with all targets, all features, locked dependencies, zero warnings, and attestations bound to the tested commit.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-029",
   ] },
-  { title = "Pass native feature powersets", acceptance = "Every declared native OS job checks and tests default, no-default, redb-only, all-features, and cargo-hack depth-one powersets without semantic weakening.", threats = [
+  { title = "Pass native feature powersets", acceptance = "Every declared native OS job checks and tests default, no-default, redb-only, all-features, and cargo-hack depth-one powersets without semantic weakening.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-029",
   ] },
-  { title = "Enforce dependency policy", acceptance = "Pinned cargo-deny and dependency-tree checks reject advisories, forbidden sources, unowned duplicates, alternate TLS providers, and feature leakage.", threats = [
+  { title = "Enforce dependency policy", acceptance = "Pinned cargo-deny and dependency-tree checks reject advisories, forbidden sources, unowned duplicates, alternate TLS providers, and feature leakage.", rebaseline = "ADR-0007", threats = [
     "THR-029",
   ] },
-  { title = "Attest all canonical fuzz targets", acceptance = "CI records exactly one budget-complete attestation for each activated canonical fuzz target, including corpus digests, tool versions, limits, and uninterrupted status.", threats = [
+  { title = "Attest all canonical fuzz targets", acceptance = "CI records exactly one budget-complete attestation for each activated canonical fuzz target, including corpus digests, tool versions, limits, and uninterrupted status.", rebaseline = "ADR-0007", threats = [
     "THR-024",
     "THR-025",
     "THR-026",
   ] },
-  { title = "Attest scheduled soak lineages", acceptance = "Nightly, weekly, and release workflows retain every soak attempt, predecessor digest, retry classification, duration, result, and resource baseline without product-failure supersession.", threats = [
+  { title = "Attest scheduled soak lineages", acceptance = "Nightly, weekly, and release workflows retain every soak attempt, predecessor digest, retry classification, duration, result, and resource baseline without product-failure supersession.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-026",
   ] },
@@ -1655,11 +1655,11 @@ first = 25
 verification_id = "VERIFY-G10-08"
 kind = "public-api"
 cases = [
-  { title = "Freeze the functional public facade", acceptance = "cargo-public-api matches the approved 0.1 baseline exactly and reports no additional wire, persistence, runtime, backend, TLS, test-only, or workload-specific export.", threats = [
+  { title = "Freeze the functional public facade", acceptance = "cargo-public-api matches the approved 0.1 baseline exactly and reports no additional wire, persistence, runtime, backend, TLS, test-only, or workload-specific export.", rebaseline = "ADR-0007", threats = [
     "THR-014",
     "THR-029",
   ] },
-  { title = "Prove semver and external-crate compatibility", acceptance = "cargo-semver-checks passes against the approved baseline and tests/public_api.rs exercises every supported facade signature solely as an external crate.", threats = [
+  { title = "Prove semver and external-crate compatibility", acceptance = "cargo-semver-checks passes against the approved baseline and tests/public_api.rs exercises every supported facade signature solely as an external crate.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
@@ -1673,14 +1673,14 @@ first = 27
 verification_id = "VERIFY-G10-09"
 kind = "evidence-validator"
 cases = [
-  { title = "Reject incomplete or under-budget evidence", acceptance = "Validator fixtures prove interrupted targets, missing attestations, reduced property or simulation counts, short fuzz or soak durations, and mismatched commit or lock digests fail preflight.", threats = [
+  { title = "Reject incomplete or under-budget evidence", acceptance = "Validator fixtures prove interrupted targets, missing attestations, reduced property or simulation counts, short fuzz or soak durations, and mismatched commit or lock digests fail preflight.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-027",
   ] },
-  { title = "Reject masked attempt lineages", acceptance = "Validator fixtures prove a product failure, missing predecessor, invalid retry classification, replacement run, or later successful rerun cannot supersede retained failed evidence.", threats = [
+  { title = "Reject masked attempt lineages", acceptance = "Validator fixtures prove a product failure, missing predecessor, invalid retry classification, replacement run, or later successful rerun cannot supersede retained failed evidence.", rebaseline = "ADR-0007", threats = [
     "THR-026",
   ] },
-  { title = "Reject invalid SLO and threat ledgers", acceptance = "Validator fixtures prove missing threats, sample IDs, raw values, profile constants, post-start exclusions, or cleanup status fail, while one complete synthetic ledger passes.", threats = [
+  { title = "Reject invalid SLO and threat ledgers", acceptance = "Validator fixtures prove missing threats, sample IDs, raw values, profile constants, post-start exclusions, or cleanup status fail, while one complete synthetic ledger passes.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-026",
     "THR-028",
@@ -1695,20 +1695,20 @@ first = 30
 verification_id = "VERIFY-G10-10"
 kind = "oci-slo-harness"
 cases = [
-  { title = "Build external publish-false OCI harness", acceptance = "The publish-false workspace harness builds release slo-node and slo-controller images from an external path dependency at one exact source SHA and Cargo.lock digest.", threats = [
+  { title = "Build external publish-false OCI harness", acceptance = "The publish-false workspace harness builds release slo-node and slo-controller images from an external path dependency at one exact source SHA and Cargo.lock digest.", rebaseline = "ADR-0007", threats = [
     "THR-027",
     "THR-028",
     "THR-029",
   ] },
-  { title = "Enforce harness network and API isolation", acceptance = "Negative tests prove the controller has no data-network interface and node helpers cannot access private modules, storage internals, replication shortcuts, test-only features, or unscreened secrets.", threats = [
+  { title = "Enforce harness network and API isolation", acceptance = "Negative tests prove the controller has no data-network interface and node helpers cannot access private modules, storage internals, replication shortcuts, test-only features, or unscreened secrets.", rebaseline = "ADR-0007", threats = [
     "THR-013",
     "THR-028",
   ] },
-  { title = "Qualify OCI profile preflight", acceptance = "Docker or Podman dry-run preflight verifies host, image, engine, cgroups, redb volumes, bridge routes, MTU, qdisc, security limits, all 64 final directions, and four throughput edges, rejecting every profile mismatch.", threats = [
+  { title = "Qualify OCI profile preflight", acceptance = "Docker or Podman dry-run preflight verifies host, image, engine, cgroups, redb volumes, bridge routes, MTU, qdisc, security limits, all 64 final directions, and four throughput edges, rejecting every profile mismatch.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-028",
   ] },
-  { title = "Qualify workload readiness and cleanup", acceptance = "A disposable cluster executes the canonical warm-up order, exact induced and 32-edge final topologies, public readiness and quiescence predicates, bounded capture, graceful shutdown, and attempt-label-only cleanup.", threats = [
+  { title = "Qualify revised workload readiness and cleanup", acceptance = "Harness readiness and sampling use only fixed admission, packet delivery, owner revisions, generic resources, paged observations, and core metadata cleanup without private-state shortcuts.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-028",
   ] },
@@ -1722,20 +1722,20 @@ first = 34
 verification_id = "VERIFY-G10-11"
 kind = "release-candidate-slo"
 cases = [
-  { title = "Create immutable publication candidate", acceptance = "Only after validator and harness qualification pass, one immutable candidate commit sets the intended 0.1 publication state and freezes its SHA, Cargo.lock, workflow, SBOM, and OCI image digests.", threats = [
+  { title = "Create immutable publication candidate", acceptance = "Only after validator and harness qualification pass, one immutable candidate commit sets the intended 0.1 publication state and freezes its SHA, Cargo.lock, workflow, SBOM, and OCI image digests.", rebaseline = "ADR-0007", threats = [
     "THR-027",
     "THR-029",
   ] },
-  { title = "Run exact candidate release matrices", acceptance = "Q, MSRV, stable, native features, compatibility, fuzz, threat, and uninterrupted release-soak matrices all pass on the immutable candidate with complete non-rerun-masked attestations.", threats = [
+  { title = "Run exact candidate release matrices", acceptance = "Q, MSRV, stable, native features, compatibility, fuzz, threat, and uninterrupted release-soak matrices all pass on the immutable candidate with complete non-rerun-masked attestations.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-026",
     "THR-027",
   ] },
-  { title = "Record exactly 125 passing SLO samples", acceptance = "The candidate ledger contains exactly run-0 through run-4 with 5 admission, 20 descriptor, 80 put, and 20 tombstone samples, and every conservative elapsed value is at most 10000 milliseconds with no exclusion or replacement.", threats = [
+  { title = "Record exactly 125 revised SLO samples", acceptance = "Five runs of 25 predeclared samples execute the ADR-0007 workload; each is at most 10000 ms and none is excluded, replaced, or reclassified after start.", rebaseline = "ADR-0007", threats = [
     "THR-026",
     "THR-028",
   ] },
-  { title = "Complete the candidate evidence ledger", acceptance = "The ledger binds every matrix and raw SLO timestamp, node offset, profile value, image, SHA, lock, predecessor, resource, shutdown, artifact, and cleanup record into one complete validated digest.", threats = [
+  { title = "Complete the candidate evidence ledger", acceptance = "The ledger binds every matrix and raw SLO timestamp, host wall-clock observation, profile value, image, SHA, lock, predecessor, resource, shutdown, artifact, and cleanup record into one complete validated digest.", rebaseline = "ADR-0007", threats = [
     "THR-013",
     "THR-025",
     "THR-026",
@@ -1752,16 +1752,16 @@ first = 38
 verification_id = "VERIFY-G10-12"
 kind = "publish"
 cases = [
-  { title = "Issue external eligibility token", acceptance = "After complete-provider-ledger validation, an external signed token records the exact candidate SHA, Cargo.lock digest, complete-ledger digest, package version 0.1.0, and eligible=true without entering the attested commit.", threats = [
+  { title = "Issue external eligibility token", acceptance = "After complete-provider-ledger validation, an external signed token records the exact candidate SHA, Cargo.lock digest, complete-ledger digest, package version 0.1.0, and eligible=true without entering the attested commit.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-026",
     "THR-027",
   ] },
-  { title = "Reject unauthorized release transitions", acceptance = "Guard tests reject an absent, malformed, expired, ineligible, wrong-ledger, wrong-lock, wrong-version, wrong-SHA, or unverifiable token and reject any checkout changed after token issuance.", threats = [
+  { title = "Reject unauthorized release transitions", acceptance = "Guard tests reject an absent, malformed, expired, ineligible, wrong-ledger, wrong-lock, wrong-version, wrong-SHA, or unverifiable token and reject any checkout changed after token issuance.", rebaseline = "ADR-0007", threats = [
     "THR-027",
     "THR-029",
   ] },
-  { title = "Tag and publish the attested candidate", acceptance = "The guarded workflow creates the 0.1.0 tag and publishes only the token-matched immutable candidate, then confirms the registry package and archive digests match the attested build.", threats = [
+  { title = "Tag and publish the attested candidate", acceptance = "The guarded workflow creates the 0.1.0 tag and publishes only the token-matched immutable candidate, then confirms the registry package and archive digests match the attested build.", rebaseline = "ADR-0007", threats = [
     "THR-027",
     "THR-029",
   ] },
@@ -1772,15 +1772,17 @@ id = "E2E-01"
 title = "Secure join and credential rotation"
 owner_task = "T-G03-04"
 verification_id = "VERIFY-G03-04"
+rebaseline = "ADR-0007"
 acceptance = "Join commits once; rotation does not disconnect members; reconnect uses key trust only."
 threats = ["THR-001", "THR-002", "THR-003", "THR-005", "THR-007"]
 
 [[e2e]]
 id = "E2E-02"
-title = "Outbound-only bidirectional session"
+title = "Outbound-only bidirectional packet session"
 owner_task = "T-G04-06"
 verification_id = "VERIFY-G04-06"
-acceptance = "The listener sends typed API traffic over the dialer's authenticated full-duplex session."
+rebaseline = "ADR-0007"
+acceptance = "Either authenticated endpoint admits ordered incoming packet streams over the existing session."
 threats = ["THR-003", "THR-010", "THR-016"]
 
 [[e2e]]
@@ -1788,6 +1790,7 @@ id = "E2E-03"
 title = "Crossed dial and readdress"
 owner_task = "T-G04-06"
 verification_id = "VERIFY-G04-06"
+rebaseline = "ADR-0007"
 acceptance = "Exactly one owned session remains and identity/trust survive address replacement."
 threats = ["THR-004", "THR-006", "THR-016"]
 
@@ -1796,23 +1799,26 @@ id = "E2E-04"
 title = "Sixteen-node recovery"
 owner_task = "T-G05-05"
 verification_id = "VERIFY-G05-05"
-acceptance = "Recovery performs exactly three preferred rounds plus one bounded fan-out and restores metadata."
+rebaseline = "ADR-0007"
+acceptance = "Configured recovery restores authenticated path connectivity and quiesces without requiring a full mesh or fixed-round product rule."
 threats = ["THR-006", "THR-008", "THR-010", "THR-028"]
 
 [[e2e]]
 id = "E2E-05"
-title = "Three-hop ACK loss"
+title = "Three-hop packet interruption"
 owner_task = "T-G06-05"
 verification_id = "VERIFY-G06-05"
-acceptance = "One durable acceptance occurs, duplicates re-ACK, and only ordinals zero through three exist."
+rebaseline = "ADR-0007"
+acceptance = "Bytes remain ordered through three hops or fail explicitly; acknowledgement means current-process incoming-stream admission only."
 threats = ["THR-002", "THR-008", "THR-018", "THR-019"]
 
 [[e2e]]
 id = "E2E-06"
-title = "Eight-plus-eight partition merge"
+title = "Eight-plus-eight core metadata merge"
 owner_task = "T-G07-06"
 verification_id = "VERIFY-G07-06"
-acceptance = "Same and disjoint keys plus tombstones converge through normal anti-entropy after healing."
+rebaseline = "ADR-0007"
+acceptance = "Node-owner revisions and generic resource tuple winners converge through ordinary bounded metadata pages after healing."
 threats = ["THR-006", "THR-011", "THR-012"]
 
 [[e2e]]
@@ -1820,29 +1826,33 @@ id = "E2E-07"
 title = "JSON and redb crash restart"
 owner_task = "T-G08-05"
 verification_id = "VERIFY-G08-05"
-acceptance = "Every backend reopens to old or new atomic state and converges to identical logical records."
+rebaseline = "ADR-0007"
+acceptance = "Every backend reopens to old or new atomic core metadata and provider-owned scans preserve unsigned-byte order."
 threats = ["THR-020", "THR-021", "THR-022"]
 
 [[e2e]]
 id = "E2E-08"
-title = "Labels revoke cleanup and leave"
+title = "Resources revoke and leave"
 owner_task = "T-G09-07"
 verification_id = "VERIFY-G09-07"
-acceptance = "Typed explicit operations persist and connectivity maintenance never erases durable content."
+rebaseline = "ADR-0007"
+acceptance = "Explicit operations affect only core metadata and key intents and never follow resource URIs or delete caller objects."
 threats = ["THR-006", "THR-012", "THR-020", "THR-023"]
 
 [[e2e]]
 id = "E2E-09"
-title = "Mixed binaries and feature resources"
+title = "Mixed binaries packet and metadata compatibility"
 owner_task = "T-G10-02"
 verification_id = "VERIFY-G10-02"
-acceptance = "Signed feature intersection controls behavior and informational resources never authorize it."
+rebaseline = "ADR-0007"
+acceptance = "Authenticated feature intersection preserves packet and core-metadata compatibility; resource labels never authorize behavior."
 threats = ["THR-007", "THR-014", "THR-029"]
 
 [[e2e]]
 id = "E2E-10"
-title = "Published sixteen-node SLO"
+title = "Published revised sixteen-node SLO"
 owner_task = "T-G10-11"
 verification_id = "VERIFY-G10-11"
-acceptance = "All 125 exact-candidate samples complete within ten seconds under ADR-0005 without exclusion."
+rebaseline = "ADR-0007"
+acceptance = "All 125 exact-candidate samples run fixed admission, packet delivery, node-owner revisions, and generic resources within ten seconds without exclusion."
 threats = ["THR-025", "THR-026", "THR-027", "THR-028"]

@@ -2,79 +2,107 @@
 
 ## Authority
 
-The machine-readable source is [threat-model.toml](threat-model.toml). `THR-001` through `THR-029`
-are immutable. The scenario catalog owns executable predicates; this document explains boundaries and
-accepted residual risks.
+[threat-model.toml](threat-model.toml) is machine-readable authority for stable `THR-001` through
+`THR-029`. ADR-0007 defines the active responsibility boundary. Scenario records marked
+`rebaseline = "ADR-0007"` own current executable predicates; evidence for earlier predicates is stale.
 
 ## Protected Assets
 
-- Node and cluster identity bindings, private-key-provider authority, and admission credentials.
-- Authenticated TLS sessions, feature selections, request/receipt authenticity, and delivery journals.
-- Durable identity, trust, membership, clock, trace, state, resource, migration, and transaction records.
-- Availability bounded by frames, queues, tasks, fan-out, retries, storage, quarantine, and rate limits.
+- Canonical identity bindings, admission credentials, key-provider authority, and signed trust.
+- Authenticated TLS sessions, exact feature selection, packet route context, byte order, and
+  current-process incoming-stream admission acknowledgement.
+- Node-owner revisions, generic resource metadata, trace metadata, transaction receipts, and metadata
+  schema/migration records.
+- Availability bounded by caller-selected frames, queues, pages, streams, tasks, fan-out, recovery, and
+  fixed admission policy.
 - Failure artifacts, corpora, CI attestations, release candidates, eligibility tokens, and packages.
+
+Packet body bytes and upper-layer objects are not durable core assets because core never stores them.
+Their confidentiality while present in caller/process/transport memory is still protected from generic
+core diagnostics and evidence artifacts.
 
 ## Adversaries
 
-- An unauthenticated network client with arbitrary malformed input and many transport source addresses.
-- A peer with a stolen credential but no admitted identity key.
-- A malicious or colluding admitted member with its own valid signing key.
-- A peer replaying, delaying, duplicating, reordering, dropping, or reflecting protocol messages.
-- A corrupt or unavailable storage/key/network provider.
-- A compromised evidence producer attempting command injection, secret retention, budget reduction,
-  sample replacement, rerun masking, or release substitution.
+- An unauthenticated client with malformed input and many transport source addresses.
+- A peer holding a stolen unexpired credential but no admitted identity key.
+- A malicious or colluding admitted member with valid signing authority.
+- A peer replaying, delaying, duplicating, reordering, dropping, or reflecting protocol traffic.
+- A corrupt, unavailable, capacity-limited, or dishonest storage/key/network provider.
+- A hostile host wall clock that rolls back, freezes, or jumps forward.
+- An evidence producer attempting injection, secret/body retention, budget reduction, stale-predicate
+  reuse, sample replacement, rerun masking, or release substitution.
 
 ## Trust Boundaries
 
-TLS proves channel security, but NodeId/public-key trust is established only by the exporter-bound
-application handshake. Addresses and certificates are not identity. Application protocol, transport,
-storage, discovery, policy, codec, clock, entropy, and key-provider extensions execute in-process and
-are trusted code; registries are extension boundaries, not sandboxes.
+TLS protects a channel, but exporter-bound authentication establishes NodeId/public-key trust.
+Addresses and certificates are not identity. Transport, discovery, storage, key, packet-consumer,
+neighbor, load-balancing, routing, entropy, and test wall-clock implementations are trusted in-process
+extensions, not sandboxes.
 
-The operating system, hypervisor, process memory reader, debugger, application holding a join
-credential, and application retaining key-provider authority are outside the core confidentiality
-boundary. The library still redacts its own errors, logs, and artifacts.
+The OS, hypervisor, process reader, debugger, caller holding a credential, key-provider operator, storage
+capacity policy, and host-time accuracy are outside core control. Core still validates provider
+capabilities and redacts its own errors, events, and artifacts.
 
 ## Admission Abuse Boundary
 
-Every listener applies the accepted admission defaults before expensive proof or persistence work:
-4 pending attempts per source, 64 globally, 16 attempts per source and 256 globally per fixed minute,
-1,024 source buckets retained for ten idle minutes, one verified committer per credential generation,
-and a ten-second authentication deadline. These controls cannot be disabled and never define identity
-or trust.
+Every listener enforces the complete fixed policy: a 32-byte single-use credential valid for ten
+minutes; 4 pending attempts per source and 64 globally; 16 attempts per source and 256 globally per
+fixed minute; 1,024 source buckets retained for ten idle minutes; one verified committer per credential
+generation; and a ten-second authentication deadline. These security controls are not a node limit.
 
-## Malicious Members and Revocation
+Any admitted non-revoked member can issue credentials. A malicious member can create unbounded Sybil
+growth over time, constrained only by fixed admission rate and caller/provider resources. Roles and
+population approval belong above the crate.
 
-A trusted member can submit valid signed operations and consume its bounded quota. Signatures establish
-who authored data, not that the content is benevolent. Equivocation is ordered deterministically and
-reported; it is not automatically revoked or deleted.
+## Packet Boundary
 
-Revocation is prospective for connectivity and authorization. A committed revoke closes and rejects
-sessions and new admission authority for the exact NodeId/key. It does not invalidate signed replicated
-content, because a partitioned system without consensus cannot establish a global before/after cutoff.
-Valid historical or delayed state/resource records remain convergence-eligible. Explicit cleanup is the
-only content-removal authority.
+Core authenticates target and route context, selects one destination for resource selectors through
+caller policy, preserves ordered constant-memory streaming, and bounds all queues/tasks. A delivery
+acknowledgement means only that the destination process authenticated and admitted the incoming stream.
+It says nothing about durable body retention, caller observation, processing, a return packet, or
+success.
 
-## Scale and Availability
+Disconnect and restart terminate an active stream. Core never persists body bytes and never recreates,
+replays, or continues them. Trace retention can remove status and duplicate evidence but cannot make
+body delivery durable.
 
-Membership is configurable from one through 1,024. Protocol work remains bounded at every size.
-Functional scale tests cover the ceiling, but only the one-to-sixteen ADR-0005 population has a
-quantified ten-second latency SLO for `0.1.0`. Partitions, cross-host delay/loss, overload, crash, and
-larger populations retain functional tests without inheriting that latency claim.
+## Metadata and Time Boundary
+
+Node metadata uses signed strictly increasing owner revisions and rejects same-revision conflicts.
+Generic resource metadata uses the deterministic maximum of signed host `SystemTime`, writer `NodeId`,
+removal rank, and digest. The tuple is not causal, fresh, or real-time last-writer behavior.
+
+Rollback can make later local work lose; freeze can delay deadlines indefinitely; forward jumps can
+make work immediately due; future-dated signed tuples can dominate. Core has no peer-clock authority or
+future-write holding service. Executor timers only wake work to re-read wall time.
+
+Revocation is prospective connectivity and admission authority. It does not invalidate otherwise valid
+signed metadata. Cleanup and leave affect only core metadata and key intents and never dereference a
+resource URI or delete an upper-layer object.
+
+## Scale Storage and Availability
+
+There is no product node-count ceiling. Membership, trust, resource, topology, and policy observations
+are paged or incremental. The 1,024-node profile is mandatory functional/trend evidence only; the exact
+revised 16-node workload has the release latency claim.
+
+Storage is internal metadata infrastructure. Providers own immutable snapshot implementations, layout,
+capacity, quotas, flush policy, and physical durability. Core owns exact lookup, unsigned-byte ordered
+stream scans, conditional transactions, receipts, reconciliation, capabilities, corruption refusal,
+and migrations. Resource exhaustion is typed and never silently truncates.
 
 ## Evidence and Release Boundary
 
-Failure replay is a closed executable ID plus literal argv, never shell text. Corpus provenance and
-secret review happen before hashing or minimization. Every attempt is retained. A product failure cannot
-be superseded by a successful rerun; only independently attested infrastructure failure creates a new
-lineage.
+Failure replay uses closed executable IDs and literal argv. Artifacts exclude secrets, packet bodies,
+provider handles, paths, and addresses. Every SC and E2E carries the current ADR marker; validator
+negative fixtures prove superseded active terms and stale evidence markers fail.
 
-The publication candidate exists before final evidence. The external eligibility token binds the exact
-candidate SHA, Cargo.lock, complete attempt ledger, package version, and artifact digests. The token is
-not committed into the SHA it attests.
+The immutable candidate exists before final evidence. The external eligibility token binds exact
+candidate SHA, lock, complete attempt ledger, version, and artifact digests. Every attempt remains in
+lineage; product failure cannot be hidden by a successful rerun.
 
 ## Release Rule
 
-Every P0/P1 threat must be `accepted` with a concrete mitigation and either an empty residual or a named
-accepted residual. Release fails on an open threat, missing owner, missing scenario, unknown scenario,
-ambiguous evidence-impact rule, incomplete attempt, or token/candidate mismatch.
+Release fails on an open threat, missing owner/scenario/current marker, unknown ID, ambiguous evidence
+rule, incomplete attempt, stale responsibility predicate, or token/candidate mismatch. Every accepted
+P0/P1 threat has a concrete mitigation and named residual where risk remains.
