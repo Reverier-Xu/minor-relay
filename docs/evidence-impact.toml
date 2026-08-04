@@ -48,6 +48,7 @@ globs = [".github/**"]
 precedence = 200
 owner_task = "T-G10-07"
 verification_ids = [
+  "VERIFY-G00-06",
   "VERIFY-G01-05",
   "VERIFY-G10-07",
   "VERIFY-G10-09",
