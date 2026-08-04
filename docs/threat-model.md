@@ -56,7 +56,7 @@ population approval belong above the crate.
 
 ## Packet Boundary
 
-Core authenticates target and route context, selects one destination for resource selectors through
+Core authenticates target and route context, selects one destination from matching node labels through
 caller policy, preserves ordered constant-memory streaming, and bounds all queues/tasks. A delivery
 acknowledgement means only that the destination process authenticated and admitted the incoming stream.
 It says nothing about durable body retention, caller observation, processing, a return packet, or
