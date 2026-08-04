@@ -178,7 +178,13 @@ id = "IMPACT-FACADE"
 globs = [
   "src/lib.rs",
   "src/api.rs",
+  "src/error.rs",
+  "src/operation.rs",
+  "src/view.rs",
+  "src/node/mod.rs",
   "src/node/api.rs",
+  "src/node/handle.rs",
+  "src/node/extension.rs",
   "src/node/command_bus.rs",
   "src/node/query_bus.rs",
   "src/node/event_bus.rs",
@@ -190,10 +196,14 @@ verification_ids = [
   "VERIFY-G01-02",
   "VERIFY-G01-03",
   "VERIFY-G01-05",
+  "VERIFY-G03-05",
+  "VERIFY-G05-06",
+  "VERIFY-G06-05",
+  "VERIFY-G07-03",
   "VERIFY-G09-07",
   "VERIFY-G10-08",
 ]
-threat_ids = ["THR-014", "THR-023", "THR-029"]
+threat_ids = ["THR-008", "THR-010", "THR-014", "THR-018", "THR-020", "THR-023", "THR-029"]
 
 [[path_rule]]
 id = "IMPACT-IDENTITY"
