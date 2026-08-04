@@ -37,6 +37,13 @@ impl LifecycleSnapshot {
     }
   }
 
+  pub(crate) const fn failed() -> Self {
+    Self {
+      status: NodeStatus::Failed,
+      reason: Some(ShutdownReason::Fatal(crate::ErrorKind::Internal)),
+    }
+  }
+
   pub(crate) const fn status(self) -> NodeStatus {
     self.status
   }

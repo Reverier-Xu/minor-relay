@@ -15,6 +15,37 @@ use crate::{
 
 const CONTROL_CAPACITY: usize = 32;
 
+struct LifecyclePublisher {
+  state: watch::Sender<LifecycleSnapshot>,
+  terminal: bool,
+}
+
+impl LifecyclePublisher {
+  fn new(state: watch::Sender<LifecycleSnapshot>) -> Self {
+    Self {
+      state,
+      terminal: false,
+    }
+  }
+
+  fn publish(&self, snapshot: LifecycleSnapshot) {
+    self.state.send_replace(snapshot);
+  }
+
+  fn stop(&mut self, reason: ShutdownReason) {
+    self.publish(LifecycleSnapshot::stopped(reason));
+    self.terminal = true;
+  }
+}
+
+impl Drop for LifecyclePublisher {
+  fn drop(&mut self) {
+    if !self.terminal {
+      self.state.send_replace(LifecycleSnapshot::failed());
+    }
+  }
+}
+
 pub(crate) struct RuntimeDependencies {
   pub(crate) _storage: Arc<dyn StorageFactory>,
   pub(crate) _keys: Arc<dyn KeyProvider>,
@@ -44,9 +75,10 @@ async fn supervise(
   state: watch::Sender<LifecycleSnapshot>, ready: oneshot::Sender<()>,
 ) {
   let tasks = JoinSet::<()>::new();
-  state.send_replace(LifecycleSnapshot::running());
+  let mut lifecycle = LifecyclePublisher::new(state);
+  lifecycle.publish(LifecycleSnapshot::running());
   if ready.send(()).is_err() {
-    finish_shutdown(control, tasks, dependencies, state, None).await;
+    finish_shutdown(control, tasks, dependencies, &mut lifecycle, None).await;
     return;
   }
 
@@ -54,14 +86,14 @@ async fn supervise(
     .recv()
     .await
     .map(|Control::Shutdown { reply }| reply);
-  finish_shutdown(control, tasks, dependencies, state, first_reply).await;
+  finish_shutdown(control, tasks, dependencies, &mut lifecycle, first_reply).await;
 }
 
 async fn finish_shutdown(
   mut control: mpsc::Receiver<Control>, mut tasks: JoinSet<()>, dependencies: RuntimeDependencies,
-  state: watch::Sender<LifecycleSnapshot>, first_reply: Option<oneshot::Sender<ShutdownOutcome>>,
+  lifecycle: &mut LifecyclePublisher, first_reply: Option<oneshot::Sender<ShutdownOutcome>>,
 ) {
-  state.send_replace(LifecycleSnapshot::shutting_down());
+  lifecycle.publish(LifecycleSnapshot::shutting_down());
   control.close();
 
   let mut queued_replies = Vec::with_capacity(CONTROL_CAPACITY);
@@ -72,7 +104,7 @@ async fn finish_shutdown(
   drop(control);
   drop(dependencies);
 
-  state.send_replace(LifecycleSnapshot::stopped(ShutdownReason::Requested));
+  lifecycle.stop(ShutdownReason::Requested);
   if let Some(reply) = first_reply {
     let _ = reply.send(ShutdownOutcome::new(false));
   }
