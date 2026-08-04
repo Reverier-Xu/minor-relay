@@ -464,11 +464,11 @@ fn reorder_deadline(deadline: u64, window: u64) -> SimResult<u64> {
 
 #[cfg(test)]
 mod tests {
-  use std::time::Duration;
+  use std::{collections::BTreeSet, time::Duration};
 
   use crate::simulation::{
     event::{DropReason, EventRecord},
-    network::Simulator,
+    network::{REQUIRED_FAULTS, Simulator, matrix_seed_range, run_fault_matrix_seed},
     topology::{AddressId, LinkKey, LinkPolicy, NodeKey, PartitionId, SimulationLimits, Topology},
   };
 
@@ -620,6 +620,34 @@ mod tests {
     ));
     assert!(delivered_messages(simulator.records()).contains(&current));
     assert_eq!(simulator.observed_utc(NodeKey::new(2), 100).unwrap(), 93);
+  }
+
+  #[test]
+  fn simulation_network_fault_matrix() {
+    let seeds = matrix_seed_range().unwrap();
+    let mut fingerprints = BTreeSet::new();
+    let mut executed = 0_usize;
+    for seed in seeds {
+      let first = run_fault_matrix_seed(seed).unwrap();
+      let second = run_fault_matrix_seed(seed).unwrap();
+
+      assert_eq!(first, second, "seed {seed}");
+      assert_eq!(first.faults, REQUIRED_FAULTS, "seed {seed}");
+      assert!(
+        first
+          .snapshot
+          .records
+          .windows(2)
+          .all(|pair| pair[0].at_nanos() <= pair[1].at_nanos()),
+        "seed {seed}",
+      );
+      assert!(first.snapshot.max_pending_events <= 16, "seed {seed}");
+      assert!(first.snapshot.max_pending_bytes <= 4_096, "seed {seed}");
+      fingerprints.insert(first.decision_fingerprint);
+      executed += 1;
+    }
+
+    assert_eq!(executed, fingerprints.len());
   }
 
   fn delivered_messages(records: &[EventRecord]) -> Vec<crate::simulation::event::MessageId> {
