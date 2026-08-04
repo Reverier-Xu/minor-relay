@@ -129,4 +129,4 @@ jobs:
         run: scripts/check-dependency-graph.sh
 
       - name: cargo deny
-        run: cargo deny --locked check
+        run: cargo deny --locked --workspace check
