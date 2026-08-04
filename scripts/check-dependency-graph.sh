@@ -12,9 +12,9 @@ if (($# != 0)); then
   exit 2
 fi
 
-MANIFEST_DIGEST=$(sha256sum Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == fd70b46cc7ad0272c23dbe76cc9de9155925522a41bcb333fe41ea7c0696c6d0 ]] || {
-  printf 'Cargo manifest or lockfile differs from the reviewed G1 baseline\n' >&2
+MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
+[[ $MANIFEST_DIGEST == 45f7896d8e9ea0f14b46a0bdd7bb7ed2cc1c96d754f5e87ab420d12a35a90dea ]] || {
+  printf 'workspace manifests or lockfile differ from the reviewed G1 baseline\n' >&2
   exit 1
 }
 

@@ -1,4 +1,10 @@
-include = ["Cargo.toml", "deny.toml", "taplo.toml", "rustfmt.toml"]
+include = [
+  "Cargo.toml",
+  "deny.toml",
+  "test-support/Cargo.toml",
+  "taplo.toml",
+  "rustfmt.toml",
+]
 
 [formatting]
 align_comments        = true
