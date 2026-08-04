@@ -1,3 +1,4 @@
+mod artifact;
 mod event;
 mod fixture;
 mod network;
