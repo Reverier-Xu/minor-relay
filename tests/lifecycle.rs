@@ -7,10 +7,10 @@ use std::{
 };
 
 use minor_relay::{
-  BoxFuture, Clock, CommitOutcome, CreatedKey, Digest, Entropy, Error, KeyCreateState, KeyDeleteState,
-  KeyHandle, KeyOperationId, KeyProvider, MonotonicTime, ProviderErrorContext, ProviderErrorKind,
-  PublicKey, ReconcileOutcome, Result, Signature, Storage, StorageFactory, StoreRequirements,
-  StoreTransaction, TransactionId,
+  BoxFuture, Clock, CommitOutcome, CreatedKey, Digest, Entropy, Error, KeyCreateState,
+  KeyDeleteState, KeyHandle, KeyOperationId, KeyProvider, MonotonicTime, ProviderErrorContext,
+  ProviderErrorKind, PublicKey, ReconcileOutcome, Result, Signature, Storage, StorageFactory,
+  StoreRequirements, StoreTransaction, TransactionId,
 };
 
 #[derive(Debug)]
@@ -39,7 +39,8 @@ impl Clock for VirtualClock {
 
   fn sleep_until<'a>(&'a self, deadline: MonotonicTime) -> BoxFuture<'a, ()> {
     Box::pin(async move {
-      self.monotonic_nanos
+      self
+        .monotonic_nanos
         .fetch_max(deadline.as_nanos_since_origin(), Ordering::SeqCst);
     })
   }
@@ -78,8 +79,7 @@ struct DeclarationOnlyStorage;
 
 impl StorageFactory for DeclarationOnlyStorage {
   fn open<'a>(
-    &'a self,
-    _requirements: StoreRequirements,
+    &'a self, _requirements: StoreRequirements,
   ) -> BoxFuture<'a, Result<Box<dyn Storage>>> {
     Box::pin(async { Err(provider_error(ProviderErrorContext::StorageOpen)) })
   }
@@ -90,15 +90,13 @@ struct DeclarationOnlyKeys;
 
 impl KeyProvider for DeclarationOnlyKeys {
   fn create_ed25519<'a>(
-    &'a self,
-    _operation: &'a KeyOperationId,
+    &'a self, _operation: &'a KeyOperationId,
   ) -> BoxFuture<'a, Result<KeyCreateState>> {
     Box::pin(async { Err(provider_error(ProviderErrorContext::KeyCreate)) })
   }
 
   fn reconcile_create<'a>(
-    &'a self,
-    _operation: &'a KeyOperationId,
+    &'a self, _operation: &'a KeyOperationId,
   ) -> BoxFuture<'a, Result<KeyCreateState>> {
     Box::pin(async { Err(provider_error(ProviderErrorContext::KeyReconcile)) })
   }
@@ -108,25 +106,19 @@ impl KeyProvider for DeclarationOnlyKeys {
   }
 
   fn sign<'a>(
-    &'a self,
-    _handle: &'a KeyHandle,
-    _message: &'a [u8],
+    &'a self, _handle: &'a KeyHandle, _message: &'a [u8],
   ) -> BoxFuture<'a, Result<Signature>> {
     Box::pin(async { Err(provider_error(ProviderErrorContext::KeySign)) })
   }
 
   fn delete<'a>(
-    &'a self,
-    _operation: &'a KeyOperationId,
-    _handle: &'a KeyHandle,
+    &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
   ) -> BoxFuture<'a, Result<KeyDeleteState>> {
     Box::pin(async { Err(provider_error(ProviderErrorContext::KeyDelete)) })
   }
 
   fn reconcile_delete<'a>(
-    &'a self,
-    _operation: &'a KeyOperationId,
-    _handle: &'a KeyHandle,
+    &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
   ) -> BoxFuture<'a, Result<KeyDeleteState>> {
     Box::pin(async { Err(provider_error(ProviderErrorContext::KeyReconcile)) })
   }
@@ -138,7 +130,10 @@ fn g1_lifecycle_monotonic_time_checked_boundaries() {
   let later = start.checked_add(Duration::from_nanos(7)).unwrap();
 
   assert_eq!(later.as_nanos_since_origin(), 12);
-  assert_eq!(later.checked_duration_since(start), Some(Duration::from_nanos(7)));
+  assert_eq!(
+    later.checked_duration_since(start),
+    Some(Duration::from_nanos(7))
+  );
   assert_eq!(start.checked_duration_since(later), None);
   assert_eq!(
     MonotonicTime::from_nanos_since_origin(u64::MAX).checked_add(Duration::from_nanos(1)),
@@ -171,13 +166,12 @@ fn g1_lifecycle_entropy_consumes_reproducible_bytes() {
 
 #[test]
 fn g1_lifecycle_provider_scaffold_matches_builder_signature() {
-  fn assert_dependencies(
-    _storage: Arc<dyn StorageFactory>,
-    _keys: Arc<dyn KeyProvider>,
-  ) {
-  }
+  fn assert_dependencies(_storage: Arc<dyn StorageFactory>, _keys: Arc<dyn KeyProvider>) {}
 
-  assert_dependencies(Arc::new(DeclarationOnlyStorage), Arc::new(DeclarationOnlyKeys));
+  assert_dependencies(
+    Arc::new(DeclarationOnlyStorage),
+    Arc::new(DeclarationOnlyKeys),
+  );
 }
 
 fn provider_error(context: ProviderErrorContext) -> Error {
@@ -186,11 +180,7 @@ fn provider_error(context: ProviderErrorContext) -> Error {
 
 #[allow(dead_code)]
 fn assert_storage_signatures(
-  _transaction: StoreTransaction,
-  _commit: CommitOutcome,
-  _reconcile: ReconcileOutcome,
-  _transaction_id: TransactionId,
-  _digest: Digest,
-  _created: CreatedKey,
+  _transaction: StoreTransaction, _commit: CommitOutcome, _reconcile: ReconcileOutcome,
+  _transaction_id: TransactionId, _digest: Digest, _created: CreatedKey,
 ) {
 }
