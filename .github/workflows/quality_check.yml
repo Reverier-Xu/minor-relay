@@ -65,8 +65,8 @@ jobs:
           echo '33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c  /tmp/ripgrep.tar.gz' \
             | sha256sum --check --strict
           tar --extract --gzip --file /tmp/ripgrep.tar.gz --directory /tmp
-          install -m 0755 /tmp/ripgrep-15.2.0-x86_64-unknown-linux-musl/rg \
-            "${HOME}/.cargo/bin/rg"
+          sudo install -m 0755 /tmp/ripgrep-15.2.0-x86_64-unknown-linux-musl/rg \
+            /usr/bin/rg
           test "$(rg --version | awk 'NR == 1 { print $2 }')" = "15.2.0"
 
       - name: install jq
@@ -76,7 +76,7 @@ jobs:
             --output /tmp/jq
           echo '020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d  /tmp/jq' \
             | sha256sum --check --strict
-          install -m 0755 /tmp/jq "${HOME}/.cargo/bin/jq"
+          sudo install -m 0755 /tmp/jq /usr/bin/jq
           test "$(jq --version)" = "jq-1.8.1"
 
       - name: validate planning contracts
