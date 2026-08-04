@@ -1,11 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::simulation::{
+  artifact::{
+    ArtifactBytes, ArtifactError, EvidenceDigest, EvidenceManifest, FailureClass, InvariantId,
+    build_failure_artifact,
+  },
   event::{DropReason, EventRecord},
+  network::run_fault_matrix_seed,
   redaction::{
     ArtifactCandidate, EndpointAlias, FaultAlias, NodeAlias, NormalizedDropReason, NormalizedEvent,
     PathAlias, RedactionError, ScenarioAliasKind,
   },
+  scenario::ReplaySpec,
   topology::{AddressId, LinkKey, NodeKey, PartitionId},
 };
 
@@ -278,6 +284,26 @@ impl ScenarioFixture {
   }
 }
 
+pub(crate) fn capture_network_fault_matrix(seed: u64) -> Result<ArtifactBytes, ArtifactError> {
+  let run = run_fault_matrix_seed(seed)?;
+  let fixture = ScenarioFixture::network_fault_matrix()?;
+  let replay = ReplaySpec::simulation_network_fault_matrix(seed);
+  let manifest = EvidenceManifest::network_fault_matrix(
+    seed,
+    FailureClass::Invariant,
+    InvariantId::CompleteFaultMatrix,
+    EvidenceDigest::new([0x11; 32]),
+    EvidenceDigest::new([0x22; 32]),
+    replay,
+  )?;
+  let candidates = run
+    .records()
+    .iter()
+    .map(ArtifactCandidate::Simulation)
+    .collect::<Vec<_>>();
+  build_failure_artifact(&manifest, &fixture, &candidates)
+}
+
 fn register_alias<T: Copy + Ord>(
   sources: &mut BTreeMap<T, u16>, aliases: &mut BTreeSet<u16>, source: T, ordinal: u16,
   kind: ScenarioAliasKind,
@@ -419,8 +445,18 @@ mod tests {
     assert_eq!(first, second);
     assert_ne!(first.as_bytes(), changed.as_bytes());
     assert_ne!(first.event_digest(), changed.event_digest());
-    assert!(first.as_bytes().windows(12).any(|window| window == b"endpoint-5\""));
-    assert!(!first.as_bytes().windows(10).any(|window| window == b"\"address\":"));
+    assert!(
+      first
+        .as_bytes()
+        .windows(11)
+        .any(|window| window == b"endpoint-5\"")
+    );
+    assert!(
+      !first
+        .as_bytes()
+        .windows(10)
+        .any(|window| window == b"\"address\":")
+    );
   }
 
   #[test]
