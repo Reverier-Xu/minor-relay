@@ -795,7 +795,7 @@ The two acknowledgement enums do not implement `Default`.
 
 ```rust
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EventOptions { /* private */ }
+pub struct EventOptions { /* private; default 256, legal capacity 1..=1,024 */ }
 impl EventOptions {
     pub fn new() -> Self;
     pub fn capacity(self, value: usize) -> Result<Self>;
@@ -1277,7 +1277,8 @@ duplicate reexports.
 | --- | --- |
 | Values, errors, tags, config | T-G01-01 |
 | Builder, typed bus lifecycle, clock/entropy | T-G01-02 |
-| Storage/key-provider SPI | T-G02-01/T-G02-02 |
+| Storage/key-provider SPI declarations required by `NodeBuilder` | T-G01-02 |
+| Storage/key-provider validation, behavior, implementations, and contract suites | T-G02-01/T-G02-02 |
 | Listen, join, direct protocol | T-G03-02 |
 | Feature/handler registry | T-G03-01 |
 | Session/trust views | T-G04-05 |

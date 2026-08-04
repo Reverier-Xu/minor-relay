@@ -118,6 +118,21 @@ event subscriptions never appear on the network or in persisted data. Wire envel
 transaction records, concrete JSON/redb types, Tokio channels/tasks, and reconciliation state remain
 private.
 
+### Provider Declarations and Event Queue Bounds
+
+`NodeBuilder::new` requires the final object-safe `StorageFactory` and `KeyProvider` types before G2 can
+start, while G2 depends on the G1 facade. T-G01-02 therefore owns declaration of the complete manifest
+signatures for `StorageFactory`, `Storage`, `KeyProvider`, and their transitively named opaque values and
+enums. It retains those injected providers but performs no storage or key operation. T-G02-01 and
+T-G02-02 continue to own all constructors, validation, transaction, reconciliation, persistence,
+redaction, provider behavior, implementations, and contract suites. Empty marker versions of these
+open traits are forbidden because adding required methods later would break implementors.
+
+Each transient event subscription has a default capacity of 256 items and accepts an explicit capacity
+only in `1..=1,024`. Zero and larger values fail before channel allocation. This per-subscription bound
+does not assign concrete event production or subscriber-count policy to G1; those remain with their
+owning event tasks.
+
 ### Cleanup Ownership
 
 G7 owns the private exact-tombstone cleanup transaction, crash semantics, and resurrection model. It

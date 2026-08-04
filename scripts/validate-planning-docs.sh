@@ -196,7 +196,7 @@ check_argv_policy() {
 }
 check_argv_policy "$TMP/task-verification.json" || fail "unsafe, altered, or unbounded verification argv/Q"
 TASK_MANIFEST_DIGEST=$(jq -cS '.' "$TMP/task-verification.json" | sha256sum | awk '{print $1}')
-[[ $TASK_MANIFEST_DIGEST == 71a63f556818a2f8a1953f5a30e585a90a80f58b2063ec419149a9dabd581fc9 ]] || fail "task readiness/argv manifest differs from frozen handoff"
+[[ $TASK_MANIFEST_DIGEST == 3f1b39fba35354f25e06d4158ede2baa246d632ba6f1b52073ae61d5c72e43d7 ]] || fail "task readiness/argv manifest differs from frozen handoff"
 
 check_threat_shape() {
   local file=$1
@@ -238,12 +238,12 @@ jq -e --slurpfile threats "$TMP/threat-model.json" '
 
 jq -e --rawfile tasks "$TMP/plan-tasks.txt" '
   ($tasks | split("\n") | map(select(length > 0))) as $known
-  | ([.constant[].id] | length) == 44
+  | ([.constant[].id] | length) == 46
   and ([.constant[].id] | length) == ([.constant[].id] | unique | length)
   and all(.constant[]; . as $constant | ($constant.id | test("^[a-z0-9][a-z0-9.-]+$")) and ($constant.value | length > 0) and ($constant.unit | length > 0) and ($constant.source | length > 0) and ($known | index($constant.owner_task)) != null)
 ' "$TMP/decision-register.json" >/dev/null || fail "invalid decision constant ownership"
 DECISION_DIGEST=$(jq -cS '.constant' "$TMP/decision-register.json" | sha256sum | awk '{print $1}')
-[[ $DECISION_DIGEST == 22262e1bc49daacb1faa3f5bd716b47ea5b10561a41711f61d1b2012d99bd717 ]] || fail "decision register differs from frozen 44-entry map"
+[[ $DECISION_DIGEST == 68c497918dc520bbcf7126e4ab62b4a7e9c3ef6463c67ae11fe42f1d5f156de1 ]] || fail "decision register differs from frozen 46-entry map"
 
 check_forbidden_api_tokens() {
   local document=$1 inventory=$2 token rust_blocks
@@ -257,7 +257,7 @@ check_forbidden_api_tokens() {
 check_api_inventory() {
   local inventory=$1 document digest item token rust_blocks
   digest=$(jq -cS '.' "$inventory" | sha256sum | awk '{print $1}')
-  [[ $digest == 423c42a591fb233f8da35fd2ac9340fece6a6efe6ef43e7d5880e4732b573b42 ]] || return 1
+  [[ $digest == db4a17b33717e2a348a12db5bbc70a6fdf4b37299e4441c60f17a25102946433 ]] || return 1
   document=$(jq -r '.document' "$inventory")
   [[ $document == docs/api-manifest.md && -f $document ]] || return 1
   [[ $(sha256sum "$document" | awk '{print $1}') == "$(jq -r '.sha256' "$inventory")" ]] || return 1
