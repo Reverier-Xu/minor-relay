@@ -43,6 +43,36 @@ jobs:
       - name: cargo fmt
         run: cargo +nightly fmt --all -- --check
 
+  planning:
+    name: planning
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: install taplo
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
+        with:
+          tool: taplo-cli@0.10.0
+
+      - name: install jq
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-linux-amd64 \
+            --output /tmp/jq
+          echo '020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d  /tmp/jq' \
+            | sha256sum --check --strict
+          install -m 0755 /tmp/jq "${HOME}/.cargo/bin/jq"
+          test "$(jq --version)" = "jq-1.8.1"
+
+      - name: validate planning contracts
+        run: scripts/validate-planning-docs.sh
+
+      - name: reject invalid planning fixtures
+        run: scripts/validate-planning-docs.sh --self-test
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest
