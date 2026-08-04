@@ -9,6 +9,9 @@ mod provider;
 mod runtime;
 mod view;
 
+#[cfg(test)]
+mod simulation;
+
 pub use api::{BoxFuture, MonotonicTime};
 pub use config::{AdmissionLimits, NodeConfig, ProtocolLimits, TraceLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
