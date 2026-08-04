@@ -13,6 +13,10 @@ impl NodeKey {
   pub(crate) const fn new(value: u16) -> Self {
     Self(value)
   }
+
+  pub(crate) const fn value(self) -> u16 {
+    self.0
+  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -22,6 +26,10 @@ impl AddressId {
   pub(crate) const fn new(value: u32) -> Self {
     Self(value)
   }
+
+  pub(crate) const fn value(self) -> u32 {
+    self.0
+  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -30,6 +38,10 @@ pub(crate) struct PartitionId(u32);
 impl PartitionId {
   pub(crate) const fn new(value: u32) -> Self {
     Self(value)
+  }
+
+  pub(crate) const fn value(self) -> u32 {
+    self.0
   }
 }
 
