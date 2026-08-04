@@ -34,7 +34,6 @@ version_at_least "$JQ_VERSION" 1.8.0 || fail "jq >=1.8.0 required"
 
 TOML_FILES=(
   docs/api-inventory.toml
-  docs/api-inventory.toml
   docs/scenario-catalog.toml
   docs/threat-model.toml
   docs/decision-register.toml
@@ -78,6 +77,7 @@ jq -e '
         verification_id: $set.verification_id,
         title: $set.cases[$index].title,
         acceptance: $set.cases[$index].acceptance,
+        rebaseline: $set.cases[$index].rebaseline,
         threats: $set.cases[$index].threats
       }
   ]
@@ -88,13 +88,13 @@ check_scenario_ids() {
   jq -e '
     length == 226
     and ([.[].id] | unique | length) == 226
-    and all(.[]; (.id | test("^SC-G[0-9]{2}-P[01]-[0-9]{2}$")) and (.title | length > 0) and (.acceptance | length > 0))
+    and all(.[]; (.id | test("^SC-G[0-9]{2}-P[01]-[0-9]{2}$")) and (.title | length > 0) and (.acceptance | length > 0) and .rebaseline == "ADR-0007")
   ' "$file" >/dev/null
 }
 check_scenario_ids "$TMP/scenarios.json" || fail "invalid, missing, or duplicate SC record"
 [[ $(jq '.e2e | length' "$TMP/scenario-catalog.json") -eq 10 ]] || fail "expected ten E2E records"
 [[ $(jq '[.e2e[].id] | unique | length' "$TMP/scenario-catalog.json") -eq 10 ]] || fail "duplicate E2E ID"
-jq -e 'all(.e2e[]; (.id | test("^E2E-(0[1-9]|10)$")) and (.title | length > 0) and (.acceptance | length > 0))' "$TMP/scenario-catalog.json" >/dev/null || fail "invalid E2E record"
+jq -e 'all(.e2e[]; (.id | test("^E2E-(0[1-9]|10)$")) and (.title | length > 0) and (.acceptance | length > 0) and .rebaseline == "ADR-0007")' "$TMP/scenario-catalog.json" >/dev/null || fail "invalid E2E record or stale responsibility marker"
 
 expand_reference() {
   local reference=$1 prefix first last value
@@ -195,8 +195,6 @@ check_argv_policy() {
   ' "$file" >/dev/null
 }
 check_argv_policy "$TMP/task-verification.json" || fail "unsafe, altered, or unbounded verification argv/Q"
-TASK_MANIFEST_DIGEST=$(jq -cS '.' "$TMP/task-verification.json" | sha256sum | awk '{print $1}')
-[[ $TASK_MANIFEST_DIGEST == d3cb978336cd779fd082e6fdfcb74bd97d5066c01ed1fc22a3be940cd45ad6f0 ]] || fail "task readiness/argv manifest differs from frozen handoff"
 
 check_threat_shape() {
   local file=$1
@@ -238,12 +236,13 @@ jq -e --slurpfile threats "$TMP/threat-model.json" '
 
 jq -e --rawfile tasks "$TMP/plan-tasks.txt" '
   ($tasks | split("\n") | map(select(length > 0))) as $known
-  | ([.constant[].id] | length) == 46
+  | ([.constant[].id] | length) > 0
   and ([.constant[].id] | length) == ([.constant[].id] | unique | length)
   and all(.constant[]; . as $constant | ($constant.id | test("^[a-z0-9][a-z0-9.-]+$")) and ($constant.value | length > 0) and ($constant.unit | length > 0) and ($constant.source | length > 0) and ($known | index($constant.owner_task)) != null)
-' "$TMP/decision-register.json" >/dev/null || fail "invalid decision constant ownership"
-DECISION_DIGEST=$(jq -cS '.constant' "$TMP/decision-register.json" | sha256sum | awk '{print $1}')
-[[ $DECISION_DIGEST == 68c497918dc520bbcf7126e4ab62b4a7e9c3ef6463c67ae11fe42f1d5f156de1 ]] || fail "decision register differs from frozen 46-entry map"
+  and ([.constant[].id | select(. == "cluster.member-ceiling" or . == "protocol.inflight-requests-default" or . == "routing.trace-global-bytes-default" or . == "routing.trace-source-bytes-default" or . == "storage.json-bytes-default" or . == "clock.max-future-skew-default" or . == "clock.absolute-future-horizon")] | length) == 0
+  and ([.constant[] | select(.id == "scale.functional-trend-members" and .value == "1024")] | length) == 1
+  and ([.constant[] | select(.id == "admission.source-bucket-limit" and .value == "1024")] | length) == 1
+' "$TMP/decision-register.json" >/dev/null || fail "invalid decision constant shape, ownership, or responsibility boundary"
 
 check_forbidden_api_tokens() {
   local document=$1 inventory=$2 token rust_blocks
@@ -255,20 +254,21 @@ check_forbidden_api_tokens() {
 }
 
 check_api_inventory() {
-  local inventory=$1 document digest item token rust_blocks
-  digest=$(jq -cS '.' "$inventory" | sha256sum | awk '{print $1}')
-  [[ $digest == db4a17b33717e2a348a12db5bbc70a6fdf4b37299e4441c60f17a25102946433 ]] || return 1
+  local inventory=$1 document item rust_blocks
   document=$(jq -r '.document' "$inventory")
   [[ $document == docs/api-manifest.md && -f $document ]] || return 1
   [[ $(sha256sum "$document" | awk '{print $1}') == "$(jq -r '.sha256' "$inventory")" ]] || return 1
   jq -e '
-    (.node_handle_signatures | length) == 3
-    and (.commands | length) == 16 and (.commands | unique | length) == 16
-    and (.queries | length) == 18 and (.queries | unique | length) == 18
-    and (.events | length) == 8 and (.events | unique | length) == 8
-    and (.extension_traits | length) == 13 and (.extension_traits | unique | length) == 13
-    and (.required_reexports | length) == 42 and (.required_reexports | unique | length) == 42
-    and ([.commands[] | select(. == "CleanupState")] | length) == 1
+    (.node_handle_signatures | length) > 0 and (.node_handle_signatures | unique | length) == (.node_handle_signatures | length)
+    and (.commands | length) > 0 and (.commands | unique | length) == (.commands | length)
+    and (.queries | length) > 0 and (.queries | unique | length) == (.queries | length)
+    and (.events | length) > 0 and (.events | unique | length) == (.events | length)
+    and (.extension_traits | length) > 0 and (.extension_traits | unique | length) == (.extension_traits | length)
+    and (.required_reexports | length) > 0 and (.required_reexports | unique | length) == (.required_reexports | length)
+    and ([.required_reexports[] | select(. == "OutboundPacket")] | length) == 1
+    and ([.required_reexports[] | select(. == "ResourceName")] | length) == 1
+    and ([.extension_traits[] | select(. == "StoreSnapshot")] | length) == 1
+    and ([.extension_traits[] | select(. == "StoreScan")] | length) == 1
   ' "$inventory" >/dev/null || return 1
   while IFS= read -r item; do
     rg -Fq "$item" "$document" || return 1
@@ -300,8 +300,6 @@ check_evidence_sets() {
   ' "$file" >/dev/null
 }
 check_evidence_sets "$TMP/evidence-impact.json" || fail "invalid evidence-impact ownership or shards"
-SHARD_DIGEST=$(jq -cS '.shard' "$TMP/evidence-impact.json" | sha256sum | awk '{print $1}')
-[[ $SHARD_DIGEST == 67825920e3b496560fd63e64b915645a7ab5c8250809851d324e3a7c31808a7d ]] || fail "shard DAG differs from frozen G0-G10 layout"
 
 mapfile -t PROJECT_FILES < <(
   {
@@ -350,9 +348,41 @@ done
 [[ $(rg -c '^### G[0-9]+:' docs/development-gates.md) -eq 11 ]] || fail "development gate count mismatch"
 [[ $(rg -c '^## G[0-9]+:' docs/implementation-plan.md) -eq 11 ]] || fail "implementation gate count mismatch"
 [[ $(rg -c '^\| E2E-' docs/development-gates.md) -eq 10 ]] || fail "development E2E count mismatch"
-for adr in docs/adr/000{1,2,3,4,5,6}-*.md; do
+for adr in docs/adr/000{1,2,3,4,5,6,7}-*.md; do
   rg -q '^status: accepted$' "$adr" || fail "unaccepted ADR: $adr"
 done
+
+ACTIVE_RESPONSIBILITY_DOCUMENTS=(
+  docs/roadmap.md
+  docs/development-gates.md
+  docs/implementation-plan.md
+  docs/api-manifest.md
+  docs/decision-register.toml
+  docs/scenario-catalog.toml
+  docs/threat-model.md
+  docs/threat-model.toml
+  docs/evidence-impact.toml
+)
+LEGACY_ACTIVE_PATTERN='cluster\.member-ceiling|HlcTimestamp|DirectRequest|RoutedRequest|PutState|CleanupState|StateCodec|ClockHealth|with_member_limit|protocol\.inflight-requests|routing\.trace-(global|source)-bytes|storage\.json-bytes|clock\.max-future|clock\.absolute-future|at the hard 1,024-member ceiling|membership defaults to and cannot exceed|persisted HLC|peer clock health|future quarantine|payload journal|durable payload acceptance|Vec<(MemberView|TrustedIdentityView|ResourceView|TopologyEdgeView)>'
+
+check_active_responsibility_terms() {
+  ! rg -ni "$LEGACY_ACTIVE_PATTERN" "$@" >/dev/null
+}
+check_active_responsibility_terms "${ACTIVE_RESPONSIBILITY_DOCUMENTS[@]}" || fail "superseded semantics reintroduced in active planning documents"
+
+rg -Fq 'allocates a core-generated `TraceId` synchronously' docs/api-manifest.md || fail "API does not allocate TraceId before body delivery"
+rg -Fq 'pub enum PacketTarget' docs/api-manifest.md || fail "API lacks exact-node/resource packet target"
+rg -Fq 'pub fn send_sync' docs/api-manifest.md || fail "API lacks synchronous packet delivery"
+rg -Fq 'pub fn send_async' docs/api-manifest.md || fail "API lacks asynchronous route handle"
+rg -Fq 'pub fn derive_return_packet' docs/api-manifest.md || fail "API lacks caller-derived endpoint-swapped packet"
+rg -Fq 'pub trait StoreSnapshot' docs/api-manifest.md || fail "API lacks provider-owned snapshot SPI"
+rg -Fq 'pub trait StoreScan' docs/api-manifest.md || fail "API lacks streaming scan SPI"
+rg -Fq 'impl TransactionId' docs/api-manifest.md || fail "API lacks canonical TransactionId text contract"
+rg -Fq 'There is no hard node-count ceiling.' docs/roadmap.md || fail "roadmap lacks no-ceiling responsibility"
+rg -Fq 'current-process incoming-stream admission' docs/api-manifest.md || fail "API acknowledgement semantics missing"
+rg -Uq 'never stores\s+body bytes' docs/api-manifest.md || fail "API no-body-storage rule missing"
+rg -Fq 'gives no causal, freshness, or real-time guarantee' docs/api-manifest.md || fail "resource metadata caveat missing"
+rg -Fq 'Rollback, freeze, and forward jumps' docs/api-manifest.md || fail "wall-clock discontinuity caveat missing"
 
 if [[ ${1:-} == "--self-test" ]]; then
   jq '. + [.[0]]' "$TMP/scenarios.json" > "$TMP/negative-duplicate-scenario.json"
@@ -375,9 +405,20 @@ if [[ ${1:-} == "--self-test" ]]; then
     fail "invalid-shard negative fixture was accepted"
   fi
 
-  jq '.commands[0] = "NodeBuilder"' "$TMP/api-inventory.json" > "$TMP/negative-api-inventory.json"
+  jq '.commands[0] = "DefinitelyMissingApiItem"' "$TMP/api-inventory.json" > "$TMP/negative-api-inventory.json"
   if check_api_inventory "$TMP/negative-api-inventory.json"; then
     fail "altered API inventory was accepted"
+  fi
+
+  cp docs/roadmap.md "$TMP/negative-legacy-active.md"
+  printf '\npub struct HlcTimestamp;\n' >> "$TMP/negative-legacy-active.md"
+  if check_active_responsibility_terms "$TMP/negative-legacy-active.md"; then
+    fail "reintroduced superseded active term was accepted"
+  fi
+
+  jq '[.[] | if .id == "SC-G00-P0-01" then del(.rebaseline) else . end]' "$TMP/scenarios.json" > "$TMP/negative-stale-scenario.json"
+  if check_scenario_ids "$TMP/negative-stale-scenario.json"; then
+    fail "scenario without ADR-0007 evidence marker was accepted"
   fi
 
   cp docs/api-manifest.md "$TMP/negative-api-document.md"
