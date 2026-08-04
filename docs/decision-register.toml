@@ -1,19 +1,22 @@
 schema = "relay.woooo.tech/schemas/decision-register-v1"
 status = "accepted"
 
-[[constant]]
-id = "cluster.member-ceiling"
-value = "1024"
-unit = "members"
-owner_task = "T-G01-01"
-source = "ADR-0006#cluster-scale-and-slo-scope"
+# This register contains protocol, fixed security policy, default finite-work, and evidence values.
+# It intentionally contains no product node ceiling or provider storage-capacity policy.
 
 [[constant]]
-id = "slo.quantified-member-ceiling"
+id = "slo.quantified-profile-members"
 value = "16"
 unit = "members"
 owner_task = "T-G00-05"
-source = "ADR-0005#scope-of-the-claim"
+source = "ADR-0007#verification-and-release"
+
+[[constant]]
+id = "scale.functional-trend-members"
+value = "1024"
+unit = "members"
+owner_task = "T-G07-06"
+source = "ADR-0007#verification-and-release"
 
 [[constant]]
 id = "slo.sample-deadline"
@@ -55,63 +58,63 @@ id = "admission.credential-entropy"
 value = "32"
 unit = "bytes"
 owner_task = "T-G00-01"
-source = "ADR-0001#join-credential-lifecycle"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
 id = "admission.credential-lifetime"
 value = "600"
 unit = "seconds"
 owner_task = "T-G00-01"
-source = "ADR-0001#join-credential-lifecycle"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
-id = "admission.pending-per-source-default"
+id = "admission.pending-per-source"
 value = "4"
 unit = "attempts"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
-id = "admission.pending-global-default"
+id = "admission.pending-global"
 value = "64"
 unit = "attempts"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
-id = "admission.rate-per-source-default"
+id = "admission.rate-per-source"
 value = "16"
 unit = "attempts per 60 seconds"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
-id = "admission.rate-global-default"
+id = "admission.rate-global"
 value = "256"
 unit = "attempts per 60 seconds"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
-id = "admission.source-bucket-ceiling"
+id = "admission.source-bucket-limit"
 value = "1024"
 unit = "buckets"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
 id = "admission.source-bucket-idle-lifetime"
 value = "600"
 unit = "seconds"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
 id = "admission.authentication-deadline"
 value = "10"
 unit = "seconds"
 owner_task = "T-G03-06"
-source = "ADR-0006#admission-resource-limits"
+source = "ADR-0007#identity-and-admission"
 
 [[constant]]
 id = "wire.prelude-length"
@@ -121,7 +124,7 @@ owner_task = "T-G01-01"
 source = "ADR-0002#fixed-binary-prelude"
 
 [[constant]]
-id = "wire.tag-length-ceiling"
+id = "wire.tag-length-limit"
 value = "128"
 unit = "bytes"
 owner_task = "T-G01-01"
@@ -132,126 +135,70 @@ id = "wire.receive-frame-default"
 value = "16777216"
 unit = "bytes"
 owner_task = "T-G03-06"
-source = "ADR-0002#local-pre-negotiation-guards"
+source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "wire.authentication-body-default"
 value = "65536"
 unit = "bytes"
 owner_task = "T-G03-06"
-source = "ADR-0002#local-pre-negotiation-guards"
+source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "wire.decode-depth-default"
 value = "32"
 unit = "levels"
 owner_task = "T-G01-01"
-source = "ADR-0002#local-pre-negotiation-guards"
+source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "wire.collection-items-default"
 value = "4096"
 unit = "items"
 owner_task = "T-G01-01"
-source = "ADR-0002#local-pre-negotiation-guards"
+source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "event.subscription-capacity-default"
 value = "256"
 unit = "items per subscription"
 owner_task = "T-G01-02"
-source = "ADR-0006#provider-declarations-and-event-queue-bounds"
+source = "ADR-0007#runtime-and-backpressure"
 
 [[constant]]
-id = "event.subscription-capacity-ceiling"
-value = "1024"
-unit = "items per subscription"
-owner_task = "T-G01-02"
-source = "ADR-0006#provider-declarations-and-event-queue-bounds"
-
-[[constant]]
-id = "feature.offer-label-ceiling"
+id = "feature.offer-label-limit"
 value = "128"
 unit = "labels per class"
 owner_task = "T-G03-01"
-source = "ADR-0002#authenticated-feature-negotiation"
+source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
-id = "feature.offer-limit-ceiling"
+id = "feature.offer-limit-count"
 value = "128"
 unit = "numeric limits"
 owner_task = "T-G03-01"
-source = "ADR-0002#authenticated-feature-negotiation"
+source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "session.queued-messages-default"
 value = "1024"
 unit = "messages"
 owner_task = "T-G04-04"
-source = "ADR-0002#local-pre-negotiation-guards"
+source = "ADR-0007#runtime-and-backpressure"
 
 [[constant]]
 id = "session.queued-bytes-default"
 value = "8388608"
 unit = "bytes"
 owner_task = "T-G04-04"
-source = "ADR-0002#local-pre-negotiation-guards"
+source = "ADR-0007#runtime-and-backpressure"
 
 [[constant]]
-id = "protocol.data-body-default"
-value = "1048576"
-unit = "bytes"
-owner_task = "T-G03-04"
-source = "ADR-0002#negotiated-numeric-limits"
-
-[[constant]]
-id = "protocol.inflight-requests-default"
-value = "256"
-unit = "requests"
-owner_task = "T-G03-05"
-source = "ADR-0002#negotiated-numeric-limits"
-
-[[constant]]
-id = "routing.hop-ceiling"
-value = "15"
-unit = "edges each direction"
-owner_task = "T-G06-01"
-source = "ADR-0002#routed-request-and-attempt-authorization"
-
-[[constant]]
-id = "routing.attempt-ordinal-count"
-value = "4"
-unit = "ordinals"
-owner_task = "T-G06-05"
-source = "ADR-0002#source-owned-retries"
-
-[[constant]]
-id = "routing.ack-timeout-default"
-value = "2"
-unit = "seconds"
-owner_task = "T-G06-05"
-source = "ADR-0002#source-owned-retries"
-
-[[constant]]
-id = "routing.trace-retention-default"
+id = "trace.metadata-retention-default"
 value = "86400"
 unit = "seconds"
 owner_task = "T-G06-05"
-source = "ADR-0002#retention-clock-and-cleanup"
-
-[[constant]]
-id = "routing.trace-global-bytes-default"
-value = "268435456"
-unit = "bytes"
-owner_task = "T-G06-02"
-source = "ADR-0002#durable-quota-reservation"
-
-[[constant]]
-id = "routing.trace-source-bytes-default"
-value = "67108864"
-unit = "bytes"
-owner_task = "T-G06-02"
-source = "ADR-0002#durable-quota-reservation"
+source = "ADR-0007#packet-streams-and-trace-identity"
 
 [[constant]]
 id = "storage.receipt-cleanup-minimum-age"
@@ -261,56 +208,28 @@ owner_task = "T-G02-01"
 source = "ADR-0003#receipt-lifetime-and-cleanup"
 
 [[constant]]
-id = "storage.json-generation-default"
-value = "1024"
-unit = "generations"
-owner_task = "T-G02-03"
-source = "ADR-0003#json-generation-chain"
-
-[[constant]]
-id = "storage.json-bytes-default"
-value = "4294967296"
-unit = "bytes"
-owner_task = "T-G02-03"
-source = "ADR-0003#json-generation-chain"
-
-[[constant]]
-id = "clock.max-future-skew-default"
-value = "5"
-unit = "seconds"
-owner_task = "T-G07-01"
-source = "ADR-0003#future-record-classification"
-
-[[constant]]
-id = "clock.absolute-future-horizon"
-value = "24"
-unit = "hours"
-owner_task = "T-G07-01"
-source = "ADR-0003#future-record-classification"
-
-[[constant]]
-id = "evidence.artifact-byte-ceiling"
+id = "evidence.artifact-byte-limit"
 value = "1048576"
 unit = "bytes"
 owner_task = "T-G01-04"
 source = "ADR-0004#failure-artifact-and-replay-schema"
 
 [[constant]]
-id = "evidence.artifact-event-ceiling"
+id = "evidence.artifact-event-limit"
 value = "10000"
 unit = "events"
 owner_task = "T-G01-04"
 source = "ADR-0004#failure-artifact-and-replay-schema"
 
 [[constant]]
-id = "evidence.corpus-entry-ceiling"
+id = "evidence.corpus-entry-limit"
 value = "4096"
 unit = "entries per target"
 owner_task = "T-G10-03"
 source = "ADR-0004#corpus-ownership-and-privacy"
 
 [[constant]]
-id = "evidence.corpus-byte-ceiling"
+id = "evidence.corpus-byte-limit"
 value = "67108864"
 unit = "bytes per target"
 owner_task = "T-G10-03"
