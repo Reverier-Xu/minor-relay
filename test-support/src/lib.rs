@@ -144,7 +144,7 @@ impl NormalizedDropReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EventKind {
+enum EventKind {
   StateTransition,
   SendAccepted,
   Lost,
@@ -263,7 +263,7 @@ impl NormalizedEvent {
     }
   }
 
-  pub const fn kind(self) -> EventKind {
+  const fn kind(self) -> EventKind {
     match self {
       Self::StateTransition { .. } => EventKind::StateTransition,
       Self::SendAccepted { .. } => EventKind::SendAccepted,
@@ -281,7 +281,7 @@ impl NormalizedEvent {
     }
   }
 
-  pub const fn at_nanos(self) -> u64 {
+  const fn at_nanos(self) -> u64 {
     match self {
       Self::StateTransition { at_nanos, .. }
       | Self::SendAccepted { at_nanos, .. }
@@ -321,47 +321,6 @@ impl NormalizedEvent {
         require(endpoint, AliasKind::Endpoint)
       }
       _ => Ok(()),
-    }
-  }
-
-  pub fn node_alias(self) -> Option<String> {
-    match self {
-      Self::Restarted { node, .. }
-      | Self::AddressChanged { node, .. }
-      | Self::ClockSkewChanged { node, .. } => Some(node.render()),
-      _ => None,
-    }
-  }
-
-  pub fn endpoint_alias(self) -> Option<String> {
-    match self {
-      Self::AddressChanged { endpoint, .. } => Some(endpoint.render()),
-      _ => None,
-    }
-  }
-
-  pub fn path_alias(self) -> Option<String> {
-    match self {
-      Self::SendAccepted { path, .. }
-      | Self::Partitioned { path, .. }
-      | Self::Healed { path, .. } => Some(path.render()),
-      _ => None,
-    }
-  }
-
-  pub fn fault_alias(self) -> Option<String> {
-    match self {
-      Self::Partitioned { fault, .. } | Self::Healed { fault, .. } => Some(fault.render()),
-      _ => None,
-    }
-  }
-
-  pub const fn payload_len(self) -> Option<u32> {
-    match self {
-      Self::SendAccepted { payload_len, .. } | Self::QueueRejected { payload_len, .. } => {
-        Some(payload_len)
-      }
-      _ => None,
     }
   }
 }

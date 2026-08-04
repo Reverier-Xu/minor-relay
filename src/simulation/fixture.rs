@@ -291,7 +291,9 @@ const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
 
 #[cfg(test)]
 mod tests {
-  use minor_relay_test_support::{AliasKind, EventKind, NormalizedEventSource, SourceError};
+  use minor_relay_test_support::{
+    AliasKind, NormalizedDropReason, NormalizedEvent, NormalizedEventSource, SourceError,
+  };
 
   use super::{ScenarioFixture, SimulationEvidenceSource};
   use crate::simulation::{
@@ -396,33 +398,49 @@ mod tests {
       .collect::<Result<Vec<_>, _>>()
       .unwrap();
     assert_eq!(events.len(), records.len());
-    let kinds = events.iter().map(|event| event.kind()).collect::<Vec<_>>();
-    assert_eq!(
-      kinds,
-      [
-        EventKind::SendAccepted,
-        EventKind::Lost,
-        EventKind::DuplicateCreated,
-        EventKind::Reordered,
-        EventKind::Delivered,
-        EventKind::Partitioned,
-        EventKind::Healed,
-        EventKind::Restarted,
-        EventKind::AddressChanged,
-        EventKind::ClockSkewChanged,
-        EventKind::QueueRejected,
-        EventKind::Dropped,
-        EventKind::Dropped,
-        EventKind::Dropped,
-        EventKind::Dropped,
-        EventKind::Dropped,
-      ],
-    );
-    assert_eq!(events[0].path_alias().as_deref(), Some("path-1"));
-    assert_eq!(events[5].fault_alias().as_deref(), Some("fault-1"));
-    assert_eq!(events[7].node_alias().as_deref(), Some("node-2"));
-    assert_eq!(events[8].endpoint_alias().as_deref(), Some("endpoint-5"));
-    assert_eq!(events[0].payload_len(), Some(64));
+    let [
+      NormalizedEvent::SendAccepted {
+        path, payload_len, ..
+      },
+      NormalizedEvent::Lost { .. },
+      NormalizedEvent::DuplicateCreated { .. },
+      NormalizedEvent::Reordered { .. },
+      NormalizedEvent::Delivered { .. },
+      NormalizedEvent::Partitioned { fault, .. },
+      NormalizedEvent::Healed { .. },
+      NormalizedEvent::Restarted { node, .. },
+      NormalizedEvent::AddressChanged { endpoint, .. },
+      NormalizedEvent::ClockSkewChanged { .. },
+      NormalizedEvent::QueueRejected { .. },
+      NormalizedEvent::Dropped {
+        reason: NormalizedDropReason::Blocked,
+        ..
+      },
+      NormalizedEvent::Dropped {
+        reason: NormalizedDropReason::StaleLink,
+        ..
+      },
+      NormalizedEvent::Dropped {
+        reason: NormalizedDropReason::StaleBoot,
+        ..
+      },
+      NormalizedEvent::Dropped {
+        reason: NormalizedDropReason::StaleAddress,
+        ..
+      },
+      NormalizedEvent::Dropped {
+        reason: NormalizedDropReason::Offline,
+        ..
+      },
+    ] = events.as_slice()
+    else {
+      panic!("normalized simulation event sequence differs from the closed record set");
+    };
+    assert_eq!(path.render(), "path-1");
+    assert_eq!(fault.render(), "fault-1");
+    assert_eq!(node.render(), "node-2");
+    assert_eq!(endpoint.render(), "endpoint-5");
+    assert_eq!(*payload_len, 64);
   }
 
   #[test]

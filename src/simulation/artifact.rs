@@ -42,10 +42,6 @@ impl MatrixFailure {
       Self::FingerprintCollision => "seed-fingerprint-uniqueness",
     }
   }
-
-  const fn invariant_id(self) -> &'static str {
-    self.diagnostic()
-  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,7 +103,7 @@ fn matrix_manifest(
   let test = EvidenceId::new("simulation-network-fault-matrix")
     .map_err(|_| FailureCaptureError::InvalidMetadata)?;
   let invariant =
-    EvidenceId::new(failure.invariant_id()).map_err(|_| FailureCaptureError::InvalidMetadata)?;
+    EvidenceId::new(failure.diagnostic()).map_err(|_| FailureCaptureError::InvalidMetadata)?;
   EvidenceManifest::new(
     ProducerKind::Simulation,
     scenario,
