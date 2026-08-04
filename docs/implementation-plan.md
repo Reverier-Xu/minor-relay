@@ -93,7 +93,7 @@ require a plan amendment.
 
 | Task | Risk | Depends | Deliverable / exact API impact | Owned paths | Evidence | RB |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-G06-01 Packet route authorization | P0/H | G5 PASS | Exact-node/resource-selector target, signed trace route context, checked hop/loop policy, one selected next hop | routing envelope/policy | SC-G06-P0-01..04; mutation/loop/amplification properties | R1 |
+| T-G06-01 Packet route authorization | P0/H | G5 PASS | Exact-node/matching-node-label target, signed trace route context, checked hop/loop policy, one selected next hop | routing envelope/policy | SC-G06-P0-01..04; selection/mutation/loop/amplification properties | R1 |
 | T-G06-02 Trace metadata store | P0/H | 06-01,G2 PASS | Store only selected destination/attempt/progress/terminal metadata with caller retention/capacity; never body bytes | routing trace metadata | SC-G06-P0-05..08; no-body/reconcile/capacity/compatibility | R2 |
 | T-G06-03 Ordered constant-memory forwarding | P0/H | 06-02,G4 PASS | Stream frames once along selected route with backpressure; disconnect returns explicit typed failure | routing forwarder | SC-G06-P0-09..11; order/memory/fault boundaries | R2 |
 | T-G06-04 Destination stream admission | P0/H | 06-02,G4 PASS | Authenticate and admit bounded incoming stream; ACK current-process admission only; no caller outcome semantics | routing destination/packet consumer | SC-G06-P0-12..15; forged/overload/crash/no-durability cases | R2 |

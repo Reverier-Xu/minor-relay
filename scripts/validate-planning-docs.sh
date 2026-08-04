@@ -170,6 +170,11 @@ jq -e '
     )
 ' "$TMP/task-verification.json" >/dev/null || fail "task readiness or argv state invalid"
 
+jq -e '
+  all(.task[] | select(.id | startswith("T-G01-")); .state == "planned")
+  and all(.verification[] | select(.owner_task | startswith("T-G01-")); .state == "planned" and (.argv | length) == 0)
+' "$TMP/task-verification.json" >/dev/null || fail "reopened G1 accepted stale verification argv"
+
 check_argv_policy() {
   local file=$1
   jq -e '
@@ -202,7 +207,7 @@ check_threat_shape() {
     ["credential-guessing", "replay", "impersonation", "identity-clones", "sybil-admission", "stale-metadata", "protocol-downgrade", "route-amplification", "oversized-payloads", "slow-peers", "future-timestamps", "malicious-members", "secret-disclosure"] as $mandatory
     | [.threat[].id] == [range(1; 30) | "THR-" + (tostring | if length == 1 then "00" + . elif length == 2 then "0" + . else . end)]
     and ([.threat[].mandatory_key | select(length > 0)] | sort) == ($mandatory | sort)
-    and all(.threat[]; .status == "accepted" and (.priority == "P0" or .priority == "P1") and (.mitigation | length) > 0 and has("residual") and (.scenario_ids | length) > 0)
+    and all(.threat[]; .status == "accepted" and (.priority == "P0" or .priority == "P1") and (.mitigation | length) > 0 and (.residual | length) > 0 and (.scenario_ids | length) > 0)
   ' "$file" >/dev/null
 }
 check_threat_shape "$TMP/threat-model.json" || fail "threat model continuity, mandatory categories, or mitigation invalid"
@@ -219,7 +224,7 @@ jq -e --slurpfile scenarios "$TMP/scenarios.json" --slurpfile catalog "$TMP/scen
     and ($threat.priority == "P0" or $threat.priority == "P1")
     and ($known_tasks | index($threat.owner_task)) != null
     and ($threat.mitigation | length) > 0
-    and ($threat | has("residual"))
+    and ($threat.residual | length) > 0
     and ($threat.scenario_ids | length) > 0
     and all($threat.scenario_ids[]; . as $scenario | ($known_scenarios | index($scenario)) != null)
   )
@@ -234,6 +239,14 @@ jq -e --slurpfile threats "$TMP/threat-model.json" '
   | all(.e2e[]; . as $scenario | all($scenario.threats[]; . as $threat | ($known | index($threat)) != null))
 ' "$TMP/scenario-catalog.json" >/dev/null || fail "E2E references unknown threat"
 
+jq -r '.[] as $scenario | $scenario.threats[] | [., $scenario.id] | @tsv' "$TMP/scenarios.json" > "$TMP/scenario-threat-links.tsv"
+jq -r '.e2e[] as $scenario | $scenario.threats[] | [., $scenario.id] | @tsv' "$TMP/scenario-catalog.json" >> "$TMP/scenario-threat-links.tsv"
+sort -u -o "$TMP/scenario-threat-links.tsv" "$TMP/scenario-threat-links.tsv"
+jq -r '.threat[] as $threat | $threat.scenario_ids[] | [$threat.id, .] | @tsv' "$TMP/threat-model.json" | sort -u > "$TMP/threat-scenario-links.tsv"
+if [[ -n $(comm -23 "$TMP/threat-scenario-links.tsv" "$TMP/scenario-threat-links.tsv") ]]; then
+  fail "threat register references a scenario that does not reference the threat"
+fi
+
 jq -e --rawfile tasks "$TMP/plan-tasks.txt" '
   ($tasks | split("\n") | map(select(length > 0))) as $known
   | ([.constant[].id] | length) > 0
@@ -242,6 +255,18 @@ jq -e --rawfile tasks "$TMP/plan-tasks.txt" '
   and ([.constant[].id | select(. == "cluster.member-ceiling" or . == "protocol.inflight-requests-default" or . == "routing.trace-global-bytes-default" or . == "routing.trace-source-bytes-default" or . == "storage.json-bytes-default" or . == "clock.max-future-skew-default" or . == "clock.absolute-future-horizon")] | length) == 0
   and ([.constant[] | select(.id == "scale.functional-trend-members" and .value == "1024")] | length) == 1
   and ([.constant[] | select(.id == "admission.source-bucket-limit" and .value == "1024")] | length) == 1
+  and ([.constant[] | select(.id == "wire.receive-frame-default" and .value == "65536")] | length) == 1
+  and ([.constant[] | select(.id == "wire.decode-depth-default" and .value == "16")] | length) == 1
+  and ([.constant[] | select(.id == "wire.collection-items-default" and .value == "1024")] | length) == 1
+  and ([.constant[] | select(.id == "session.queued-messages-default" and .value == "256")] | length) == 1
+  and ([.constant[] | select(.id == "runtime.anti-entropy-default")] | length) == 1
+  and ([.constant[] | select(.id == "recovery.neighbor-target-default")] | length) == 1
+  and ([.constant[] | select(.id == "recovery.fan-out-default")] | length) == 1
+  and ([.constant[] | select(.id == "recovery.initial-backoff-default")] | length) == 1
+  and ([.constant[] | select(.id == "recovery.maximum-backoff-default")] | length) == 1
+  and ([.constant[] | select(.id == "trace.metadata-active-default")] | length) == 1
+  and ([.constant[] | select(.id == "trace.metadata-terminal-default")] | length) == 1
+  and ([.constant[] | select(.id == "storage.receipt-retention-default" and .value == "30")] | length) == 1
 ' "$TMP/decision-register.json" >/dev/null || fail "invalid decision constant shape, ownership, or responsibility boundary"
 
 check_forbidden_api_tokens() {
@@ -257,6 +282,8 @@ check_api_inventory() {
   local inventory=$1 document item rust_blocks
   document=$(jq -r '.document' "$inventory")
   [[ $document == docs/api-manifest.md && -f $document ]] || return 1
+  rust_blocks=$(mktemp "$TMP/api-inventory-rust.XXXXXX")
+  awk '/^```rust$/{block=1; next} /^```$/{block=0} block' "$document" > "$rust_blocks"
   [[ $(sha256sum "$document" | awk '{print $1}') == "$(jq -r '.sha256' "$inventory")" ]] || return 1
   jq -e '
     (.node_handle_signatures | length) > 0 and (.node_handle_signatures | unique | length) == (.node_handle_signatures | length)
@@ -272,7 +299,21 @@ check_api_inventory() {
   ' "$inventory" >/dev/null || return 1
   while IFS= read -r item; do
     rg -Fq "$item" "$document" || return 1
-  done < <(jq -r '.node_handle_signatures[], .commands[], .queries[], .events[], .extension_traits[], .required_reexports[]' "$inventory")
+  done < <(jq -r '.node_handle_signatures[], .required_reexports[]' "$inventory")
+  while IFS= read -r item; do
+    rg -Fq "pub struct $item" "$rust_blocks" || return 1
+    rg -Fq "impl Command for $item" "$rust_blocks" || return 1
+  done < <(jq -r '.commands[]' "$inventory")
+  while IFS= read -r item; do
+    rg -Fq "pub struct $item" "$rust_blocks" || return 1
+    rg -Fq "impl Query for $item" "$rust_blocks" || return 1
+  done < <(jq -r '.queries[]' "$inventory")
+  while IFS= read -r item; do
+    rg -Fq "pub struct $item" "$rust_blocks" || return 1
+  done < <(jq -r '.events[]' "$inventory")
+  while IFS= read -r item; do
+    rg -Fq "pub trait $item" "$rust_blocks" || return 1
+  done < <(jq -r '.extension_traits[]' "$inventory")
   check_forbidden_api_tokens "$document" "$inventory"
 }
 check_api_inventory "$TMP/api-inventory.json" || fail "API inventory, digest, exports, or forbidden-token policy invalid"
@@ -351,6 +392,13 @@ done
 for adr in docs/adr/000{1,2,3,4,5,6,7}-*.md; do
   rg -q '^status: accepted$' "$adr" || fail "unaccepted ADR: $adr"
 done
+for adr in docs/adr/000{1,2,3,4,6}-*.md; do
+  rg -q 'Amended by ADR-0007' "$adr" || fail "ADR lacks ADR-0007 amendment marker: $adr"
+done
+rg -q '^amended: 2026-08-04$' docs/adr/0005-*.md || fail "ADR-0005 is not the re-ratified workload"
+for stratum in 'Five fixed-admission samples' 'Five direct-packet samples' 'Five routed-packet samples' 'Five node-metadata samples' 'Five resource-metadata samples'; do
+  rg -Fq "$stratum" docs/adr/0005-*.md || fail "ADR-0005 lacks exact revised stratum: $stratum"
+done
 
 ACTIVE_RESPONSIBILITY_DOCUMENTS=(
   docs/roadmap.md
@@ -378,11 +426,21 @@ rg -Fq 'pub fn derive_return_packet' docs/api-manifest.md || fail "API lacks cal
 rg -Fq 'pub trait StoreSnapshot' docs/api-manifest.md || fail "API lacks provider-owned snapshot SPI"
 rg -Fq 'pub trait StoreScan' docs/api-manifest.md || fail "API lacks streaming scan SPI"
 rg -Fq 'impl TransactionId' docs/api-manifest.md || fail "API lacks canonical TransactionId text contract"
+rg -Uq 'impl RouteHandle \{\s+pub fn trace_id\(&self\) -> &TraceId;' docs/api-manifest.md || fail "route handle lacks direct TraceId access"
+rg -Fq 'MatchingNodes(Selector)' docs/api-manifest.md || fail "API lacks node-label packet target"
+rg -Fq 'fn capabilities(&self) -> KeyCapabilities;' docs/api-manifest.md || fail "key provider capability contract missing"
+rg -Fq 'pub fn operations(&self) -> &[StoreOperation];' docs/api-manifest.md || fail "storage transaction is not inspectable"
+rg -Fq 'pub fn new(items: Vec<EndpointCandidate>' docs/api-manifest.md || fail "discovery provider cannot construct pages"
+rg -Fq 'pub fn new(peers: Vec<NodeId>)' docs/api-manifest.md || fail "neighbor policy cannot construct a plan"
+! rg -Fq 'pub trait WallClock' docs/api-manifest.md || fail "public wall-clock injection reintroduced"
+! rg -Fq 'pub fn timestamp(self' docs/api-manifest.md || fail "caller-controlled resource timestamp reintroduced"
+rg -Fq 'ForgetReceipt { transaction: TransactionId' docs/api-manifest.md || fail "receipt cleanup operation missing"
+rg -Fq '`Unknown` freezes later commits' docs/api-manifest.md || fail "unknown-commit freeze semantics missing"
 rg -Fq 'There is no hard node-count ceiling.' docs/roadmap.md || fail "roadmap lacks no-ceiling responsibility"
 rg -Fq 'current-process incoming-stream admission' docs/api-manifest.md || fail "API acknowledgement semantics missing"
 rg -Uq 'never stores\s+body bytes' docs/api-manifest.md || fail "API no-body-storage rule missing"
 rg -Fq 'gives no causal, freshness, or real-time guarantee' docs/api-manifest.md || fail "resource metadata caveat missing"
-rg -Fq 'Rollback, freeze, and forward jumps' docs/api-manifest.md || fail "wall-clock discontinuity caveat missing"
+rg -Uq 'Rollback, freeze, and forward\s+jumps' docs/api-manifest.md || fail "wall-clock discontinuity caveat missing"
 
 if [[ ${1:-} == "--self-test" ]]; then
   jq '. + [.[0]]' "$TMP/scenarios.json" > "$TMP/negative-duplicate-scenario.json"
@@ -405,9 +463,14 @@ if [[ ${1:-} == "--self-test" ]]; then
     fail "invalid-shard negative fixture was accepted"
   fi
 
-  jq '.commands[0] = "DefinitelyMissingApiItem"' "$TMP/api-inventory.json" > "$TMP/negative-api-inventory.json"
+  jq '.commands[0] = "NodeBuilder"' "$TMP/api-inventory.json" > "$TMP/negative-api-inventory.json"
   if check_api_inventory "$TMP/negative-api-inventory.json"; then
-    fail "altered API inventory was accepted"
+    fail "cross-category API inventory substitution was accepted"
+  fi
+
+  jq '.threat[0].residual = ""' "$TMP/threat-model.json" > "$TMP/negative-missing-residual.json"
+  if check_threat_shape "$TMP/negative-missing-residual.json"; then
+    fail "missing-residual negative fixture was accepted"
   fi
 
   cp docs/roadmap.md "$TMP/negative-legacy-active.md"

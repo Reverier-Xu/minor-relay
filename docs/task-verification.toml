@@ -125,89 +125,66 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G01-01"
 verification_id = "VERIFY-G01-01"
-state = "ready"
+state = "planned"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-01"
 owner_task = "T-G01-01"
-state = "ready"
-argv = ["cargo", "test", "--locked", "g1_core_"]
+state = "planned"
+argv = []
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-02"
 verification_id = "VERIFY-G01-02"
-state = "ready"
+state = "planned"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-02"
 owner_task = "T-G01-02"
-state = "ready"
-argv = ["cargo", "test", "--locked", "g1_lifecycle_"]
+state = "planned"
+argv = []
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-03"
 verification_id = "VERIFY-G01-03"
-state = "ready"
+state = "planned"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-03"
 owner_task = "T-G01-03"
-state = "ready"
-argv = [
-  "cargo",
-  "--config",
-  "env.MINOR_RELAY_SIM_SEEDS.value=\"1000\"",
-  "--config",
-  "env.MINOR_RELAY_SIM_SEEDS.force=true",
-  "--config",
-  "env.MINOR_RELAY_SIM_SEED.value=\"0\"",
-  "--config",
-  "env.MINOR_RELAY_SIM_SEED.force=true",
-  "test",
-  "--locked",
-  "--lib",
-  "simulation::network::tests::simulation_network_fault_matrix_gate",
-  "--",
-  "--ignored",
-  "--exact",
-]
+state = "planned"
+argv = []
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-04"
 verification_id = "VERIFY-G01-04"
-state = "ready"
+state = "planned"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-04"
 owner_task = "T-G01-04"
-state = "ready"
-argv = [
-  "cargo",
-  "test",
-  "--locked",
-  "--workspace",
-  "simulation_failure_artifact_security",
-]
+state = "planned"
+argv = []
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-05"
 verification_id = "VERIFY-G01-05"
-state = "ready"
+state = "planned"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-05"
 owner_task = "T-G01-05"
-state = "ready"
-argv = ["scripts/verify-g1-closure.sh"]
+state = "planned"
+argv = []
 timeout_seconds = 1800
 
 [[task]]

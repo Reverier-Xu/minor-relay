@@ -21,7 +21,7 @@ The library provides:
 - Authenticated full-duplex transports, endpoint discovery, trust propagation, sparse topology,
   multi-hop routing, and continuous recovery while known members remain mutually unreachable.
 - Opaque directed packet streams. Core assigns a `TraceId` before body delivery, targets an exact node
-  or resource selector, applies caller-selected load balancing and routing, preserves order, and ends
+  or a node selected from matching node labels, applies caller-selected load balancing and routing, preserves order, and ends
   interrupted streams with an explicit error.
 - Synchronous packet delivery that waits for current-process incoming-stream admission or a route
   error, and asynchronous delivery with a queryable route handle and selected destination.
@@ -194,7 +194,7 @@ Exit gate:
 
 ### M6: Multi-Hop Packet Streams
 
-Add exact-node and selector targets, caller-selected load balancing/routing, ordered constant-memory
+Add exact-node and matching-node-label targets, caller-selected load balancing/routing, ordered constant-memory
 forwarding, synchronous terminal delivery, asynchronous route handles, selected-destination status,
 bounded trace metadata retention, and explicit route/session interruption.
 
@@ -258,7 +258,7 @@ Exit gate:
 | --- | --- |
 | Identity, fixed admission, key custody | M1, M2, M3 |
 | Full-duplex authenticated transports and recovery | M3, M4, M5 |
-| Exact-node and selector packet streaming | M3, M6, M9 |
+| Exact-node and node-label-selected packet streaming | M3, M6, M9 |
 | Signed node and resource metadata convergence | M5, M7, M9 |
 | Internal JSON/redb/provider metadata storage | M2, M8 |
 | No node ceiling and streamed population views | M0, M5, M9 |

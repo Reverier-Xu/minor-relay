@@ -1,13 +1,13 @@
 schema = "relay.woooo.tech/schemas/api-inventory-v1"
 status = "accepted"
 document = "docs/api-manifest.md"
-sha256 = "34c167c983edc9729b752d002e884dc18b8a09eba243585860e8cf3654b87a2e"
+sha256 = "d4657cb709ba22e8ceff74437124d0942641e8d18858ea85558dce29bdf2c229"
 
 node_handle_signatures = [
   "pub async fn command<C: Command>(&self, command: C) -> Result<C::Output>;",
   "pub async fn query<Q: Query>(&self, query: Q) -> Result<Q::Output>;",
   "pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>>;",
-  "pub fn create_packet(&self, target: PacketTarget, protocol: ProtocolTag, metadata: PacketMetadata) -> Result<OutboundPacket>;",
+  "pub fn create_packet(&self, target: PacketTarget, protocol: ProtocolTag, policy: PacketPolicy, metadata: PacketMetadata) -> Result<OutboundPacket>;",
 ]
 
 commands = [
@@ -54,7 +54,6 @@ events = [
 ]
 
 extension_traits = [
-  "WallClock",
   "Entropy",
   "KeyProvider",
   "StorageFactory",
@@ -66,8 +65,6 @@ extension_traits = [
   "TransportConnection",
   "Discovery",
   "PacketConsumer",
-  "PopulationReader",
-  "ResourceReader",
   "NeighborPolicy",
   "LoadBalancingPolicy",
   "RoutingPolicy",
@@ -76,7 +73,6 @@ extension_traits = [
 required_reexports = [
   "NodeBuilder",
   "NodeConfig",
-  "AdmissionLimits",
   "ParserLimits",
   "TraceMetadataLimits",
   "RecoveryConfig",
@@ -96,6 +92,7 @@ required_reexports = [
   "TransactionId",
   "OperationId",
   "JoinCredential",
+  "Digest",
   "PublicKey",
   "Signature",
   "QualifiedTag",
@@ -105,7 +102,12 @@ required_reexports = [
   "DiscoveryTag",
   "ResourceName",
   "ResourceUri",
+  "LabelKey",
+  "LabelValue",
+  "LabelSet",
+  "Endpoint",
   "PacketTarget",
+  "PacketPolicy",
   "PacketMetadata",
   "OutboundPacket",
   "IncomingPacket",
@@ -113,13 +115,40 @@ required_reexports = [
   "RouteHandle",
   "RouteStatusView",
   "ResourceWrite",
+  "ResourceLabels",
   "ResourceView",
   "ResourceVersion",
   "Selector",
   "PageSpec",
   "PageCursor",
   "ObservabilitySnapshot",
+  "KeyCapabilities",
+  "KeyOperationId",
+  "KeyHandle",
+  "CreatedKey",
+  "KeyCreateState",
+  "KeyDeleteState",
   "StoreRequirements",
+  "StoreCapabilities",
+  "DurabilityLevel",
+  "StoreRevision",
+  "StoreNamespace",
+  "StoreKey",
+  "StoreValue",
+  "StoreEntry",
+  "StoreExpectation",
+  "StoreOperation",
+  "StoreTransaction",
+  "CommitReceipt",
+  "CommitOutcome",
+  "ReconcileOutcome",
+  "ChannelBinding",
+  "EndpointCandidate",
+  "DiscoveryPage",
+  "NeighborPlan",
+  "RouteContext",
+  "PopulationReader",
+  "CandidateNodeReader",
 ]
 
 forbidden_public_tokens = [
@@ -140,6 +169,10 @@ forbidden_public_tokens = [
   "pub trait StateCodec",
   "pub struct ClockHealth",
   "with_member_limit",
+  "pub trait WallClock",
+  "pub fn wall_clock",
+  "pub fn timestamp(self",
+  "PacketTarget::Resource",
   "Vec<MemberView>",
   "Vec<TrustedIdentityView>",
   "Vec<ResourceView>",

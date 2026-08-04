@@ -132,7 +132,7 @@ A gate is `NOT_STARTED`, `ACTIVE`, `BLOCKED`, or `PASS`.
 
 ### G6: Prove Multi-Hop Packet Streams
 
-- **Build:** Exact-node/resource-selector targets, caller-selected load balancing/routing, constant-memory
+- **Build:** Exact-node/matching-node-label targets, caller-selected load balancing/routing, constant-memory
   ordered forwarding, sync ACK/route error, async handle/status, selected destination, trace metadata.
 - **Depends on:** G5, G4, and G2.
 - **Verify:** Three-hop E2E; selector choice; large/slow streams; backpressure; disconnect/restart; route

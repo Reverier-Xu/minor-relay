@@ -61,7 +61,9 @@ pub enum ErrorKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderErrorKind {
     Unsupported,
+    UnsupportedSchema,
     UnsupportedCapability,
+    CommitUnknown,
     Overloaded,
     ResourceExhausted,
     StorageLocked,
@@ -87,7 +89,6 @@ pub enum ProviderErrorContext {
     KeySign,
     KeyDelete,
     Entropy,
-    WallClock,
     TransportBind,
     TransportConnect,
     TransportAccept,
@@ -158,8 +159,9 @@ impl Signature {
 ```
 
 Identity and operation types implement canonical `Clone`, `Eq`, `Ord`, `Hash`, `Debug`, `Display`, and
-`FromStr` as appropriate. `TransactionId::parse(id.to_string())` must reproduce the same value and reject
-noncanonical text so external providers can persist receipts safely.
+`FromStr` as appropriate. `TransactionId` is exactly `txn_` followed by 21 ASCII base62 characters;
+`TransactionId::parse(id.to_string())` reproduces the same value and rejects noncanonical text so
+external providers can persist receipts safely.
 
 ```rust
 pub struct QualifiedTag { /* private */ }
@@ -219,20 +221,10 @@ impl NodeConfig {
     pub fn with_session_queue_limits(self, messages: usize, bytes: usize) -> Result<Self>;
     pub fn with_parser_limits(self, value: ParserLimits) -> Result<Self>;
     pub fn with_trace_metadata_limits(self, value: TraceMetadataLimits) -> Result<Self>;
-    pub fn with_admission_limits(self, value: AdmissionLimits) -> Result<Self>;
+    pub fn with_receipt_retention(self, value: std::time::Duration) -> Result<Self>;
     pub fn require_feature(self, value: FeatureTag) -> Result<Self>;
 }
 impl Default for NodeConfig { fn default() -> Self; }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AdmissionLimits { /* private fixed policy */ }
-impl AdmissionLimits {
-    pub fn fixed() -> Self;
-    pub const fn pending_per_source(self) -> u16;
-    pub const fn pending_global(self) -> u16;
-    pub const fn attempts_per_source_per_minute(self) -> u16;
-    pub const fn attempts_global_per_minute(self) -> u16;
-}
 
 pub struct ParserLimits { /* private caller-selected nonzero limits */ }
 impl ParserLimits {
@@ -246,7 +238,12 @@ impl TraceMetadataLimits {
 
 pub struct RecoveryConfig { /* private */ }
 impl RecoveryConfig {
-    pub fn new(neighbors: usize, fan_out: usize, initial_backoff: std::time::Duration) -> Result<Self>;
+    pub fn new(
+        neighbors: usize,
+        fan_out: usize,
+        initial_backoff: std::time::Duration,
+        maximum_backoff: std::time::Duration,
+    ) -> Result<Self>;
 }
 
 pub struct ExtensionRegistry { /* private */ }
@@ -266,14 +263,17 @@ impl NodeBuilder {
     pub fn new(storage: std::sync::Arc<dyn StorageFactory>, keys: std::sync::Arc<dyn KeyProvider>) -> Self;
     pub fn config(self, value: NodeConfig) -> Self;
     pub fn extensions(self, value: ExtensionRegistry) -> Self;
-    pub fn wall_clock(self, value: std::sync::Arc<dyn WallClock>) -> Self;
     pub fn entropy(self, value: std::sync::Arc<dyn Entropy>) -> Self;
     pub async fn start(self) -> Result<NodeHandle>;
 }
 ```
 
 All representable nonzero capacities satisfying relational/allocation checks are legal. Defaults are
-convenience policy, not universal ceilings. The fixed admission values cannot be weakened.
+convenience policy, not universal ceilings: anti-entropy 250 ms; parser frame 65,536 bytes, depth 16,
+and 1,024 collection items; session queue 256 messages and 8 MiB; recovery target four neighbors,
+fan-out 64, and one-second to five-minute backoff; trace metadata 8,192 active and 262,144 terminal
+records retained for 24 hours, and transaction receipts retained for 30 days after their final durable
+reference disappears. The fixed admission policy is not configurable or weakenable.
 
 ## Typed Facade
 
@@ -290,12 +290,15 @@ impl NodeHandle {
     pub async fn command<C: Command>(&self, command: C) -> Result<C::Output>;
     pub async fn query<Q: Query>(&self, query: Q) -> Result<Q::Output>;
     pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>>;
-    pub fn create_packet(&self, target: PacketTarget, protocol: ProtocolTag, metadata: PacketMetadata) -> Result<OutboundPacket>;
+    pub fn create_packet(&self, target: PacketTarget, protocol: ProtocolTag, policy: PacketPolicy, metadata: PacketMetadata) -> Result<OutboundPacket>;
 }
 ```
 
 `create_packet` allocates a core-generated `TraceId` synchronously and performs no body delivery. The
-returned packet exposes that ID before `send_sync` or `send_async` starts consuming the body.
+returned packet exposes that ID before `send_sync` or `send_async` starts consuming the body. An exact
+node target rejects a load-balancer selection; a matching-node target requires one. Every referenced
+policy tag must resolve in the registry, and the caller-selected nonzero hop budget bounds route work
+without becoming a product-wide routing constant.
 
 ## Commands
 
@@ -341,7 +344,9 @@ impl PutResource { pub fn new(record: ResourceWrite) -> Result<Self>; }
 impl Command for PutResource { type Output = ResourceMutationView; }
 
 pub struct RemoveResource { /* private */ }
-impl RemoveResource { pub fn new(name: ResourceName, labels: ResourceLabels) -> Result<Self>; }
+impl RemoveResource {
+    pub fn new(name: ResourceName, expected: ResourceVersion) -> Self;
+}
 impl Command for RemoveResource { type Output = ResourceMutationView; }
 
 pub struct RevokeNode { /* private */ }
@@ -359,7 +364,11 @@ an upper-layer object.
 ## Queries and Pages
 
 ```rust
-pub struct PageCursor { /* private */ }
+pub struct PageCursor { /* private opaque continuation */ }
+impl PageCursor {
+    pub fn from_provider_bytes(value: std::sync::Arc<[u8]>) -> Result<Self>;
+    pub fn as_bytes(&self) -> &[u8];
+}
 pub struct PageSpec { /* private */ }
 impl PageSpec {
     pub fn first(limit: usize) -> Result<Self>;
@@ -432,7 +441,16 @@ observation and does not claim a stable whole-population snapshot while metadata
 #[non_exhaustive]
 pub enum PacketTarget {
     Exact(NodeId),
-    Resource(Selector),
+    MatchingNodes(Selector),
+}
+
+pub struct PacketPolicy { /* private explicit policy selection */ }
+impl PacketPolicy {
+    pub fn new(routing_policy: QualifiedTag, max_hops: u32) -> Result<Self>;
+    pub fn load_balancer(self, value: QualifiedTag) -> Self;
+    pub fn routing_policy(&self) -> &QualifiedTag;
+    pub fn load_balancing_policy(&self) -> Option<&QualifiedTag>;
+    pub fn max_hops(&self) -> u32;
 }
 
 pub struct PacketMetadata { /* private bounded canonical map */ }
@@ -450,6 +468,11 @@ impl OutboundPacket {
     pub fn trace_id(&self) -> &TraceId;
     pub fn send_sync(self, body: Box<dyn PacketBody>) -> BoxFuture<'static, Result<DeliveryAck>>;
     pub fn send_async(self, body: Box<dyn PacketBody>) -> Result<RouteHandle>;
+}
+
+pub struct RouteHandle { /* private */ }
+impl RouteHandle {
+    pub fn trace_id(&self) -> &TraceId;
 }
 
 pub struct IncomingPacket { /* private */ }
@@ -510,6 +533,14 @@ impl MemberView {
     pub fn owner_revision(&self) -> u64;
     pub fn digest(&self) -> &Digest;
     pub fn connectivity(&self) -> ConnectivityStatus;
+    pub fn labels(&self) -> &LabelSet;
+}
+
+pub struct LabelSet { /* private canonical map */ }
+impl LabelSet {
+    pub fn new() -> Self;
+    pub fn insert(self, key: LabelKey, value: LabelValue) -> Result<Self>;
+    pub fn get(&self, key: &LabelKey) -> Option<&LabelValue>;
 }
 
 pub struct ResourceLabels { /* private canonical map */ }
@@ -518,10 +549,9 @@ impl ResourceLabels {
     pub fn custom(self, key: LabelKey, value: LabelValue) -> Result<Self>;
 }
 
-pub struct ResourceWrite { /* private signed by local writer */ }
+pub struct ResourceWrite { /* private, stamped and signed by core */ }
 impl ResourceWrite {
     pub fn new(name: ResourceName, labels: ResourceLabels) -> Self;
-    pub fn timestamp(self, value: std::time::SystemTime) -> Self;
 }
 
 pub struct ResourceVersion { /* private */ }
@@ -631,29 +661,51 @@ provider handle, unredacted path/address, or upper-layer object.
 ## Open Extension Contracts
 
 ```rust
-pub trait WallClock: std::fmt::Debug + Send + Sync + 'static {
-    fn now(&self) -> Result<std::time::SystemTime>;
-    fn sleep_until<'a>(&'a self, deadline: std::time::SystemTime) -> BoxFuture<'a, Result<()>>;
-}
 pub trait Entropy: std::fmt::Debug + Send + Sync + 'static {
     fn fill(&self, output: &mut [u8]) -> Result<()>;
 }
 ```
 
-Production uses the host system clock. Injected implementations exist for deterministic tests. Sleep is
-only a wake mechanism; every wake re-reads wall time. Rollback, freeze, and forward jumps can delay work
-indefinitely or make it immediately due.
+Production reads the host system clock directly. Tests virtualize those reads through a private seam.
+Executor timers are wake mechanisms only; every wake re-reads wall time. Rollback, freeze, and forward
+jumps can delay work indefinitely or make it immediately due.
 
 ```rust
-pub struct KeyOperationId { /* private */ }
+pub struct KeyCapabilities { /* private provider capabilities */ }
+pub struct KeyOperationId { /* private canonical text */ }
 pub struct KeyHandle { /* private secret provider handle */ }
 pub struct CreatedKey { /* private */ }
+
+impl KeyCapabilities {
+    pub fn new() -> Self;
+    pub fn ed25519(self, supported: bool) -> Self;
+    pub fn reconciliation(self, supported: bool) -> Self;
+    pub fn deletion(self, supported: bool) -> Self;
+    pub fn has_ed25519(&self) -> bool;
+    pub fn has_reconciliation(&self) -> bool;
+    pub fn has_deletion(&self) -> bool;
+}
+impl KeyOperationId {
+    pub fn parse(value: &str) -> Result<Self>;
+    pub fn as_str(&self) -> &str;
+}
+impl KeyHandle {
+    pub fn from_provider_bytes(value: std::sync::Arc<[u8]>) -> Result<Self>;
+    pub fn expose_provider_handle(&self) -> &[u8];
+}
+impl CreatedKey {
+    pub fn new(handle: KeyHandle, public_key: PublicKey) -> Self;
+    pub fn handle(&self) -> &KeyHandle;
+    pub fn public_key(&self) -> &PublicKey;
+}
+
 #[non_exhaustive]
 pub enum KeyCreateState { Present(CreatedKey), Absent, Unknown }
 #[non_exhaustive]
 pub enum KeyDeleteState { Present, Absent, Unknown }
 
 pub trait KeyProvider: std::fmt::Debug + Send + Sync + 'static {
+    fn capabilities(&self) -> KeyCapabilities;
     fn create_ed25519<'a>(&'a self, operation: &'a KeyOperationId) -> BoxFuture<'a, Result<KeyCreateState>>;
     fn reconcile_create<'a>(&'a self, operation: &'a KeyOperationId) -> BoxFuture<'a, Result<KeyCreateState>>;
     fn public_key<'a>(&'a self, handle: &'a KeyHandle) -> BoxFuture<'a, Result<PublicKey>>;
@@ -663,33 +715,123 @@ pub trait KeyProvider: std::fmt::Debug + Send + Sync + 'static {
 }
 ```
 
-Core owns operation protocol and identity verification. Providers own private custody, capacity,
-physical durability, and capability reporting. Private-key bytes never enter ordinary metadata.
+Core owns operation protocol and identity verification. `KeyOperationId` is exactly `keyop_` plus 21
+ASCII base62 characters and round-trips through `parse`, `Display`, and `FromStr`. Node startup requires
+Ed25519 creation, reconciliation, and deletion capabilities and refuses a provider missing any one of
+them. Providers own private custody, capacity, physical durability, and capability reporting.
+Private-key bytes never enter ordinary metadata.
 
 ```rust
 pub struct StoreRequirements { /* private required capability set */ }
 pub struct StoreCapabilities { /* private provider capabilities */ }
-pub struct StoreRevision { /* private */ }
-pub struct StoreNamespace { /* private */ }
-pub struct StoreKey { /* private bytes */ }
-pub struct StoreValue { /* private bytes */ }
+pub struct StoreRevision { /* private opaque nonempty bytes */ }
+pub struct StoreNamespace { /* private domain-qualified tag */ }
+pub struct StoreKey { /* private opaque bytes */ }
+pub struct StoreValue { /* private opaque bytes and digest */ }
 pub struct StoreTransaction { /* private conditional operations */ }
 pub struct StoreEntry { /* private */ }
 pub struct CommitReceipt { /* private */ }
 
+impl StoreRequirements {
+    pub fn required_durability(&self) -> DurabilityLevel;
+    pub fn requires_conditional_batch(&self) -> bool;
+    pub fn requires_ordered_scan(&self) -> bool;
+    pub fn requires_reconciliation(&self) -> bool;
+    pub fn requires_exclusive_lifetime_lock(&self) -> bool;
+    pub fn requires_transactional_migration(&self) -> bool;
+}
+
 #[non_exhaustive]
-pub enum CommitOutcome { Committed(CommitReceipt), Aborted, Conflict, Unknown(TransactionId, Digest) }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DurabilityLevel { ProcessCrashAtomic, OsCrashDurable }
+
+impl StoreCapabilities {
+    pub fn new(durability: DurabilityLevel) -> Self;
+    pub fn conditional_batch(self, supported: bool) -> Self;
+    pub fn ordered_scan(self, supported: bool) -> Self;
+    pub fn reconciliation(self, supported: bool) -> Self;
+    pub fn exclusive_lifetime_lock(self, supported: bool) -> Self;
+    pub fn transactional_migration(self, supported: bool) -> Self;
+    pub fn durability(&self) -> DurabilityLevel;
+    pub fn has_conditional_batch(&self) -> bool;
+    pub fn has_ordered_scan(&self) -> bool;
+    pub fn has_reconciliation(&self) -> bool;
+    pub fn has_exclusive_lifetime_lock(&self) -> bool;
+    pub fn has_transactional_migration(&self) -> bool;
+}
+impl StoreRevision {
+    pub fn new(value: std::sync::Arc<[u8]>) -> Result<Self>;
+    pub fn as_bytes(&self) -> &[u8];
+}
+impl StoreNamespace {
+    pub fn new(value: QualifiedTag) -> Result<Self>;
+    pub fn as_str(&self) -> &str;
+}
+impl StoreKey {
+    pub fn new(value: std::sync::Arc<[u8]>) -> Self;
+    pub fn as_bytes(&self) -> &[u8];
+}
+impl StoreValue {
+    pub fn new(value: std::sync::Arc<[u8]>) -> Self;
+    pub fn as_bytes(&self) -> &[u8];
+    pub fn digest(&self) -> &Digest;
+}
+impl StoreEntry {
+    pub fn new(namespace: StoreNamespace, key: StoreKey, value: StoreValue) -> Self;
+    pub fn namespace(&self) -> &StoreNamespace;
+    pub fn key(&self) -> &StoreKey;
+    pub fn value(&self) -> &StoreValue;
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoreExpectation { Absent, Exact(Digest) }
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoreOperation {
+    Check { namespace: StoreNamespace, key: StoreKey, expected: StoreExpectation },
+    Put { namespace: StoreNamespace, key: StoreKey, expected: StoreExpectation, value: StoreValue },
+    Delete { namespace: StoreNamespace, key: StoreKey, expected: Digest },
+    ForgetReceipt { transaction: TransactionId, expected_operation_digest: Digest },
+}
+
+impl StoreTransaction {
+    pub fn id(&self) -> &TransactionId;
+    pub fn operation_digest(&self) -> &Digest;
+    pub fn computed_operation_digest(&self) -> Digest;
+    pub fn base_revision(&self) -> &StoreRevision;
+    pub fn operations(&self) -> &[StoreOperation];
+}
+impl CommitReceipt {
+    pub fn new(
+        transaction: TransactionId,
+        operation_digest: Digest,
+        committed_revision: StoreRevision,
+    ) -> Self;
+    pub fn transaction(&self) -> &TransactionId;
+    pub fn operation_digest(&self) -> &Digest;
+    pub fn committed_revision(&self) -> &StoreRevision;
+}
+
+#[non_exhaustive]
+pub enum CommitOutcome {
+    Committed(CommitReceipt),
+    Aborted,
+    Conflict,
+    Unknown { transaction: TransactionId, operation_digest: Digest },
+}
 #[non_exhaustive]
 pub enum ReconcileOutcome { Committed(CommitReceipt), Aborted, DigestConflict, Unknown }
 
-pub trait StoreScan: std::fmt::Debug + Send + 'static {
+pub trait StoreScan: std::fmt::Debug + Send {
     fn next<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<StoreEntry>>>;
 }
 
 pub trait StoreSnapshot: std::fmt::Debug + Send + Sync + 'static {
     fn revision(&self) -> &StoreRevision;
     fn get<'a>(&'a self, namespace: &'a StoreNamespace, key: &'a StoreKey) -> BoxFuture<'a, Result<Option<StoreValue>>>;
-    fn scan<'a>(&'a self, namespace: &'a StoreNamespace, prefix: &'a [u8]) -> BoxFuture<'a, Result<Box<dyn StoreScan>>>;
+    fn scan<'a>(&'a self, namespace: &'a StoreNamespace, prefix: &'a [u8]) -> BoxFuture<'a, Result<Box<dyn StoreScan + 'a>>>;
 }
 
 pub trait StorageFactory: std::fmt::Debug + Send + Sync + 'static {
@@ -705,14 +847,28 @@ pub trait Storage: std::fmt::Debug + Send + Sync + 'static {
 ```
 
 Snapshots are immutable and provider-owned. Scans yield entries in unsigned-byte key order and never
-require whole-store materialization. Core defines conditional base/per-key checks, atomic receipts,
-outcomes, reconciliation, capabilities, corruption, and migrations. Providers own layout, capacity,
-quotas, flush policy, and operational configuration. Typed resource exhaustion is not corruption and
-must never cause truncation. This SPI is private infrastructure for core metadata, not a caller data
-service.
+require whole-store materialization. A revision is nonempty, stable across reopen, and is never reused
+for different logical states; no ordering between revisions is implied. Core constructs transactions,
+and `computed_operation_digest` applies the single domain-separated canonical encoding of the base
+revision and ordered operations so providers do not duplicate digest rules. Core defines conditional
+base/per-key checks, atomic receipts, outcomes, reconciliation, capabilities, corruption, and migrations.
+Every returned receipt or unknown tuple must match the submitted transaction ID and operation digest.
+`Unknown` freezes later commits on that storage instance; immutable snapshots remain readable, and
+`reconcile` performs any provider-owned locked refresh. Matching `Committed` or `Aborted` resolution
+clears the freeze; `Unknown` or `DigestConflict` retains it. Receipt cleanup is an explicit conditional
+transaction: core proves absence from its durable reference index with ordinary checks, then
+`ForgetReceipt` removes only the exact transaction/digest receipt. A forgotten transaction ID is never
+reused. Providers own layout, capacity, quotas, flush policy, and operational configuration. Typed
+resource exhaustion is not corruption and must never cause truncation. This SPI is private
+infrastructure for core metadata, not a caller data service.
 
 ```rust
-pub struct ChannelBinding { /* private */ }
+pub struct ChannelBinding { /* private [u8; 32] */ }
+impl ChannelBinding {
+    pub const fn from_tls_exporter(value: [u8; 32]) -> Self;
+    pub const fn as_bytes(&self) -> &[u8; 32];
+}
+
 pub trait Transport: std::fmt::Debug + Send + Sync + 'static {
     fn bind<'a>(&'a self, endpoint: &'a Endpoint) -> BoxFuture<'a, Result<Box<dyn TransportListener>>>;
     fn connect<'a>(&'a self, endpoint: &'a Endpoint) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>>;
@@ -730,7 +886,20 @@ pub trait TransportConnection: std::fmt::Debug + Send + Sync + 'static {
     fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
 }
 
+pub struct EndpointCandidate { /* private */ }
+impl EndpointCandidate {
+    pub fn new(endpoint: Endpoint) -> Self;
+    pub fn priority(self, value: i32) -> Self;
+    pub fn endpoint(&self) -> &Endpoint;
+    pub fn priority_value(&self) -> i32;
+}
+
 pub struct DiscoveryPage { /* private bounded candidates and cursor */ }
+impl DiscoveryPage {
+    pub fn new(items: Vec<EndpointCandidate>, next: Option<PageCursor>) -> Result<Self>;
+    pub fn items(&self) -> &[EndpointCandidate];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 pub trait Discovery: std::fmt::Debug + Send + Sync + 'static {
     fn discover<'a>(&'a self, cursor: Option<PageCursor>, limit: usize) -> BoxFuture<'a, Result<DiscoveryPage>>;
 }
@@ -751,28 +920,48 @@ pub trait PacketConsumer: std::fmt::Debug + Send + Sync + 'static {
 }
 
 pub struct NeighborPlan { /* private bounded selected peers */ }
+impl NeighborPlan {
+    pub fn new(peers: Vec<NodeId>) -> Result<Self>;
+    pub fn peers(&self) -> &[NodeId];
+}
+
 pub struct RouteContext { /* private current route observation */ }
-pub trait PopulationReader: std::fmt::Debug + Send + Sync + 'static {
+impl RouteContext {
+    pub fn trace_id(&self) -> &TraceId;
+    pub fn source(&self) -> &NodeId;
+    pub fn destination(&self) -> &NodeId;
+    pub fn current(&self) -> &NodeId;
+    pub fn visited(&self) -> &[NodeId];
+}
+
+pub trait PopulationReader: private::Sealed + std::fmt::Debug + Send + Sync + 'static {
     fn next_members<'a>(&'a self, cursor: Option<PageCursor>, limit: usize) -> BoxFuture<'a, Result<MemberPage>>;
     fn next_topology<'a>(&'a self, cursor: Option<PageCursor>, limit: usize) -> BoxFuture<'a, Result<TopologyPage>>;
 }
-pub trait ResourceReader: std::fmt::Debug + Send + Sync + 'static {
-    fn next_resources<'a>(&'a self, selector: &'a Selector, cursor: Option<PageCursor>, limit: usize) -> BoxFuture<'a, Result<ResourcePage>>;
+pub trait CandidateNodeReader: private::Sealed + std::fmt::Debug + Send + Sync + 'static {
+    fn next_matching_nodes<'a>(
+        &'a self,
+        selector: &'a Selector,
+        cursor: Option<PageCursor>,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<MemberPage>>;
 }
 
 pub trait NeighborPolicy: std::fmt::Debug + Send + Sync + 'static {
     fn choose<'a>(&'a self, population: &'a dyn PopulationReader) -> BoxFuture<'a, Result<NeighborPlan>>;
 }
 pub trait LoadBalancingPolicy: std::fmt::Debug + Send + Sync + 'static {
-    fn select<'a>(&'a self, selector: &'a Selector, resources: &'a dyn ResourceReader) -> BoxFuture<'a, Result<NodeId>>;
+    fn select<'a>(&'a self, selector: &'a Selector, candidates: &'a dyn CandidateNodeReader) -> BoxFuture<'a, Result<NodeId>>;
 }
 pub trait RoutingPolicy: std::fmt::Debug + Send + Sync + 'static {
     fn next_hop<'a>(&'a self, context: &'a RouteContext, topology: &'a dyn PopulationReader) -> BoxFuture<'a, Result<Option<NodeId>>>;
 }
 ```
 
-Policy inputs consume bounded pages. Core validates selected nodes, active edges, loop/hop constraints,
-and authenticated feature compatibility.
+`PopulationReader` and `CandidateNodeReader` are sealed, core-implemented incremental views passed to
+open policy traits; external policies consume them but cannot substitute an unvalidated population.
+Policy inputs use caller-selected finite pages. Core validates selected nodes, active edges, loop/hop
+constraints, and authenticated feature compatibility.
 
 ## Adapter Constructors
 

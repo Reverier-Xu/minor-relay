@@ -44,7 +44,7 @@ cases = [
     "THR-003",
     "THR-014",
   ] },
-  { title = "Ratify opaque packet stream delivery", acceptance = "Accepted ADR fixes immediate core TraceId allocation, exact-node or resource-selector targets, caller-selected load balancing and routing, ordered constant-memory body streaming, synchronous current-process admission acknowledgement or route error, asynchronous route status, explicit interruption, and no body persistence or continuation.", rebaseline = "ADR-0007", threats = [
+  { title = "Ratify opaque packet stream delivery", acceptance = "Accepted ADR fixes immediate core TraceId allocation, exact-node or matching-node-label targets, caller-selected load balancing and routing, ordered constant-memory body streaming, synchronous current-process admission acknowledgement or route error, asynchronous route status, explicit interruption, and no body persistence or continuation.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-009",
     "THR-011",
@@ -103,7 +103,7 @@ cases = [
   { title = "Ratify the revised sixteen-node OCI profile", acceptance = "Accepted ADR fixes the same isolated host and 125-sample method but replaces the workload with fixed admission, opaque packet delivery, node-owner revision convergence, and generic resource tuple convergence observed only through the public facade.", rebaseline = "ADR-0007", threats = [
     "THR-028",
   ] },
-  { title = "Ratify the complete revised SLO ledger", acceptance = "Five fresh runs of 25 samples retain raw observations and no exclusion; every sample performs the ADR-0007 admission, packet, node metadata, and resource metadata workload within 10000 ms, while 1,024-node results remain functional and trend evidence only.", rebaseline = "ADR-0007", threats = [
+  { title = "Ratify the complete revised SLO ledger", acceptance = "Five fresh runs of 25 samples retain raw observations and no exclusion; each run executes the exact ADR-0005 mix of five admissions, five direct packets, five routed label-selected packets, five node metadata revisions, and five resource metadata writes, with every sample within 10000 ms. The 1,024-node results remain functional and trend evidence only.", rebaseline = "ADR-0007", threats = [
     "THR-026",
     "THR-027",
     "THR-028",
@@ -259,7 +259,7 @@ first = 6
 verification_id = "VERIFY-G01-05"
 kind = "closure"
 cases = [
-  { title = "Close the public foundation facade", acceptance = "An external-crate test uses only manifest reexports to construct and shut down a node; private protocol, runtime, storage, and simulator types remain inaccessible and the placeholder add export is absent.", rebaseline = "ADR-0007", threats = [
+  { title = "Close the public foundation and provider facade", acceptance = "An external-crate test uses only manifest reexports to construct and shut down a node, implements dummy KeyProvider, StorageFactory, Storage, StoreSnapshot, and StoreScan traits, and constructs or inspects every key/storage boundary value in both directions. Private protocol, runtime, backend, and simulator modules remain inaccessible.", rebaseline = "ADR-0007", threats = [
   ] },
   { title = "Close MSRV stable dependency and lint gates", acceptance = "Rust 1.97.1 and current stable pass locked Q with zero warnings, cargo-deny accepts the reviewed graph, production unwrap and expect are denied, and CI rejects unlocked or policy-violating dependencies.", rebaseline = "ADR-0007", threats = [
     "THR-025",
@@ -289,7 +289,7 @@ first = 1
 verification_id = "VERIFY-G02-01"
 kind = "contract"
 cases = [
-  { title = "Retain receipts while durable references exist", acceptance = "Receipt cleanup conflicts while any owner record, pending operation, provider intent, migration, or unknown outcome references its TxnId; an old unreferenced receipt is removed only after conservative age and cannot authorize TxnId reuse.", rebaseline = "ADR-0007", threats = [
+  { title = "Retain receipts while durable references exist", acceptance = "Receipt cleanup transactionally checks the core reference index and refuses ForgetReceipt while any owner record, pending operation, provider intent, migration, or unknown outcome references its TxnId. An unreferenced receipt is eligible only after caller-configured host-wall-clock retention; rollback can delay eligibility and a forward jump can make it immediately due. A forgotten TxnId is never reused.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-023",
   ] },
@@ -522,6 +522,7 @@ verification_id = "VERIFY-G03-06"
 kind = "security"
 cases = [
   { title = "reject replayed authentication material", acceptance = "replayed nonces, credential proofs, signatures, and complete prior handshake messages fail on a fresh TLS connection without consuming or admitting a credential", rebaseline = "ADR-0007", threats = [
+    "THR-001",
     "THR-002",
   ] },
   { title = "reject channel and identity misbinding", acceptance = "wrong exporter, reflected role proof, wrong cluster, substituted public key, conflicting expected key, and identical endpoint identities all close the connection", rebaseline = "ADR-0007", threats = [
@@ -536,7 +537,7 @@ cases = [
     "THR-009",
     "THR-014",
   ] },
-  { title = "enforce hostile and admission resource ceilings", acceptance = "concurrent source/global attempts, fixed-window edges, normalized-source aliases, full/expired bucket tables, rollback/discontinuity, oversized bodies, nesting, collections, fragmentation, and stalled authentication obey exact ADR-0006 count, rate, byte, allocation, task, reservation, and deadline bounds without consuming a rejected credential", rebaseline = "ADR-0007", threats = [
+  { title = "enforce hostile and admission resource policy", acceptance = "Concurrent source/global attempts, fixed-window edges, normalized-source aliases, full/expired bucket tables, oversized frames, nesting, collections, fragmentation, and stalled authentication obey the fixed admission counts and caller-selected finite parser/allocation/task budgets. Host-wall-clock rollback can delay a deadline and a forward jump can make it immediately due; neither case consumes a rejected credential.", rebaseline = "ADR-0007", threats = [
     "THR-001",
     "THR-009",
     "THR-010",
@@ -585,7 +586,7 @@ cases = [
     "THR-006",
     "THR-016",
   ] },
-  { title = "expire stale endpoint candidates", acceptance = "the injected clock expires candidates at the exact configured boundary without deleting trust or affecting fresh candidates for the same identity", rebaseline = "ADR-0007", threats = [
+  { title = "expire endpoint candidates by host wall time", acceptance = "Internal wall-clock virtualization proves normal expiry at the configured SystemTime boundary, rollback or freeze can delay expiry, and a forward jump can make it immediately due; trust and fresh candidates for the identity remain unchanged.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
   { title = "readdress an authenticated member", acceptance = "after address replacement the peer reconnects at the new candidate using the same exact trusted key, while stale and attacker-supplied addresses cannot authorize a session", rebaseline = "ADR-0007", threats = [
@@ -629,15 +630,15 @@ cases = [
     "THR-010",
     "THR-012",
   ] },
-  { title = "terminate unresponsive peers with bounded keepalive", acceptance = "a peer missing the configured keepalive result is closed at the injected-clock deadline and cannot retain a task or queue slot indefinitely", rebaseline = "ADR-0007", threats = [
+  { title = "terminate unresponsive peers by host wall time", acceptance = "While host wall time advances normally, a peer missing the configured keepalive result is closed after the configured deadline. Rollback or freeze can delay closure and a forward jump can make it immediately due; explicit shutdown still releases every task and queue slot.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-012",
   ] },
-  { title = "expire only genuinely idle sessions", acceptance = "idle sessions close at the exact deadline while authenticated traffic and owned in-flight work update activity without allowing a malicious peer to create unbounded lifetime or work", rebaseline = "ADR-0007", threats = [
+  { title = "expire idle sessions by host wall time", acceptance = "While host wall time advances normally, only sessions without authenticated traffic or owned in-flight work close after the configured idle deadline. Rollback or freeze can delay closure and a forward jump can make it immediately due.", rebaseline = "ADR-0007", threats = [
     "THR-010",
     "THR-012",
   ] },
-  { title = "complete bounded session shutdown", acceptance = "shutdown stops admission of new work, drains or cancels queued and in-flight work according to the manifest contract, closes transports, and leaves no session tasks or correlations", rebaseline = "ADR-0007", threats = [
+  { title = "complete session shutdown", acceptance = "Shutdown rejects new work, drains or cancels queued and in-flight packet streams according to the manifest contract, closes transports, and releases all session tasks independently of wall-clock progress.", rebaseline = "ADR-0007", threats = [
     "THR-010",
   ] },
 ]
@@ -888,8 +889,9 @@ cases = [
     "THR-009",
     "THR-018",
   ] },
-  { title = "Reject unauthorized route transitions", acceptance = "Only authenticated core route state can select or advance a next hop; fabricated handles, stale generations, loops, and endpoint substitutions fail closed.", rebaseline = "ADR-0007", threats = [
+  { title = "Select one matching node without unauthorized routing", acceptance = "Exact-node targets retain their authenticated identity; label targets evaluate only node-owned labels, expose candidates incrementally, and let the registered load balancer select one eligible NodeId. Fabricated handles, nonmatching nodes, stale generations, loops, and endpoint substitutions fail closed.", rebaseline = "ADR-0007", threats = [
     "THR-002",
+    "THR-008",
     "THR-012",
     "THR-018",
   ] },
@@ -945,6 +947,7 @@ cases = [
     "THR-020",
   ] },
   { title = "Propagate backpressure across hops", acceptance = "A slow destination stops upstream reads through bounded queues while tasks and memory remain within configured capacities and resume only when downstream progresses.", rebaseline = "ADR-0007", threats = [
+    "THR-008",
     "THR-018",
     "THR-020",
   ] },
@@ -1131,6 +1134,7 @@ verification_id = "VERIFY-G07-05"
 kind = "security"
 cases = [
   { title = "Preserve signed removal evidence", acceptance = "Removal is a signed resource tuple and remains convergence-eligible until exact metadata policy removes it; stale expectations and newer writes conflict without mutation.", rebaseline = "ADR-0007", threats = [
+    "THR-006",
     "THR-020",
     "THR-023",
   ] },
@@ -1346,7 +1350,7 @@ cases = [
   { title = "Selector evaluator semantics", acceptance = "Property tests compare the implementation with a reference evaluator over absent, present, duplicate, reserved, and concurrently updated labels for every grammar operator.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
-  { title = "Converged selector parity", acceptance = "After concurrent label changes converge, every member returns the same deterministically ordered node IDs for each selector without treating stale local observations as authoritative.", rebaseline = "ADR-0007", threats = [
+  { title = "Converged resource selector parity", acceptance = "After concurrent resource label changes converge, every member returns the same deterministically ordered resource names for each selector without treating stale local observations as authoritative.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
 ]
@@ -1359,14 +1363,14 @@ first = 9
 verification_id = "VERIFY-G09-03"
 kind = "contract"
 cases = [
-  { title = "Atomic label batch mutation", acceptance = "A valid batch updates all requested label keys and the resource revision in one conditional JSON or redb transaction; any invalid item or stale revision writes nothing.", rebaseline = "ADR-0007", threats = [
+  { title = "Accept independent resource label writes atomically", acceptance = "Each valid local batch writes its complete signed resource candidate and receipt in one conditional JSON or redb transaction; any invalid item or indeterminate commit is rejected or reconciled without a partial candidate.", rebaseline = "ADR-0007", threats = [
     "THR-020",
   ] },
-  { title = "Concurrent label mutation convergence", acceptance = "Concurrent batches against one revision produce one commit and typed conflicts, then normal metadata sync converges all members to the exact committed revision and digest.", rebaseline = "ADR-0007", threats = [
+  { title = "Converge concurrent resource label writes", acceptance = "Concurrent writers can each commit a signed candidate; normal metadata sync converges every member to the maximum timestamp/writer/removal/digest tuple, and a committed losing candidate does not become a conflict or freshness claim.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-020",
   ] },
-  { title = "Exactly one post-commit label event", acceptance = "Each known committed label batch emits one event after durability; aborts emit none, unknown outcomes emit none until reconciliation, and replay never duplicates the committed event.", rebaseline = "ADR-0007", threats = [
+  { title = "Exactly one post-commit resource event", acceptance = "Each known committed local resource candidate emits one event after durability; aborts emit none, unknown outcomes emit none until reconciliation, replay never duplicates the committed event, and the event says whether that candidate is the current winner.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-020",
   ] },
@@ -1404,7 +1408,7 @@ first = 15
 verification_id = "VERIFY-G09-05"
 kind = "security"
 cases = [
-  { title = "Expose exact resource removal", acceptance = "The public removal operation creates or conditionally cleans signed core metadata only and requires exact resource identity/version where stale evidence could reappear.", rebaseline = "ADR-0007", threats = [
+  { title = "Require exact version for resource removal", acceptance = "The public removal operation accepts a ResourceName and exact observed ResourceVersion, creates signed removal metadata only when the local expected version still matches, and never treats a stale removal request as a newer wall-clock winner.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-023",
   ] },
@@ -1465,7 +1469,7 @@ cases = [
     "THR-012",
     "THR-029",
   ] },
-  { title = "Exercise core-only operations through the facade", acceptance = "An external crate streams packets, pages members/trust/topology/resources, selects a resource target, revokes, leaves, and observes events without business or deployment types.", rebaseline = "ADR-0007", threats = [
+  { title = "Exercise core-only operations through the facade", acceptance = "An external crate streams packets, pages members/trust/topology/resources, selects a destination from matching node labels, mutates resource metadata, revokes, leaves, and observes events without business or deployment types.", rebaseline = "ADR-0007", threats = [
     "THR-020",
     "THR-021",
   ] },
@@ -1659,7 +1663,7 @@ cases = [
     "THR-014",
     "THR-029",
   ] },
-  { title = "Prove semver and external-crate compatibility", acceptance = "cargo-semver-checks passes against the approved baseline and tests/public_api.rs exercises every supported facade signature solely as an external crate.", rebaseline = "ADR-0007", threats = [
+  { title = "Prove semver and external-crate compatibility", acceptance = "cargo-semver-checks passes against the approved baseline and tests/public_api.rs exercises every supported facade signature solely as an external crate, including implementations of each open provider, transport, discovery, consumer, reader, and policy trait with construction and inspection of every boundary value.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
@@ -1731,7 +1735,7 @@ cases = [
     "THR-026",
     "THR-027",
   ] },
-  { title = "Record exactly 125 revised SLO samples", acceptance = "Five runs of 25 predeclared samples execute the ADR-0007 workload; each is at most 10000 ms and none is excluded, replaced, or reclassified after start.", rebaseline = "ADR-0007", threats = [
+  { title = "Record exactly 125 revised SLO samples", acceptance = "Five runs execute the exact ADR-0005 mix of five admissions, five direct packets, five routed label-selected packets, five node metadata revisions, and five resource metadata writes; all 125 samples are at most 10000 ms and none is excluded, replaced, or reclassified after start.", rebaseline = "ADR-0007", threats = [
     "THR-026",
     "THR-028",
   ] },
@@ -1854,5 +1858,5 @@ title = "Published revised sixteen-node SLO"
 owner_task = "T-G10-11"
 verification_id = "VERIFY-G10-11"
 rebaseline = "ADR-0007"
-acceptance = "All 125 exact-candidate samples run fixed admission, packet delivery, node-owner revisions, and generic resources within ten seconds without exclusion."
+acceptance = "All 125 exact-candidate samples execute the ADR-0005 mix of admissions, direct and routed packets, node-owner revisions, and generic resources within ten seconds without exclusion."
 threats = ["THR-025", "THR-026", "THR-027", "THR-028"]

@@ -109,7 +109,7 @@ which the caller can read that ID before delivery begins. The caller supplies a 
 body. Core frames, buffers, and forwards the body with constant memory and backpressure; total stream
 length is not a public limit.
 
-A target is either an exact `NodeId` or a metadata selector. Selector delivery resolves one destination
+A target is either an exact `NodeId` or a selector evaluated against node-owned labels. Selector delivery resolves one destination
 through a caller-selected load-balancing policy and records the selected node in route status. Core
 supports synchronous delivery, which waits for the packet's route or delivery terminal state, and
 asynchronous delivery, which returns immediately and exposes route-status queries.

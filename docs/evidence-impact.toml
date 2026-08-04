@@ -113,6 +113,33 @@ verification_ids = ["VERIFY-G01-05", "VERIFY-G10-08"]
 threat_ids = ["THR-025", "THR-029"]
 
 [[path_rule]]
+id = "IMPACT-FOUNDATION-CONFIG"
+globs = [
+  "src/config.rs",
+  "src/runtime/**",
+  "src/node/builder.rs",
+  "src/node/event.rs",
+  "tests/core_values.rs",
+  "tests/lifecycle.rs",
+  "tests/foundation_public.rs",
+]
+precedence = 250
+owner_task = "T-G01-05"
+verification_ids = [
+  "VERIFY-G01-01",
+  "VERIFY-G01-02",
+  "VERIFY-G01-03",
+  "VERIFY-G01-04",
+  "VERIFY-G01-05",
+  "VERIFY-G03-06",
+  "VERIFY-G04-04",
+  "VERIFY-G05-04",
+  "VERIFY-G06-02",
+  "VERIFY-G10-08",
+]
+threat_ids = ["THR-009", "THR-010", "THR-011", "THR-012", "THR-025", "THR-029"]
+
+[[path_rule]]
 id = "IMPACT-SIMULATION"
 globs = ["src/simulation/**"]
 precedence = 200
@@ -159,6 +186,8 @@ globs = [
 precedence = 300
 owner_task = "T-G10-08"
 verification_ids = [
+  "VERIFY-G01-01",
+  "VERIFY-G01-02",
   "VERIFY-G01-03",
   "VERIFY-G01-05",
   "VERIFY-G09-07",
@@ -206,7 +235,7 @@ threat_ids = ["THR-002", "THR-003", "THR-007", "THR-009", "THR-014", "THR-016"]
 
 [[path_rule]]
 id = "IMPACT-STORAGE"
-globs = ["src/storage/**"]
+globs = ["src/provider.rs", "src/storage/**"]
 precedence = 200
 owner_task = "T-G02-01"
 verification_ids = [

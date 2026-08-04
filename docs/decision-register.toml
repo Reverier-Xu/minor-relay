@@ -30,7 +30,7 @@ id = "slo.release-samples"
 value = "125"
 unit = "samples"
 owner_task = "T-G10-11"
-source = "ADR-0005#sample-count-and-statistics"
+source = "ADR-0005#statistics-and-pass-rule"
 
 [[constant]]
 id = "identity.node-prefix"
@@ -132,7 +132,7 @@ source = "ADR-0002#domain-qualified-tags"
 
 [[constant]]
 id = "wire.receive-frame-default"
-value = "16777216"
+value = "65536"
 unit = "bytes"
 owner_task = "T-G03-06"
 source = "ADR-0007#wire-and-negotiation"
@@ -146,14 +146,14 @@ source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "wire.decode-depth-default"
-value = "32"
+value = "16"
 unit = "levels"
 owner_task = "T-G01-01"
 source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "wire.collection-items-default"
-value = "4096"
+value = "1024"
 unit = "items"
 owner_task = "T-G01-01"
 source = "ADR-0007#wire-and-negotiation"
@@ -181,7 +181,7 @@ source = "ADR-0007#wire-and-negotiation"
 
 [[constant]]
 id = "session.queued-messages-default"
-value = "1024"
+value = "256"
 unit = "messages"
 owner_task = "T-G04-04"
 source = "ADR-0007#runtime-and-backpressure"
@@ -194,6 +194,55 @@ owner_task = "T-G04-04"
 source = "ADR-0007#runtime-and-backpressure"
 
 [[constant]]
+id = "runtime.anti-entropy-default"
+value = "250"
+unit = "milliseconds"
+owner_task = "T-G01-01"
+source = "ADR-0007#runtime-and-backpressure"
+
+[[constant]]
+id = "recovery.neighbor-target-default"
+value = "4"
+unit = "neighbors"
+owner_task = "T-G05-04"
+source = "ADR-0007#endpoints-sessions-and-recovery"
+
+[[constant]]
+id = "recovery.fan-out-default"
+value = "64"
+unit = "nodes per attempt"
+owner_task = "T-G05-04"
+source = "ADR-0007#endpoints-sessions-and-recovery"
+
+[[constant]]
+id = "recovery.initial-backoff-default"
+value = "1000"
+unit = "milliseconds"
+owner_task = "T-G05-04"
+source = "ADR-0007#endpoints-sessions-and-recovery"
+
+[[constant]]
+id = "recovery.maximum-backoff-default"
+value = "300000"
+unit = "milliseconds"
+owner_task = "T-G05-04"
+source = "ADR-0007#endpoints-sessions-and-recovery"
+
+[[constant]]
+id = "trace.metadata-active-default"
+value = "8192"
+unit = "active trace records"
+owner_task = "T-G06-02"
+source = "ADR-0007#packet-streams-and-trace-identity"
+
+[[constant]]
+id = "trace.metadata-terminal-default"
+value = "262144"
+unit = "terminal trace records"
+owner_task = "T-G06-02"
+source = "ADR-0007#packet-streams-and-trace-identity"
+
+[[constant]]
 id = "trace.metadata-retention-default"
 value = "86400"
 unit = "seconds"
@@ -201,11 +250,11 @@ owner_task = "T-G06-05"
 source = "ADR-0007#packet-streams-and-trace-identity"
 
 [[constant]]
-id = "storage.receipt-cleanup-minimum-age"
+id = "storage.receipt-retention-default"
 value = "30"
 unit = "days"
 owner_task = "T-G02-01"
-source = "ADR-0003#receipt-lifetime-and-cleanup"
+source = "ADR-0007#metadata-storage"
 
 [[constant]]
 id = "evidence.artifact-byte-limit"
