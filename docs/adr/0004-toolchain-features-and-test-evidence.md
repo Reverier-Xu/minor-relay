@@ -8,6 +8,10 @@ deciders: minor-relay maintainers
 
 # Fix the Toolchain Feature Policy and Evidence Budgets
 
+> **Amended by ADR-0007.** The toolchain, feature, replay, and evidence discipline remains active.
+> Targets that exist only for superseded request/reply, HLC, or application-state APIs must be replaced
+> by packet-routing and metadata-resource evidence before their owning gates activate.
+
 ## Context
 
 `minor-relay` is a Rust 2024 library with security, crash-recovery, convergence, and cross-platform

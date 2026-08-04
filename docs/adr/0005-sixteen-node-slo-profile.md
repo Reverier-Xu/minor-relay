@@ -8,6 +8,11 @@ deciders: minor-relay maintainers
 
 # Measure the Sixteen-Node SLO in an Unimpaired OCI Bridge Profile
 
+> **Amended by ADR-0007.** The controlled-profile method remains active. HLC, application-state, and
+> tombstone strata are superseded, and the exact workload must be re-ratified around admission, packet
+> delivery, owner-revision node metadata, and generic resource metadata. The profile is test evidence,
+> not a runtime population or universal latency limit.
+
 ## Context
 
 The roadmap qualifies one-to-sixteen-member clusters under this profile; it does not make sixteen a

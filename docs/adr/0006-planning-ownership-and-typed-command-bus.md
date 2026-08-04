@@ -8,6 +8,11 @@ deciders: minor-relay maintainers
 
 # Freeze Planning Ownership and a Typed Command Bus Facade
 
+> **Amended by ADR-0007.** Typed-bus ownership and manifest governance remain active. The member
+> ceiling, public clock injection, application-state operation inventory, and business `CleanupState`
+> boundary are superseded. Active planning documents must complete the ADR-0007 rebaseline before G1
+> corrections or G2 implementation resume.
+
 ## Context
 
 ADRs 0001 through 0005 fixed the security, wire, persistence, toolchain, evidence, and sixteen-node

@@ -8,6 +8,9 @@ deciders: minor-relay maintainers
 
 # Bind Node Identity and Admission to a TLS 1.3 Channel
 
+> **Amended by ADR-0007.** The identity, key binding, channel binding, and fixed admission policy
+> remain active. The 1,024-member rejection boundary is superseded; 1,024 is now evidence coverage.
+
 ## Context
 
 A node initially joins with only a receiver address and a receiver-owned join credential. It has no
