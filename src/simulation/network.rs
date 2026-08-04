@@ -172,7 +172,7 @@ impl Simulator {
         at_nanos: self.now_nanos,
         message,
         copies: copies as u8,
-        bytes: u32::try_from(total_bytes).map_err(|_| SimulationError::Overflow)?,
+        bytes: u32::try_from(bytes).map_err(|_| SimulationError::Overflow)?,
       })?;
       return Err(SimulationError::Capacity);
     }
@@ -236,7 +236,7 @@ impl Simulator {
       message,
       link: link_key,
       copies: copies as u8,
-      bytes: u32::try_from(total_bytes).map_err(|_| SimulationError::Overflow)?,
+      bytes: u32::try_from(bytes).map_err(|_| SimulationError::Overflow)?,
     })?;
     if duplicated {
       self.records.push(EventRecord::DuplicateCreated {
@@ -897,6 +897,15 @@ mod tests {
       delivered_copies(simulator.records(), duplicated),
       vec![0, 1],
     );
+    assert!(simulator.records().iter().any(|record| matches!(
+      record,
+      EventRecord::SendAccepted {
+        message,
+        copies: 2,
+        bytes: 8,
+        ..
+      } if *message == duplicated
+    )));
     let reordered = delivered_messages(simulator.records())
       .into_iter()
       .filter(|message| *message == first || *message == second)
@@ -932,7 +941,7 @@ mod tests {
       simulator.records().last(),
       Some(EventRecord::QueueRejected {
         copies: 2,
-        bytes: 16,
+        bytes: 8,
         ..
       })
     ));
