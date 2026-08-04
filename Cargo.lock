@@ -171,9 +171,17 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "minicbor",
+ "minor-relay-test-support",
  "proptest",
  "sha2",
  "tokio",
+]
+
+[[package]]
+name = "minor-relay-test-support"
+version = "0.1.0"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]
