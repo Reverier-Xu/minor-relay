@@ -935,7 +935,7 @@ mod tests {
   fn simulation_network_bounds_are_independent() {
     let link = LinkKey::new(NodeKey::new(1), NodeKey::new(2));
 
-    let mut exact_topology = topology(SimulationLimits::new(4, 2, 16, 8, 8).unwrap());
+    let mut exact_topology = topology(SimulationLimits::new(4, 2, 16, 4, 8).unwrap());
     exact_topology
       .add_link(link, policy(1, 0, 1_000_000, 0, 0))
       .unwrap();
@@ -943,7 +943,13 @@ mod tests {
     exact.send(link, 8).unwrap();
     assert_eq!(exact.pending_events(), 2);
     assert_eq!(exact.pending_bytes(), 16);
+    let reserved = exact.snapshot();
+    assert_eq!(reserved.records.len(), 2);
+    assert_eq!(reserved.reserved_records, 2);
     exact.run().unwrap();
+    let drained = exact.snapshot();
+    assert_eq!(drained.records.len(), 4);
+    assert_eq!(drained.reserved_records, 0);
 
     let mut count_topology = topology(SimulationLimits::new(4, 1, 16, 8, 8).unwrap());
     count_topology
