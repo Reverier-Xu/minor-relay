@@ -47,7 +47,7 @@ impl Ord for ScheduledDelivery {
   }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct SimulationSnapshot {
   topology: Topology,
   records: Vec<EventRecord>,
@@ -494,7 +494,7 @@ const FAULT_JOINT: u32 = 1 << 14;
 const FAULT_DELAY: u32 = 1 << 15;
 pub(crate) const REQUIRED_FAULTS: u32 = (1 << 16) - 1;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct MatrixRun {
   snapshot: SimulationSnapshot,
   faults: u32,
@@ -834,6 +834,7 @@ mod tests {
   use std::{collections::BTreeSet, time::Duration};
 
   use crate::simulation::{
+    artifact::{MatrixFailure, fail_matrix},
     event::{DropReason, EventRecord},
     network::{
       REQUIRED_FAULTS, Simulator, matrix_seed_range, observed_exact_duplicate, observed_loss,
@@ -1071,18 +1072,18 @@ mod tests {
 
     let before_deadline = simulator.snapshot();
     assert!(simulator.send(overflow, 1).is_err());
-    assert_eq!(simulator.snapshot(), before_deadline);
+    assert!(simulator.snapshot() == before_deadline);
 
     simulator.next_message = u64::MAX;
     let before_message = simulator.snapshot();
     assert!(simulator.send(normal, 1).is_err());
-    assert_eq!(simulator.snapshot(), before_message);
+    assert!(simulator.snapshot() == before_message);
 
     simulator.next_message = 1;
     simulator.next_enqueue = u64::MAX;
     let before_enqueue = simulator.snapshot();
     assert!(simulator.send(normal, 1).is_err());
-    assert_eq!(simulator.snapshot(), before_enqueue);
+    assert!(simulator.snapshot() == before_enqueue);
   }
 
   #[test]
@@ -1147,30 +1148,45 @@ mod tests {
 
   #[test]
   fn simulation_network_fault_matrix() {
-    let seeds = matrix_seed_range().unwrap();
+    let seeds = match matrix_seed_range() {
+      Ok(seeds) => seeds,
+      Err(_) => fail_matrix(0, MatrixFailure::Run, &[]),
+    };
     let mut fingerprints = BTreeSet::new();
-    let mut executed = 0_usize;
     for seed in seeds {
-      let first = run_fault_matrix_seed(seed).unwrap();
-      let second = run_fault_matrix_seed(seed).unwrap();
+      let first = match run_fault_matrix_seed(seed) {
+        Ok(run) => run,
+        Err(_) => fail_matrix(seed, MatrixFailure::Run, &[]),
+      };
+      let second = match run_fault_matrix_seed(seed) {
+        Ok(run) => run,
+        Err(_) => fail_matrix(seed, MatrixFailure::Run, first.records()),
+      };
 
-      assert_eq!(first, second, "seed {seed}");
-      assert_eq!(first.faults, REQUIRED_FAULTS, "seed {seed}");
-      assert!(
-        first
-          .snapshot
-          .records
-          .windows(2)
-          .all(|pair| pair[0].at_nanos() <= pair[1].at_nanos()),
-        "seed {seed}",
-      );
-      assert!(first.snapshot.max_pending_events <= 16, "seed {seed}");
-      assert!(first.snapshot.max_pending_bytes <= 4_096, "seed {seed}");
-      fingerprints.insert(first.decision_fingerprint);
-      executed += 1;
+      if first != second {
+        fail_matrix(seed, MatrixFailure::DeterministicReplay, first.records());
+      }
+      if first.faults != REQUIRED_FAULTS {
+        fail_matrix(seed, MatrixFailure::FaultCoverage, first.records());
+      }
+      if !first
+        .snapshot
+        .records
+        .windows(2)
+        .all(|pair| pair[0].at_nanos() <= pair[1].at_nanos())
+      {
+        fail_matrix(seed, MatrixFailure::EventOrder, first.records());
+      }
+      if first.snapshot.max_pending_events > 16 {
+        fail_matrix(seed, MatrixFailure::PendingEventBound, first.records());
+      }
+      if first.snapshot.max_pending_bytes > 4_096 {
+        fail_matrix(seed, MatrixFailure::PendingByteBound, first.records());
+      }
+      if !fingerprints.insert(first.decision_fingerprint) {
+        fail_matrix(seed, MatrixFailure::FingerprintCollision, first.records());
+      }
     }
-
-    assert_eq!(executed, fingerprints.len());
   }
 
   fn delivered_messages(records: &[EventRecord]) -> Vec<crate::simulation::event::MessageId> {

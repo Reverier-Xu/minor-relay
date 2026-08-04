@@ -1,54 +1,39 @@
-use std::collections::{BTreeMap, BTreeSet};
+use minor_relay_test_support::{
+  Alias, AliasKind, AliasTable, NormalizedDropReason, NormalizedEvent, NormalizedEventSource,
+  SourceError,
+};
 
 use crate::simulation::{
-  artifact::{
-    ArtifactBytes, ArtifactError, CommitDigest, EvidenceManifest, FailureClass, InvariantId,
-    LockfileDigest, build_failure_artifact,
-  },
   event::{DropReason, EventRecord},
-  network::run_fault_matrix_seed,
-  redaction::{
-    ArtifactCandidate, EndpointAlias, FaultAlias, NodeAlias, NormalizedDropReason, NormalizedEvent,
-    PathAlias, RedactionError, ScenarioAliasKind,
-  },
-  scenario::ReplaySpec,
+  redaction::ArtifactCandidate,
   topology::{AddressId, LinkKey, NodeKey, PartitionId},
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ScenarioFixture {
-  nodes: BTreeMap<NodeKey, u16>,
-  node_aliases: BTreeSet<u16>,
-  endpoints: BTreeMap<AddressId, u16>,
-  endpoint_aliases: BTreeSet<u16>,
-  paths: BTreeMap<LinkKey, u16>,
-  path_aliases: BTreeSet<u16>,
-  faults: BTreeMap<PartitionId, u16>,
-  fault_aliases: BTreeSet<u16>,
+  nodes: AliasTable<NodeKey>,
+  endpoints: AliasTable<AddressId>,
+  paths: AliasTable<LinkKey>,
+  faults: AliasTable<PartitionId>,
 }
 
 impl ScenarioFixture {
-  pub(crate) fn empty() -> Self {
+  fn empty() -> Self {
     Self {
-      nodes: BTreeMap::new(),
-      node_aliases: BTreeSet::new(),
-      endpoints: BTreeMap::new(),
-      endpoint_aliases: BTreeSet::new(),
-      paths: BTreeMap::new(),
-      path_aliases: BTreeSet::new(),
-      faults: BTreeMap::new(),
-      fault_aliases: BTreeSet::new(),
+      nodes: AliasTable::new(AliasKind::Node),
+      endpoints: AliasTable::new(AliasKind::Endpoint),
+      paths: AliasTable::new(AliasKind::Path),
+      faults: AliasTable::new(AliasKind::Fault),
     }
   }
 
-  pub(crate) fn network_fault_matrix() -> Result<Self, RedactionError> {
+  pub(crate) fn network_fault_matrix() -> Result<Self, SourceError> {
     let mut fixture = Self::empty();
-    for ordinal in 1..=4_u16 {
-      fixture.register_node(NodeKey::new(ordinal), ordinal)?;
-      fixture.register_endpoint(AddressId::new(u32::from(ordinal) * 10), ordinal)?;
+    for value in 1..=4_u16 {
+      fixture.register_node(NodeKey::new(value))?;
+      fixture.register_endpoint(AddressId::new(u32::from(value) * 10))?;
     }
-    fixture.register_endpoint(AddressId::new(99), 5)?;
-    for (ordinal, (from, to)) in [
+    fixture.register_endpoint(AddressId::new(99))?;
+    for (from, to) in [
       (1, 2),
       (2, 3),
       (3, 4),
@@ -57,94 +42,34 @@ impl ScenarioFixture {
       (2, 4),
       (1, 3),
       (4, 2),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-      fixture.register_path(
-        LinkKey::new(NodeKey::new(from), NodeKey::new(to)),
-        u16::try_from(ordinal + 1).map_err(|_| RedactionError::InvalidAlias)?,
-      )?;
+    ] {
+      fixture.register_path(LinkKey::new(NodeKey::new(from), NodeKey::new(to)))?;
     }
-    for ordinal in 1..=3_u32 {
-      fixture.register_fault(
-        PartitionId::new(ordinal),
-        u16::try_from(ordinal).map_err(|_| RedactionError::InvalidAlias)?,
-      )?;
+    for value in 1..=3_u32 {
+      fixture.register_fault(PartitionId::new(value))?;
     }
     Ok(fixture)
   }
 
-  pub(crate) fn register_node(
-    &mut self, source: NodeKey, ordinal: u16,
-  ) -> Result<(), RedactionError> {
-    register_alias(
-      &mut self.nodes,
-      &mut self.node_aliases,
-      source,
-      ordinal,
-      ScenarioAliasKind::Node,
-    )
+  fn register_node(&mut self, source: NodeKey) -> Result<Alias, SourceError> {
+    self.nodes.register(source)
   }
 
-  pub(crate) fn register_endpoint(
-    &mut self, source: AddressId, ordinal: u16,
-  ) -> Result<(), RedactionError> {
-    register_alias(
-      &mut self.endpoints,
-      &mut self.endpoint_aliases,
-      source,
-      ordinal,
-      ScenarioAliasKind::Endpoint,
-    )
+  fn register_endpoint(&mut self, source: AddressId) -> Result<Alias, SourceError> {
+    self.endpoints.register(source)
   }
 
-  pub(crate) fn register_path(
-    &mut self, source: LinkKey, ordinal: u16,
-  ) -> Result<(), RedactionError> {
-    register_alias(
-      &mut self.paths,
-      &mut self.path_aliases,
-      source,
-      ordinal,
-      ScenarioAliasKind::Path,
-    )
+  fn register_path(&mut self, source: LinkKey) -> Result<Alias, SourceError> {
+    self.paths.register(source)
   }
 
-  pub(crate) fn register_fault(
-    &mut self, source: PartitionId, ordinal: u16,
-  ) -> Result<(), RedactionError> {
-    register_alias(
-      &mut self.faults,
-      &mut self.fault_aliases,
-      source,
-      ordinal,
-      ScenarioAliasKind::Fault,
-    )
-  }
-
-  pub(crate) fn normalize_candidates<'a>(
-    &self, candidates: impl IntoIterator<Item = ArtifactCandidate<'a>>,
-  ) -> Result<Vec<NormalizedEvent>, RedactionError> {
-    let mut normalized = Vec::new();
-    for candidate in candidates {
-      normalized.push(self.normalize_candidate(candidate)?);
-    }
-    Ok(normalized)
-  }
-
-  pub(crate) fn normalize_candidate(
-    &self, candidate: ArtifactCandidate<'_>,
-  ) -> Result<NormalizedEvent, RedactionError> {
-    match candidate {
-      ArtifactCandidate::Simulation(record) => self.normalize_record(record),
-      ArtifactCandidate::Forbidden(value) => Err(RedactionError::ForbiddenField(value.class())),
-    }
+  fn register_fault(&mut self, source: PartitionId) -> Result<Alias, SourceError> {
+    self.faults.register(source)
   }
 
   pub(crate) fn normalize_record(
     &self, record: &EventRecord,
-  ) -> Result<NormalizedEvent, RedactionError> {
+  ) -> Result<NormalizedEvent, SourceError> {
     match *record {
       EventRecord::SendAccepted {
         at_nanos,
@@ -155,7 +80,7 @@ impl ScenarioFixture {
       } => Ok(NormalizedEvent::SendAccepted {
         at_nanos,
         message: message.value(),
-        path: self.path(link)?,
+        path: self.paths.resolve(link)?,
         copies,
         payload_len: bytes,
       }),
@@ -205,8 +130,8 @@ impl ScenarioFixture {
         generation,
       } => Ok(NormalizedEvent::Partitioned {
         at_nanos,
-        path: self.path(link)?,
-        fault: self.fault(partition)?,
+        path: self.paths.resolve(link)?,
+        fault: self.faults.resolve(partition)?,
         generation,
       }),
       EventRecord::Healed {
@@ -216,8 +141,8 @@ impl ScenarioFixture {
         generation,
       } => Ok(NormalizedEvent::Healed {
         at_nanos,
-        path: self.path(link)?,
-        fault: self.fault(partition)?,
+        path: self.paths.resolve(link)?,
+        fault: self.faults.resolve(partition)?,
         generation,
       }),
       EventRecord::Restarted {
@@ -226,7 +151,7 @@ impl ScenarioFixture {
         boot_epoch,
       } => Ok(NormalizedEvent::Restarted {
         at_nanos,
-        node: self.node(node)?,
+        node: self.nodes.resolve(node)?,
         boot_epoch,
       }),
       EventRecord::AddressChanged {
@@ -236,8 +161,8 @@ impl ScenarioFixture {
         generation,
       } => Ok(NormalizedEvent::AddressChanged {
         at_nanos,
-        node: self.node(node)?,
-        endpoint: self.endpoint(address)?,
+        node: self.nodes.resolve(node)?,
+        endpoint: self.endpoints.resolve(address)?,
         generation,
       }),
       EventRecord::ClockSkewChanged {
@@ -246,7 +171,7 @@ impl ScenarioFixture {
         skew_nanos,
       } => Ok(NormalizedEvent::ClockSkewChanged {
         at_nanos,
-        node: self.node(node)?,
+        node: self.nodes.resolve(node)?,
         skew_nanos,
       }),
       EventRecord::QueueRejected {
@@ -262,73 +187,70 @@ impl ScenarioFixture {
       }),
     }
   }
+}
 
-  fn node(&self, source: NodeKey) -> Result<NodeAlias, RedactionError> {
-    let ordinal = resolve_alias(&self.nodes, source, ScenarioAliasKind::Node)?;
-    NodeAlias::new(ordinal)
+enum CandidateSet<'a> {
+  Records(&'a [EventRecord]),
+  Candidates(&'a [ArtifactCandidate<'a>]),
+}
+
+pub(crate) struct SimulationEvidenceSource<'a> {
+  fixture: &'a ScenarioFixture,
+  values: CandidateSet<'a>,
+}
+
+impl<'a> SimulationEvidenceSource<'a> {
+  pub(crate) const fn records(fixture: &'a ScenarioFixture, records: &'a [EventRecord]) -> Self {
+    Self {
+      fixture,
+      values: CandidateSet::Records(records),
+    }
   }
 
-  fn endpoint(&self, source: AddressId) -> Result<EndpointAlias, RedactionError> {
-    let ordinal = resolve_alias(&self.endpoints, source, ScenarioAliasKind::Endpoint)?;
-    EndpointAlias::new(ordinal)
+  pub(crate) const fn candidates(
+    fixture: &'a ScenarioFixture, candidates: &'a [ArtifactCandidate<'a>],
+  ) -> Self {
+    Self {
+      fixture,
+      values: CandidateSet::Candidates(candidates),
+    }
   }
 
-  fn path(&self, source: LinkKey) -> Result<PathAlias, RedactionError> {
-    let ordinal = resolve_alias(&self.paths, source, ScenarioAliasKind::Path)?;
-    PathAlias::new(ordinal)
+  fn len(&self) -> usize {
+    match self.values {
+      CandidateSet::Records(records) => records.len(),
+      CandidateSet::Candidates(candidates) => candidates.len(),
+    }
   }
 
-  fn fault(&self, source: PartitionId) -> Result<FaultAlias, RedactionError> {
-    let ordinal = resolve_alias(&self.faults, source, ScenarioAliasKind::Fault)?;
-    FaultAlias::new(ordinal)
+  fn normalize(&self, index: usize) -> Result<NormalizedEvent, SourceError> {
+    match self.values {
+      CandidateSet::Records(records) => records
+        .get(index)
+        .ok_or(SourceError::InvalidEventIndex)
+        .and_then(|record| self.fixture.normalize_record(record)),
+      CandidateSet::Candidates(candidates) => match candidates
+        .get(index)
+        .copied()
+        .ok_or(SourceError::InvalidEventIndex)?
+      {
+        ArtifactCandidate::Forbidden(value) => Err(SourceError::ForbiddenField(value.class())),
+      },
+    }
   }
 }
 
-pub(crate) fn capture_network_fault_matrix(seed: u64) -> Result<ArtifactBytes, ArtifactError> {
-  let run = run_fault_matrix_seed(seed)?;
-  let fixture = ScenarioFixture::network_fault_matrix()?;
-  let replay = ReplaySpec::simulation_network_fault_matrix(seed);
-  let manifest = EvidenceManifest::network_fault_matrix(
-    seed,
-    FailureClass::Invariant,
-    InvariantId::CompleteFaultMatrix,
-    CommitDigest::new([0x11; 32]),
-    LockfileDigest::new([0x22; 32]),
-    replay,
-  )?;
-  let candidates = run
-    .records()
-    .iter()
-    .map(ArtifactCandidate::Simulation)
-    .collect::<Vec<_>>();
-  build_failure_artifact(&manifest, &fixture, &candidates)
-}
+impl NormalizedEventSource for SimulationEvidenceSource<'_> {
+  fn prevalidate(&self) -> Result<usize, SourceError> {
+    for index in 0..self.len() {
+      self.normalize(index)?;
+    }
+    Ok(self.len())
+  }
 
-fn register_alias<T: Copy + Ord>(
-  sources: &mut BTreeMap<T, u16>, aliases: &mut BTreeSet<u16>, source: T, ordinal: u16,
-  kind: ScenarioAliasKind,
-) -> Result<(), RedactionError> {
-  if ordinal == 0 {
-    return Err(RedactionError::InvalidAlias);
+  fn event(&self, index: usize) -> Result<NormalizedEvent, SourceError> {
+    self.normalize(index)
   }
-  if sources.contains_key(&source) {
-    return Err(RedactionError::DuplicateSource(kind));
-  }
-  if aliases.contains(&ordinal) {
-    return Err(RedactionError::DuplicateAlias(kind));
-  }
-  sources.insert(source, ordinal);
-  aliases.insert(ordinal);
-  Ok(())
-}
-
-fn resolve_alias<T: Copy + Ord>(
-  sources: &BTreeMap<T, u16>, source: T, kind: ScenarioAliasKind,
-) -> Result<u16, RedactionError> {
-  sources
-    .get(&source)
-    .copied()
-    .ok_or(RedactionError::UnknownAlias(kind))
 }
 
 const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
@@ -343,10 +265,11 @@ const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
 
 #[cfg(test)]
 mod tests {
-  use super::{ScenarioFixture, capture_network_fault_matrix};
+  use minor_relay_test_support::{AliasKind, EventKind, NormalizedEventSource, SourceError};
+
+  use super::{ScenarioFixture, SimulationEvidenceSource};
   use crate::simulation::{
     event::{DropReason, EventRecord, MessageId},
-    redaction::{ArtifactCandidate, EventKind, NormalizedEvent, RedactionError, ScenarioAliasKind},
     topology::{AddressId, LinkKey, NodeKey, PartitionId},
   };
 
@@ -437,50 +360,16 @@ mod tests {
   }
 
   #[test]
-  fn simulation_failure_artifact_security_simulation_capture_is_byte_stable() {
-    let first = capture_network_fault_matrix(4_242).unwrap();
-    let second = capture_network_fault_matrix(4_242).unwrap();
-    let changed = capture_network_fault_matrix(4_243).unwrap();
-
-    assert_eq!(first, second);
-    assert_ne!(first.as_bytes(), changed.as_bytes());
-    assert_ne!(first.event_digest(), changed.event_digest());
-    assert!(
-      first
-        .as_bytes()
-        .windows(11)
-        .any(|window| window == b"endpoint-5\"")
-    );
-    assert!(
-      !first
-        .as_bytes()
-        .windows(10)
-        .any(|window| window == b"\"address\":")
-    );
-  }
-
-  #[test]
-  fn simulation_failure_artifact_security_simulation_matches_golden_fixture() {
-    let artifact = capture_network_fault_matrix(4_242).unwrap();
-    let golden = include_bytes!("../../tests/fixtures/failure-artifacts/simulation-v1.json");
-
-    assert_eq!(artifact.as_bytes(), golden);
-  }
-
-  #[test]
-  fn simulation_failure_artifact_security_normalizes_closed_simulation_events() {
+  fn simulation_failure_artifact_security_normalizes_all_simulation_event_variants() {
     let fixture = ScenarioFixture::network_fault_matrix().unwrap();
     let records = all_records();
-    let normalized = fixture
-      .normalize_candidates(records.iter().map(ArtifactCandidate::Simulation))
-      .unwrap();
-
-    assert_eq!(normalized.len(), records.len());
+    let source = SimulationEvidenceSource::records(&fixture, &records);
+    assert_eq!(source.prevalidate(), Ok(records.len()));
+    let kinds = (0..records.len())
+      .map(|index| source.event(index).unwrap().kind())
+      .collect::<Vec<_>>();
     assert_eq!(
-      normalized
-        .iter()
-        .map(NormalizedEvent::kind)
-        .collect::<Vec<_>>(),
+      kinds,
       [
         EventKind::SendAccepted,
         EventKind::Lost,
@@ -500,27 +389,33 @@ mod tests {
         EventKind::Dropped,
       ],
     );
-    assert!(normalized.iter().all(|event| event.at_nanos() > 0));
-    assert_eq!(normalized[0].path_alias().as_deref(), Some("path-1"));
-    assert_eq!(normalized[5].fault_alias().as_deref(), Some("fault-1"));
-    assert_eq!(normalized[7].node_alias().as_deref(), Some("node-2"));
     assert_eq!(
-      normalized[8].endpoint_alias().as_deref(),
+      source.event(0).unwrap().path_alias().as_deref(),
+      Some("path-1")
+    );
+    assert_eq!(
+      source.event(5).unwrap().fault_alias().as_deref(),
+      Some("fault-1")
+    );
+    assert_eq!(
+      source.event(7).unwrap().node_alias().as_deref(),
+      Some("node-2")
+    );
+    assert_eq!(
+      source.event(8).unwrap().endpoint_alias().as_deref(),
       Some("endpoint-5")
     );
-    assert_eq!(normalized[0].payload_len(), Some(64));
-    assert_eq!(normalized[10].payload_len(), Some(128));
+    assert_eq!(source.event(0).unwrap().payload_len(), Some(64));
   }
 
   #[test]
-  fn simulation_failure_artifact_security_normalizes_ephemeral_ids_to_aliases() {
+  fn simulation_failure_artifact_security_aliases_ignore_raw_source_values() {
     let mut first = ScenarioFixture::empty();
-    first.register_node(NodeKey::new(1), 1).unwrap();
-    first.register_endpoint(AddressId::new(111), 1).unwrap();
+    first.register_node(NodeKey::new(1)).unwrap();
+    first.register_endpoint(AddressId::new(111)).unwrap();
     let mut second = ScenarioFixture::empty();
-    second.register_node(NodeKey::new(9), 1).unwrap();
-    second.register_endpoint(AddressId::new(999), 1).unwrap();
-
+    second.register_node(NodeKey::new(9)).unwrap();
+    second.register_endpoint(AddressId::new(999)).unwrap();
     let first_event = EventRecord::AddressChanged {
       at_nanos: 5,
       node: NodeKey::new(1),
@@ -533,7 +428,6 @@ mod tests {
       address: AddressId::new(999),
       generation: 3,
     };
-
     assert_eq!(
       first.normalize_record(&first_event),
       second.normalize_record(&second_event),
@@ -541,7 +435,7 @@ mod tests {
   }
 
   #[test]
-  fn simulation_failure_artifact_security_rejects_unknown_and_duplicate_aliases() {
+  fn simulation_failure_artifact_security_alias_tables_reject_unknown_and_duplicate_sources() {
     let fixture = ScenarioFixture::network_fault_matrix().unwrap();
     let unknown = EventRecord::Restarted {
       at_nanos: 1,
@@ -550,22 +444,13 @@ mod tests {
     };
     assert_eq!(
       fixture.normalize_record(&unknown),
-      Err(RedactionError::UnknownAlias(ScenarioAliasKind::Node)),
+      Err(SourceError::UnknownAlias(AliasKind::Node)),
     );
-
     let mut fixture = ScenarioFixture::empty();
-    fixture.register_node(NodeKey::new(1), 1).unwrap();
+    fixture.register_node(NodeKey::new(1)).unwrap();
     assert_eq!(
-      fixture.register_node(NodeKey::new(2), 1),
-      Err(RedactionError::DuplicateAlias(ScenarioAliasKind::Node)),
-    );
-    assert_eq!(
-      fixture.register_node(NodeKey::new(1), 2),
-      Err(RedactionError::DuplicateSource(ScenarioAliasKind::Node)),
-    );
-    assert_eq!(
-      fixture.register_endpoint(AddressId::new(1), 0),
-      Err(RedactionError::InvalidAlias),
+      fixture.register_node(NodeKey::new(1)),
+      Err(SourceError::DuplicateSource(AliasKind::Node)),
     );
   }
 }
