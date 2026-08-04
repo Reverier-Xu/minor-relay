@@ -25,6 +25,7 @@ pub(crate) enum ForbiddenFieldClass {
   HostileText,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct SensitiveCandidate<'a> {
   class: ForbiddenFieldClass,
   _value: &'a [u8],
@@ -49,6 +50,7 @@ impl fmt::Debug for SensitiveCandidate<'_> {
   }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum ArtifactCandidate<'a> {
   Simulation(&'a EventRecord),
   Forbidden(SensitiveCandidate<'a>),

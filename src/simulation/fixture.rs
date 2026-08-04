@@ -122,14 +122,18 @@ impl ScenarioFixture {
   ) -> Result<Vec<NormalizedEvent>, RedactionError> {
     let mut normalized = Vec::new();
     for candidate in candidates {
-      match candidate {
-        ArtifactCandidate::Simulation(record) => normalized.push(self.normalize_record(record)?),
-        ArtifactCandidate::Forbidden(value) => {
-          return Err(RedactionError::ForbiddenField(value.class()));
-        }
-      }
+      normalized.push(self.normalize_candidate(candidate)?);
     }
     Ok(normalized)
+  }
+
+  pub(crate) fn normalize_candidate(
+    &self, candidate: ArtifactCandidate<'_>,
+  ) -> Result<NormalizedEvent, RedactionError> {
+    match candidate {
+      ArtifactCandidate::Simulation(record) => self.normalize_record(record),
+      ArtifactCandidate::Forbidden(value) => Err(RedactionError::ForbiddenField(value.class())),
+    }
   }
 
   pub(crate) fn normalize_record(
