@@ -531,6 +531,37 @@ mod tests {
   }
 
   #[test]
+  fn simulation_topology_overflow_is_atomic() {
+    let mut topology = Topology::new(limits(2));
+    let left = NodeKey::new(1);
+    let right = NodeKey::new(2);
+    let link = LinkKey::new(left, right);
+    topology.add_node(left, AddressId::new(10)).unwrap();
+    topology.add_node(right, AddressId::new(20)).unwrap();
+    topology.add_link(link, policy(1)).unwrap();
+
+    topology.nodes.get_mut(&left).unwrap().boot_epoch = u32::MAX;
+    let before_restart = topology.clone();
+    assert!(topology.restart(left).is_err());
+    assert_eq!(topology, before_restart);
+
+    topology.nodes.get_mut(&left).unwrap().address_generation = u32::MAX;
+    let before_address = topology.clone();
+    assert!(topology.change_address(left, AddressId::new(11)).is_err());
+    assert_eq!(topology, before_address);
+
+    topology.links.get_mut(&link).unwrap().generation = u32::MAX;
+    let before_partition = topology.clone();
+    assert!(topology.partition(link, PartitionId::new(9)).is_err());
+    assert_eq!(topology, before_partition);
+
+    topology.set_clock_skew(left, 1).unwrap();
+    assert!(topology.observed_utc(left, u64::MAX).is_err());
+    topology.set_clock_skew(left, -1).unwrap();
+    assert!(topology.observed_utc(left, 0).is_err());
+  }
+
+  #[test]
   fn simulation_topology_keeps_overlapping_partitions_independent() {
     let mut topology = Topology::new(limits(2));
     let left = NodeKey::new(1);
