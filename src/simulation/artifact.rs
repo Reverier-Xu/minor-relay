@@ -13,18 +13,26 @@ pub(crate) const MAX_RETAINED_EVENTS: usize = 10_000;
 const EVENT_DIGEST_DOMAIN: &[u8] = b"relay.woooo.tech/failure-replay/event-stream/v1";
 const FAILURE_SCHEMA: &str = "relay.woooo.tech/schemas/failure-replay";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct EvidenceDigest([u8; 32]);
+macro_rules! define_evidence_digest {
+  ($name:ident) => {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) struct $name([u8; 32]);
 
-impl EvidenceDigest {
-  pub(crate) const fn new(bytes: [u8; 32]) -> Self {
-    Self(bytes)
-  }
+    impl $name {
+      pub(crate) const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+      }
 
-  pub(crate) fn as_hex(self) -> String {
-    encode_hex(&self.0)
-  }
+      pub(crate) fn as_hex(self) -> String {
+        encode_hex(&self.0)
+      }
+    }
+  };
 }
+
+define_evidence_digest!(CommitDigest);
+define_evidence_digest!(LockfileDigest);
+define_evidence_digest!(EventDigest);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FailureClass {
@@ -69,15 +77,15 @@ pub(crate) struct EvidenceManifest {
   seed: u64,
   failure_class: FailureClass,
   invariant_id: InvariantId,
-  commit_digest: EvidenceDigest,
-  lockfile_digest: EvidenceDigest,
+  commit_digest: CommitDigest,
+  lockfile_digest: LockfileDigest,
   replay: ReplaySpec,
 }
 
 impl EvidenceManifest {
   pub(crate) fn network_fault_matrix(
-    seed: u64, failure_class: FailureClass, invariant_id: InvariantId,
-    commit_digest: EvidenceDigest, lockfile_digest: EvidenceDigest, replay: ReplaySpec,
+    seed: u64, failure_class: FailureClass, invariant_id: InvariantId, commit_digest: CommitDigest,
+    lockfile_digest: LockfileDigest, replay: ReplaySpec,
   ) -> Result<Self, ArtifactError> {
     if replay.simulation_seed() != Some(seed) {
       return Err(ArtifactError::ReplaySeedMismatch);
@@ -170,7 +178,7 @@ impl ArtifactTruncation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ArtifactBytes {
   bytes: Vec<u8>,
-  event_digest: EvidenceDigest,
+  event_digest: EventDigest,
   truncation: ArtifactTruncation,
   first_window: Vec<NormalizedEvent>,
   last_window: Vec<NormalizedEvent>,
@@ -181,7 +189,7 @@ impl ArtifactBytes {
     &self.bytes
   }
 
-  pub(crate) const fn event_digest(&self) -> EvidenceDigest {
+  pub(crate) const fn event_digest(&self) -> EventDigest {
     self.event_digest
   }
 
@@ -261,7 +269,7 @@ fn build_failure_artifact_with_limits(
     hasher.update(encoded);
     windows.push(event);
   }
-  let event_digest = EvidenceDigest::new(hasher.finalize().into());
+  let event_digest = EventDigest::new(hasher.finalize().into());
 
   let max_retained = total_events.min(limits.event_ceiling);
   let retained_events = select_retained_count(
@@ -299,8 +307,8 @@ fn build_failure_artifact_with_limits(
 }
 
 fn select_retained_count(
-  manifest: &EvidenceManifest, event_digest: EvidenceDigest, total_events: usize,
-  max_retained: usize, windows: &EventWindows, limits: ArtifactLimits,
+  manifest: &EvidenceManifest, event_digest: EventDigest, total_events: usize, max_retained: usize,
+  windows: &EventWindows, limits: ArtifactLimits,
 ) -> Result<usize, ArtifactError> {
   if candidate_fits(
     manifest,
@@ -337,7 +345,7 @@ fn select_retained_count(
 }
 
 fn candidate_fits(
-  manifest: &EvidenceManifest, event_digest: EvidenceDigest, total_events: usize,
+  manifest: &EvidenceManifest, event_digest: EventDigest, total_events: usize,
   retained_events: usize, windows: &EventWindows, limits: ArtifactLimits,
 ) -> bool {
   let (first, last) = windows.select(retained_events, total_events);
@@ -421,7 +429,7 @@ impl EventWindows {
 }
 
 fn render_artifact(
-  manifest: &EvidenceManifest, event_digest: EvidenceDigest, truncation: ArtifactTruncation,
+  manifest: &EvidenceManifest, event_digest: EventDigest, truncation: ArtifactTruncation,
   first: &[NormalizedEvent], last: &[NormalizedEvent], byte_ceiling: usize,
 ) -> Result<Vec<u8>, ArtifactError> {
   let mut writer = JsonWriter::new(byte_ceiling);
@@ -449,15 +457,15 @@ fn render_artifact(
   writer.raw(b",\"byte_truncated\":")?;
   writer.boolean(truncation.byte_truncated)?;
   writer.raw(b",\"total_events\":")?;
-  writer.unsigned(truncation.total_events)?;
+  writer.unsigned_usize(truncation.total_events)?;
   writer.raw(b",\"retained_events\":")?;
-  writer.unsigned(truncation.retained_events)?;
+  writer.unsigned_usize(truncation.retained_events)?;
   writer.raw(b",\"omitted_events\":")?;
-  writer.unsigned(truncation.omitted_events())?;
+  writer.unsigned_usize(truncation.omitted_events())?;
   writer.raw(b",\"first_events\":")?;
-  writer.unsigned(truncation.first_events)?;
+  writer.unsigned_usize(truncation.first_events)?;
   writer.raw(b",\"last_events\":")?;
-  writer.unsigned(truncation.last_events)?;
+  writer.unsigned_usize(truncation.last_events)?;
   writer.raw(b"},\"events\":{\"first\":")?;
   write_events(&mut writer, first)?;
   writer.raw(b",\"last\":")?;
@@ -510,9 +518,9 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"path\":")?;
       writer.alias("path", path.ordinal())?;
       writer.raw(b",\"copies\":")?;
-      writer.unsigned(copies)?;
+      writer.unsigned(u64::from(copies))?;
       writer.raw(b",\"payload_len\":")?;
-      writer.unsigned(payload_len)?;
+      writer.unsigned(u64::from(payload_len))?;
     }
     NormalizedEvent::Lost { message, .. } | NormalizedEvent::DuplicateCreated { message, .. } => {
       writer.raw(b",\"message\":")?;
@@ -523,7 +531,7 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"message\":")?;
       writer.unsigned(message)?;
       writer.raw(b",\"copy\":")?;
-      writer.unsigned(copy)?;
+      writer.unsigned(u64::from(copy))?;
     }
     NormalizedEvent::Dropped {
       message,
@@ -534,7 +542,7 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"message\":")?;
       writer.unsigned(message)?;
       writer.raw(b",\"copy\":")?;
-      writer.unsigned(copy)?;
+      writer.unsigned(u64::from(copy))?;
       writer.raw(b",\"reason\":")?;
       writer.quoted(reason.as_str())?;
     }
@@ -555,7 +563,7 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"fault\":")?;
       writer.alias("fault", fault.ordinal())?;
       writer.raw(b",\"generation\":")?;
-      writer.unsigned(generation)?;
+      writer.unsigned(u64::from(generation))?;
     }
     NormalizedEvent::Restarted {
       node, boot_epoch, ..
@@ -563,7 +571,7 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"node\":")?;
       writer.alias("node", node.ordinal())?;
       writer.raw(b",\"boot_epoch\":")?;
-      writer.unsigned(boot_epoch)?;
+      writer.unsigned(u64::from(boot_epoch))?;
     }
     NormalizedEvent::AddressChanged {
       node,
@@ -576,7 +584,7 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"endpoint\":")?;
       writer.alias("endpoint", endpoint.ordinal())?;
       writer.raw(b",\"generation\":")?;
-      writer.unsigned(generation)?;
+      writer.unsigned(u64::from(generation))?;
     }
     NormalizedEvent::ClockSkewChanged {
       node, skew_nanos, ..
@@ -595,9 +603,9 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"message\":")?;
       writer.unsigned(message)?;
       writer.raw(b",\"copies\":")?;
-      writer.unsigned(copies)?;
+      writer.unsigned(u64::from(copies))?;
       writer.raw(b",\"payload_len\":")?;
-      writer.unsigned(payload_len)?;
+      writer.unsigned(u64::from(payload_len))?;
     }
   }
   writer.raw(b"}")
@@ -652,12 +660,17 @@ impl JsonWriter {
     self.raw(b"\"")
   }
 
-  fn alias(&mut self, prefix: &str, ordinal: u16) -> Result<(), ArtifactError> {
+  fn alias(&mut self, prefix: &'static str, ordinal: u16) -> Result<(), ArtifactError> {
     self.quoted(&format!("{prefix}-{ordinal}"))
   }
 
-  fn unsigned<T: ToString>(&mut self, value: T) -> Result<(), ArtifactError> {
+  fn unsigned(&mut self, value: u64) -> Result<(), ArtifactError> {
     self.raw(value.to_string().as_bytes())
+  }
+
+  fn unsigned_usize(&mut self, value: usize) -> Result<(), ArtifactError> {
+    let value = u64::try_from(value).map_err(|_| ArtifactError::EncodingOverflow)?;
+    self.unsigned(value)
   }
 
   fn signed(&mut self, value: i64) -> Result<(), ArtifactError> {
@@ -692,8 +705,8 @@ const fn hex_digit(value: u8) -> u8 {
 #[cfg(test)]
 mod tests {
   use super::{
-    ArtifactError, ArtifactLimits, EvidenceDigest, EvidenceManifest, FailureClass, InvariantId,
-    MAX_ARTIFACT_BYTES, MAX_RETAINED_EVENTS, build_failure_artifact,
+    ArtifactError, ArtifactLimits, CommitDigest, EvidenceManifest, FailureClass, InvariantId,
+    LockfileDigest, MAX_ARTIFACT_BYTES, MAX_RETAINED_EVENTS, build_failure_artifact,
     build_failure_artifact_with_limits,
   };
   use crate::simulation::{
@@ -708,8 +721,8 @@ mod tests {
       seed,
       FailureClass::Invariant,
       InvariantId::CompleteFaultMatrix,
-      EvidenceDigest::new([0x11; 32]),
-      EvidenceDigest::new([0x22; 32]),
+      CommitDigest::new([0x11; 32]),
+      LockfileDigest::new([0x22; 32]),
       ReplaySpec::simulation_network_fault_matrix(seed),
     )
     .unwrap()
@@ -908,8 +921,8 @@ mod tests {
         12,
         FailureClass::Invariant,
         InvariantId::CompleteFaultMatrix,
-        EvidenceDigest::new([0x11; 32]),
-        EvidenceDigest::new([0x22; 32]),
+        CommitDigest::new([0x11; 32]),
+        LockfileDigest::new([0x22; 32]),
         ReplaySpec::simulation_network_fault_matrix(13),
       ),
       Err(ArtifactError::ReplaySeedMismatch),
