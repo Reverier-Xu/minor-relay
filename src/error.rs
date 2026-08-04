@@ -120,6 +120,13 @@ impl Error {
       context,
     }
   }
+
+  pub(crate) const fn shutting_down(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::ShuttingDown,
+      context,
+    }
+  }
 }
 
 impl fmt::Debug for Error {

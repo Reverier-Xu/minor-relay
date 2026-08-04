@@ -1,8 +1,8 @@
 use std::any::{Any, TypeId};
 
 use crate::{
-  Command, Error, Event, EventOptions, EventSubscription, GetNodeStatus, Query, Result,
-  runtime::RuntimeClient,
+  Command, Error, Event, EventOptions, EventSubscription, GetNodeStatus, NodeStatus, Query, Result,
+  Shutdown, WaitForShutdown, runtime::RuntimeClient,
 };
 
 #[derive(Clone)]
@@ -16,6 +16,11 @@ impl NodeHandle {
   }
 
   pub async fn command<C: Command>(&self, command: C) -> Result<C::Output> {
+    if TypeId::of::<C>() == TypeId::of::<Shutdown>() {
+      drop(command);
+      return cast_output(self.runtime.shutdown().await?);
+    }
+
     drop(command);
     Err(Error::unsupported("node command"))
   }
@@ -25,6 +30,10 @@ impl NodeHandle {
       drop(query);
       return cast_output(self.runtime.status());
     }
+    if TypeId::of::<Q>() == TypeId::of::<WaitForShutdown>() {
+      drop(query);
+      return cast_output(self.runtime.wait_for_shutdown().await?);
+    }
 
     drop(query);
     Err(Error::unsupported("node query"))
@@ -32,6 +41,9 @@ impl NodeHandle {
 
   pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>> {
     let _ = options;
+    if self.runtime.status() != NodeStatus::Running {
+      return Err(Error::shutting_down("node events"));
+    }
     Err(Error::unsupported("node events"))
   }
 }
