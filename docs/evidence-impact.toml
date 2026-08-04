@@ -4,6 +4,7 @@ relevant_roots = [
   "AGENTS.md",
   "Cargo.toml",
   "Cargo.lock",
+  "deny.toml",
   "rustfmt.toml",
   "taplo.toml",
   ".gitignore",
@@ -28,7 +29,7 @@ threat_ids = ["THR-025", "THR-029"]
 
 [[path_rule]]
 id = "IMPACT-DEPENDENCIES"
-globs = ["Cargo.toml", "Cargo.lock"]
+globs = ["Cargo.toml", "Cargo.lock", "deny.toml"]
 precedence = 200
 owner_task = "T-G00-04"
 verification_ids = [
@@ -46,7 +47,7 @@ id = "IMPACT-WORKFLOWS"
 globs = [".github/**"]
 precedence = 200
 owner_task = "T-G10-07"
-verification_ids = ["VERIFY-G10-07", "VERIFY-G10-09", "VERIFY-G10-12"]
+verification_ids = ["VERIFY-G01-05", "VERIFY-G10-07", "VERIFY-G10-09", "VERIFY-G10-12"]
 threat_ids = ["THR-025", "THR-026", "THR-027", "THR-029"]
 
 [[path_rule]]
@@ -90,7 +91,12 @@ id = "IMPACT-SCRIPTS"
 globs = ["scripts/**"]
 precedence = 200
 owner_task = "T-G00-06"
-verification_ids = ["VERIFY-G00-06", "VERIFY-G01-04", "VERIFY-G10-09"]
+verification_ids = [
+  "VERIFY-G00-06",
+  "VERIFY-G01-04",
+  "VERIFY-G01-05",
+  "VERIFY-G10-09",
+]
 threat_ids = ["THR-024", "THR-025", "THR-026"]
 
 [[path_rule]]
