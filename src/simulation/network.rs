@@ -681,7 +681,10 @@ mod tests {
 
   use crate::simulation::{
     event::{DropReason, EventRecord},
-    network::{REQUIRED_FAULTS, Simulator, matrix_seed_range, run_fault_matrix_seed},
+    network::{
+      REQUIRED_FAULTS, Simulator, matrix_seed_range, observed_exact_duplicate, observed_loss,
+      observed_reorder, reorder_deadline, run_fault_matrix_seed,
+    },
     topology::{AddressId, LinkKey, LinkPolicy, NodeKey, PartitionId, SimulationLimits, Topology},
   };
 
@@ -778,6 +781,106 @@ mod tests {
         ..
       })
     ));
+  }
+
+  #[test]
+  fn simulation_network_bounds_are_independent() {
+    let link = LinkKey::new(NodeKey::new(1), NodeKey::new(2));
+
+    let mut exact_topology = topology(SimulationLimits::new(4, 2, 16, 8, 8).unwrap());
+    exact_topology
+      .add_link(link, policy(1, 0, 1_000_000, 0, 0))
+      .unwrap();
+    let mut exact = Simulator::new(21, exact_topology).unwrap();
+    exact.send(link, 8).unwrap();
+    assert_eq!(exact.pending_events(), 2);
+    assert_eq!(exact.pending_bytes(), 16);
+    exact.run().unwrap();
+
+    let mut count_topology = topology(SimulationLimits::new(4, 1, 16, 8, 8).unwrap());
+    count_topology
+      .add_link(link, policy(1, 0, 1_000_000, 0, 0))
+      .unwrap();
+    let mut count_limited = Simulator::new(21, count_topology).unwrap();
+    assert!(count_limited.send(link, 8).is_err());
+    assert_eq!(count_limited.pending_events(), 0);
+    assert_eq!(count_limited.pending_bytes(), 0);
+
+    let mut byte_topology = topology(SimulationLimits::new(4, 2, 15, 8, 8).unwrap());
+    byte_topology
+      .add_link(link, policy(1, 0, 1_000_000, 0, 0))
+      .unwrap();
+    let mut byte_limited = Simulator::new(21, byte_topology).unwrap();
+    assert!(byte_limited.send(link, 8).is_err());
+    assert_eq!(byte_limited.pending_events(), 0);
+    assert_eq!(byte_limited.pending_bytes(), 0);
+
+    let mut record_topology = topology(SimulationLimits::new(4, 2, 16, 1, 8).unwrap());
+    record_topology.add_link(link, policy(1, 0, 0, 0, 0)).unwrap();
+    let mut record_limited = Simulator::new(21, record_topology).unwrap();
+    assert!(record_limited.send(link, 8).is_err());
+    assert_eq!(record_limited.pending_events(), 0);
+    assert_eq!(record_limited.pending_bytes(), 0);
+  }
+
+  #[test]
+  fn simulation_matrix_audit_rejects_self_reported_faults() {
+    let first = crate::simulation::event::MessageId::new(1);
+    let second = crate::simulation::event::MessageId::new(2);
+    let false_loss = [
+      EventRecord::Lost {
+        at_nanos: 1,
+        message: first,
+      },
+      EventRecord::Delivered {
+        at_nanos: 2,
+        message: first,
+        copy: 0,
+      },
+    ];
+    let false_duplicate = [
+      EventRecord::DuplicateCreated {
+        at_nanos: 1,
+        message: first,
+      },
+      EventRecord::Delivered {
+        at_nanos: 2,
+        message: first,
+        copy: 0,
+      },
+    ];
+    let false_reorder = [
+      EventRecord::Reordered {
+        at_nanos: 1,
+        message: first,
+        copy: 0,
+      },
+      EventRecord::Reordered {
+        at_nanos: 1,
+        message: second,
+        copy: 0,
+      },
+      EventRecord::Delivered {
+        at_nanos: 2,
+        message: first,
+        copy: 0,
+      },
+      EventRecord::Delivered {
+        at_nanos: 2,
+        message: second,
+        copy: 0,
+      },
+    ];
+
+    assert!(!observed_loss(&false_loss, first));
+    assert!(!observed_exact_duplicate(&false_duplicate, first));
+    assert!(!observed_reorder(&false_reorder, first, second));
+  }
+
+  #[test]
+  fn simulation_reorder_deadline_handles_representable_ceiling() {
+    assert_eq!(reorder_deadline(u64::MAX, 3).unwrap(), u64::MAX);
+    assert!(reorder_deadline(u64::MAX, 2).is_err());
   }
 
   #[test]
