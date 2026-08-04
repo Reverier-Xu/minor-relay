@@ -45,6 +45,26 @@ taplo lint --no-auto-config "${TOML_FILES[@]}" >/dev/null
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+verify_frozen_document() {
+  local path=$1 expected=$2 actual
+  actual=$(sha256sum "$path" | awk '{print $1}')
+  [[ $actual == "$expected" ]] || fail "frozen planning document changed: $path"
+}
+
+verify_frozen_document docs/adr/0005-sixteen-node-slo-profile.md 26f5d67c84ad4331e5d2c33d699f4f107849933f15951cc5b6f76d6676447431
+verify_frozen_document docs/adr/0007-core-responsibility-and-metadata.md cdc4851aef0ca0109077ab20ecd7298e7f2310b34eec1150003950554e689eab
+verify_frozen_document docs/roadmap.md 12e95f6275643b46380845df556223838f7325552e8e3a2bc0ca4d065731e7fd
+verify_frozen_document docs/development-gates.md 1398e24224b0a1dc2a2bbeb1041b6090addd6ca004490687c7fe0dae2073ae5e
+verify_frozen_document docs/implementation-plan.md c716bafbcb8ab34dddf9d26b918cdeb37bbc1376d9e427031e981ae909f788f0
+verify_frozen_document docs/api-manifest.md abcf2436c707dcca0fea6f000d85e50ca60ae5f3eb369a4679da57e9b50bccf9
+verify_frozen_document docs/api-inventory.toml e4bd4c90f37ab74ea7487605b1ebf0b6e1f828f22fbacafc5a87dfc12aa2ef85
+verify_frozen_document docs/decision-register.toml 196721e8aa89decd64abdf734b953c072e9cf4d1439ce39eeee20bd2866c65b5
+verify_frozen_document docs/scenario-catalog.toml 1216beeaa2c5db5acaac9b87d7988d37cefaeb6a8d7aad1bc36447f7414a66f0
+verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
+verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
+verify_frozen_document docs/task-verification.toml 747f06c8532af1f4c000635720180890cf2a00edef1206db2af64eb7b5742c9b
+verify_frozen_document docs/evidence-impact.toml fa1d6b180ca8b03dcef5ff4ef3270d607c77f629ac985840b6d34ce092c0315a
+
 for file in "${TOML_FILES[@]}"; do
   name=$(basename "$file" .toml)
   taplo get -o json -f "$file" > "$TMP/$name.json"
@@ -314,6 +334,11 @@ check_api_inventory() {
   while IFS= read -r item; do
     rg -Fq "pub trait $item" "$rust_blocks" || return 1
   done < <(jq -r '.extension_traits[]' "$inventory")
+  rg -o '^pub (struct|enum|trait|type) [A-Za-z0-9_]+' "$rust_blocks" | awk '{print $3}' | sort > "$TMP/api-declared-names-all.txt"
+  [[ ! -s $TMP/api-declared-names-all.txt ]] || [[ $(uniq -d "$TMP/api-declared-names-all.txt" | wc -l) -eq 0 ]] || return 1
+  uniq "$TMP/api-declared-names-all.txt" > "$TMP/api-declared-names.txt"
+  jq -r '[.commands[], .queries[], .events[], .extension_traits[], .required_reexports[]] | unique[]' "$inventory" | sort -u > "$TMP/api-inventoried-names.txt"
+  diff -u "$TMP/api-declared-names.txt" "$TMP/api-inventoried-names.txt" >/dev/null || return 1
   check_forbidden_api_tokens "$document" "$inventory"
 }
 check_api_inventory "$TMP/api-inventory.json" || fail "API inventory, digest, exports, or forbidden-token policy invalid"
@@ -337,7 +362,26 @@ check_evidence_sets() {
     )
     and ([.shard[].id] | length) == ([.shard[].id] | unique | length)
     and ([.shard[].verification_ids[]] | sort) == ($verification_ids | sort)
-    and all(.shard[]; .p95_seconds <= 600 and .p95_seconds > 0)
+    and (
+      (.shard | map({key: .id, value: .}) | from_entries) as $shards
+      | def acyclic($id; $seen):
+          if ($seen | index($id)) != null then false
+          else all($shards[$id].depends_on[]; acyclic(.; $seen + [$id]))
+          end;
+        def path_seconds($id):
+          $shards[$id].p95_seconds + ([$shards[$id].depends_on[] | path_seconds(.)] | max // 0);
+        all(.shard[];
+          . as $shard
+          | ($shard.p95_seconds <= 600 and $shard.p95_seconds > 0)
+          and ($shard.cadences | length) > 0
+          and ($shard.cadences | unique | length) == ($shard.cadences | length)
+          and all($shard.cadences[]; . == "merge" or . == "gate" or . == "nightly" or . == "weekly" or . == "release")
+          and ($shard.cadences | index("gate")) != null
+          and all($shard.depends_on[]; . as $dependency | ($shards | has($dependency)) and $dependency != $shard.id)
+          and acyclic($shard.id; [])
+          and path_seconds($shard.id) <= 1800
+        )
+    )
   ' "$file" >/dev/null
 }
 check_evidence_sets "$TMP/evidence-impact.json" || fail "invalid evidence-impact ownership or shards"
@@ -461,6 +505,11 @@ if [[ ${1:-} == "--self-test" ]]; then
   jq '.shard[0].verification_ids[0] = "VERIFY-UNKNOWN"' "$TMP/evidence-impact.json" > "$TMP/negative-invalid-shard.json"
   if check_evidence_sets "$TMP/negative-invalid-shard.json"; then
     fail "invalid-shard negative fixture was accepted"
+  fi
+
+  jq '.shard[0].depends_on = [.shard[0].id]' "$TMP/evidence-impact.json" > "$TMP/negative-shard-cycle.json"
+  if check_evidence_sets "$TMP/negative-shard-cycle.json"; then
+    fail "cyclic-shard negative fixture was accepted"
   fi
 
   jq '.commands[0] = "NodeBuilder"' "$TMP/api-inventory.json" > "$TMP/negative-api-inventory.json"

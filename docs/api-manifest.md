@@ -457,6 +457,8 @@ pub struct PacketMetadata { /* private bounded canonical map */ }
 impl PacketMetadata {
     pub fn new() -> Self;
     pub fn insert(self, key: QualifiedTag, value: std::sync::Arc<[u8]>) -> Result<Self>;
+    pub fn get(&self, key: &QualifiedTag) -> Option<&[u8]>;
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&QualifiedTag, &[u8])>;
 }
 
 pub trait PacketBody: std::fmt::Debug + Send + 'static {
@@ -470,7 +472,6 @@ impl OutboundPacket {
     pub fn send_async(self, body: Box<dyn PacketBody>) -> Result<RouteHandle>;
 }
 
-pub struct RouteHandle { /* private */ }
 impl RouteHandle {
     pub fn trace_id(&self) -> &TraceId;
 }
@@ -533,6 +534,7 @@ impl MemberView {
     pub fn owner_revision(&self) -> u64;
     pub fn digest(&self) -> &Digest;
     pub fn connectivity(&self) -> ConnectivityStatus;
+    pub fn endpoints(&self) -> &[Endpoint];
     pub fn labels(&self) -> &LabelSet;
 }
 
@@ -547,6 +549,9 @@ pub struct ResourceLabels { /* private canonical map */ }
 impl ResourceLabels {
     pub fn new(resource_type: LabelValue, uri: ResourceUri) -> Self;
     pub fn custom(self, key: LabelKey, value: LabelValue) -> Result<Self>;
+    pub fn resource_type(&self) -> &LabelValue;
+    pub fn uri(&self) -> &ResourceUri;
+    pub fn custom_labels(&self) -> &LabelSet;
 }
 
 pub struct ResourceWrite { /* private, stamped and signed by core */ }
@@ -589,17 +594,73 @@ future-dated writer may dominate until a greater signed tuple appears.
 
 ```rust
 pub struct ListenerPage { /* private */ }
+impl ListenerPage {
+    pub fn items(&self) -> &[ListenerView];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 pub struct SessionPage { /* private */ }
+impl SessionPage {
+    pub fn items(&self) -> &[SessionView];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 pub struct MemberPage { /* private */ }
+impl MemberPage {
+    pub fn items(&self) -> &[MemberView];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 pub struct TrustPage { /* private */ }
+impl TrustPage {
+    pub fn items(&self) -> &[TrustedIdentityView];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 pub struct TopologyPage { /* private */ }
+impl TopologyPage {
+    pub fn items(&self) -> &[TopologyEdgeView];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 pub struct ResourcePage { /* private */ }
+impl ResourcePage {
+    pub fn items(&self) -> &[ResourceView];
+    pub fn next(&self) -> Option<&PageCursor>;
+}
 
 pub struct ListenerView { /* private */ }
+impl ListenerView {
+    pub fn id(&self) -> &ListenerId;
+    pub fn endpoint(&self) -> &Endpoint;
+}
 pub struct SessionView { /* private */ }
+impl SessionView {
+    pub fn id(&self) -> &SessionId;
+    pub fn generation(&self) -> u64;
+    pub fn peer(&self) -> &NodeId;
+    pub fn endpoint(&self) -> &Endpoint;
+    pub fn selected_features(&self) -> &[SessionFeatureView];
+}
+pub struct SessionFeatureView { /* private */ }
+impl SessionFeatureView {
+    pub fn feature(&self) -> &FeatureTag;
+    pub fn definition_digest(&self) -> &Digest;
+}
 pub struct TrustedIdentityView { /* private */ }
+impl TrustedIdentityView {
+    pub fn node_id(&self) -> &NodeId;
+    pub fn public_key(&self) -> &PublicKey;
+    pub fn status(&self) -> TrustStatus;
+}
 pub struct TopologyEdgeView { /* private */ }
+impl TopologyEdgeView {
+    pub fn source(&self) -> &NodeId;
+    pub fn destination(&self) -> &NodeId;
+    pub fn connected(&self) -> bool;
+    pub fn observed_at(&self) -> std::time::SystemTime;
+}
 pub struct RecoveryView { /* private */ }
+impl RecoveryView {
+    pub fn is_connected(&self) -> bool;
+    pub fn unreachable_components(&self) -> usize;
+    pub fn next_attempt_at(&self) -> Option<std::time::SystemTime>;
+}
 
 #[non_exhaustive]
 pub enum ConnectivityStatus { Unknown, Offline, Reachable, Connected }
@@ -617,11 +678,34 @@ incremental, not a complete graph allocation.
 ```rust
 pub struct ReplaceIdentityAndDeleteOldCoreMetadata { /* no Default */ }
 pub struct ShutdownOutcome { /* private */ }
+impl ShutdownOutcome { pub fn reason(&self) -> &ShutdownReason; }
 pub struct ClusterView { /* private */ }
+impl ClusterView {
+    pub fn cluster_id(&self) -> &ClusterId;
+    pub fn creator(&self) -> &NodeId;
+}
 pub struct IssuedJoinCredential { /* private secret */ }
+impl IssuedJoinCredential {
+    pub fn credential(&self) -> &JoinCredential;
+    pub fn expires_at(&self) -> std::time::SystemTime;
+    pub fn into_credential(self) -> JoinCredential;
+}
 pub struct AdmissionView { /* private */ }
+impl AdmissionView {
+    pub fn cluster_id(&self) -> &ClusterId;
+    pub fn admitted_node(&self) -> &NodeId;
+    pub fn issuer(&self) -> &NodeId;
+}
 pub struct RevokeOutcome { /* private */ }
+impl RevokeOutcome {
+    pub fn subject(&self) -> &NodeId;
+    pub fn was_already_revoked(&self) -> bool;
+}
 pub struct LeaveOutcome { /* private */ }
+impl LeaveOutcome {
+    pub fn former_identity(&self) -> &NodeId;
+    pub fn replacement_identity(&self) -> &NodeId;
+}
 
 #[non_exhaustive]
 pub enum ShutdownReason { Explicit, ActiveLeave, Fatal(ErrorKind) }

@@ -5,6 +5,9 @@
 [threat-model.toml](threat-model.toml) is machine-readable authority for stable `THR-001` through
 `THR-029`. ADR-0007 defines the active responsibility boundary. Scenario records marked
 `rebaseline = "ADR-0007"` own current executable predicates; evidence for earlier predicates is stale.
+Each threat row lists its minimum mandatory oracle scenarios, not every scenario that cites the threat.
+Validation requires every listed oracle to cite that threat; additional scenario-to-threat links are
+allowed for shared mitigations.
 
 ## Protected Assets
 

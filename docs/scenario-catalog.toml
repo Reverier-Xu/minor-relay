@@ -1663,7 +1663,7 @@ cases = [
     "THR-014",
     "THR-029",
   ] },
-  { title = "Prove semver and external-crate compatibility", acceptance = "cargo-semver-checks passes against the approved baseline and tests/public_api.rs exercises every supported facade signature solely as an external crate, including implementations of each open provider, transport, discovery, consumer, reader, and policy trait with construction and inspection of every boundary value.", rebaseline = "ADR-0007", threats = [
+  { title = "Prove semver and external-crate compatibility", acceptance = "cargo-semver-checks passes against the approved baseline and tests/public_api.rs exercises every supported facade signature solely as an external crate. It implements every open provider, transport, discovery, packet-body, consumer, and policy trait; open policies consume core-provided sealed population readers and construct or inspect every public boundary value.", rebaseline = "ADR-0007", threats = [
     "THR-007",
     "THR-014",
   ] },
