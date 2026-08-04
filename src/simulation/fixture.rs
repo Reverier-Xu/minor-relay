@@ -317,7 +317,7 @@ const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
 
 #[cfg(test)]
 mod tests {
-  use super::ScenarioFixture;
+  use super::{ScenarioFixture, capture_network_fault_matrix};
   use crate::simulation::{
     event::{DropReason, EventRecord, MessageId},
     redaction::{ArtifactCandidate, EventKind, NormalizedEvent, RedactionError, ScenarioAliasKind},
@@ -408,6 +408,27 @@ mod tests {
       });
     }
     records
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_simulation_capture_is_byte_stable() {
+    let first = capture_network_fault_matrix(4_242).unwrap();
+    let second = capture_network_fault_matrix(4_242).unwrap();
+    let changed = capture_network_fault_matrix(4_243).unwrap();
+
+    assert_eq!(first, second);
+    assert_ne!(first.as_bytes(), changed.as_bytes());
+    assert_ne!(first.event_digest(), changed.event_digest());
+    assert!(first.as_bytes().windows(12).any(|window| window == b"endpoint-5\""));
+    assert!(!first.as_bytes().windows(10).any(|window| window == b"\"address\":"));
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_simulation_matches_golden_fixture() {
+    let artifact = capture_network_fault_matrix(4_242).unwrap();
+    let golden = include_bytes!("../../tests/fixtures/failure-artifacts/simulation-v1.json");
+
+    assert_eq!(artifact.as_bytes(), golden);
   }
 
   #[test]
