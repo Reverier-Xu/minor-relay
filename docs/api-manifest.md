@@ -518,6 +518,13 @@ meaning to that packet and owns no correlation policy.
 ## Node and Resource Metadata Views
 
 ```rust
+pub struct LocalNodeView { /* private */ }
+impl LocalNodeView {
+    pub fn cluster_id(&self) -> &ClusterId;
+    pub fn node_id(&self) -> &NodeId;
+    pub fn public_key(&self) -> &PublicKey;
+}
+
 pub struct NodeMetadataPatch { /* private */ }
 impl NodeMetadataPatch {
     pub fn new() -> Self;
@@ -725,12 +732,29 @@ impl<E: Event> EventSubscription<E> {
 pub enum EventReceive<E> { Item(E), Empty, Lagged { missed: u64 }, Closed }
 
 pub struct SessionChanged { /* private */ }
+impl SessionChanged { pub fn peer(&self) -> &NodeId; }
+impl Event for SessionChanged {}
 pub struct MemberChanged { /* private */ }
+impl MemberChanged { pub fn node_id(&self) -> &NodeId; }
+impl Event for MemberChanged {}
 pub struct ResourceChanged { /* private */ }
+impl ResourceChanged { pub fn resource(&self) -> &ResourceName; }
+impl Event for ResourceChanged {}
 pub struct RouteChanged { /* private */ }
+impl RouteChanged { pub fn handle(&self) -> &RouteHandle; }
+impl Event for RouteChanged {}
 pub struct NodeRevoked { /* private */ }
+impl NodeRevoked { pub fn subject(&self) -> &NodeId; }
+impl Event for NodeRevoked {}
 pub struct IdentityReplaced { /* private */ }
+impl IdentityReplaced {
+    pub fn former_identity(&self) -> &NodeId;
+    pub fn replacement_identity(&self) -> &NodeId;
+}
+impl Event for IdentityReplaced {}
 pub struct RecoveryChanged { /* private */ }
+impl RecoveryChanged { pub fn recovery(&self) -> &RecoveryView; }
+impl Event for RecoveryChanged {}
 
 pub struct ObservabilitySnapshot { /* private bounded counters/status */ }
 impl ObservabilitySnapshot {
