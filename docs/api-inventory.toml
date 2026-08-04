@@ -1,7 +1,7 @@
 schema = "relay.woooo.tech/schemas/api-inventory-v1"
 status = "accepted"
 document = "docs/api-manifest.md"
-sha256 = "50d7f274cc22eff745b10614a9e5a4ece0a28eaa1b16f8c83eb60649187589b8"
+sha256 = "b6543b68ba92d9d8f66a818146d309d83ee74da977b9951ef496dc2655114c18"
 
 node_handle_signatures = [
   "pub async fn command<C: Command>(&self, command: C) -> Result<C::Output>;",

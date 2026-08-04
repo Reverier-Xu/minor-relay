@@ -138,14 +138,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G01-02"
 verification_id = "VERIFY-G01-02"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-02"
 owner_task = "T-G01-02"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["cargo", "test", "--locked", "g1_lifecycle_"]
 timeout_seconds = 1800
 
 [[task]]

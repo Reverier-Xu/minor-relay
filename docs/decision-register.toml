@@ -156,6 +156,20 @@ owner_task = "T-G01-01"
 source = "ADR-0002#local-pre-negotiation-guards"
 
 [[constant]]
+id = "event.subscription-capacity-default"
+value = "256"
+unit = "items per subscription"
+owner_task = "T-G01-02"
+source = "ADR-0006#provider-declarations-and-event-queue-bounds"
+
+[[constant]]
+id = "event.subscription-capacity-ceiling"
+value = "1024"
+unit = "items per subscription"
+owner_task = "T-G01-02"
+source = "ADR-0006#provider-declarations-and-event-queue-bounds"
+
+[[constant]]
 id = "feature.offer-label-ceiling"
 value = "128"
 unit = "labels per class"
