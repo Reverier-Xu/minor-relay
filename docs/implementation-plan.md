@@ -50,7 +50,7 @@ require a plan amendment.
 
 | Task | Risk | Depends | Deliverable / exact API impact | Owned paths | Evidence | RB |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-G02-01 Metadata storage contract | P0/M | 01-05 | Execute semantic contract suites and provider calls for conditional transactions, engine/reconciliation cleanup, and JSON/redb and real-backend semantics using the G1-frozen SPI | storage contract | SC-G02-P0-01, SC-G02-P1-01; order/conflict/outcome/retention contract | R1 |
+| T-G02-01 Metadata storage contract | P0/M | 01-05 | Implement the backend-neutral reusable storage semantic contract, capability probe, commit/freeze/reconcile engine, and generic receipt reference/host-wall-clock retention protocol using the G1-frozen SPI; exclude JSON (02-03), crash/key-intent evidence (02-04), and migrations/redb/backend parity (02-05/G8) | storage contract | SC-G02-P0-01, SC-G02-P1-01; order/conflict/outcome/retention contract | R1 |
 | T-G02-02 Identity/genesis/admission records | P0/H | 02-01,01-01 | Key SPI and canonical identity/admission metadata; provider capacity and private custody remain external | identity/key/storage records | SC-G02-P0-02..03; uniqueness/reconcile/redaction | R1 |
 | T-G02-03 JSON test adapter | P0/M | 02-01,02 | Immutable checksummed JSON generations implementing stream scans and typed provider exhaustion; feature powerset | JSON modules/feature CI | SC-G02-P0-04, SC-G02-P1-02; adapter and feature contract | R1 |
 | T-G02-04 JSON/provider crash matrix | P0/M | 02-03,01-04 | Fault metadata commits and key intents at every write/flush/rename/reopen/result boundary | JSON/key crash fixtures | SC-G02-P0-05..06; old/new/unknown and referenced-key safety | R0 |

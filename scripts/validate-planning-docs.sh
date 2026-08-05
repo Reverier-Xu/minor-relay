@@ -55,14 +55,14 @@ verify_frozen_document docs/adr/0005-sixteen-node-slo-profile.md 26f5d67c84ad433
 verify_frozen_document docs/adr/0007-core-responsibility-and-metadata.md cdc4851aef0ca0109077ab20ecd7298e7f2310b34eec1150003950554e689eab
 verify_frozen_document docs/roadmap.md 12e95f6275643b46380845df556223838f7325552e8e3a2bc0ca4d065731e7fd
 verify_frozen_document docs/development-gates.md 9ca75674c8b56b44fe523b52f1c898cf27aefdeed74290c428071f6ab14ab7fe
-verify_frozen_document docs/implementation-plan.md aecd5725dddabc8590311c36b00edf2e743e2127841e9f061c1ea39b61fa2e2e
+verify_frozen_document docs/implementation-plan.md daec59ddc38d3fec7dd9184018bc1335ce03629efbce5fdbba76484f41caf990
 verify_frozen_document docs/api-manifest.md f05e65cd78ba238f0a92fe4f8bd2e4ce01c8de1026e71cfdc59ca739849e9caf
 verify_frozen_document docs/api-inventory.toml 9b5f6174725554fc4f174bf3c1be920b596f3217c45fb2e8cb8b5d3a65facf59
 verify_frozen_document docs/decision-register.toml 196721e8aa89decd64abdf734b953c072e9cf4d1439ce39eeee20bd2866c65b5
 verify_frozen_document docs/scenario-catalog.toml 9ab91d6dfe967b52f3fc9dacef43abe2367f97a695038da7e58bbcdbf2eddf54
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml 8a16a4e221f65f71296c6d7d967be553f234ee0ca4f92b787abbf51e0a0c3a6f
+verify_frozen_document docs/task-verification.toml 6a9e88b74b9dc0eb83e945a5ea55c5e83b9f15cd797cac23c5b85d54ee7f9689
 verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
 
 for file in "${TOML_FILES[@]}"; do
@@ -207,6 +207,24 @@ check_g1_verification_map() {
   ' "$file" >/dev/null
 }
 check_g1_verification_map "$TMP/task-verification.json" || fail "G1 verification map differs from the reviewed executable baseline"
+
+check_g2_entry_map() {
+  local file=$1
+  jq -e '
+    [
+      {task: "T-G02-01", verification: "VERIFY-G02-01", state: "ready", argv: ["scripts/verify-g2-storage-contract.sh"]},
+      {task: "T-G02-02", verification: "VERIFY-G02-02", state: "planned", argv: []},
+      {task: "T-G02-03", verification: "VERIFY-G02-03", state: "planned", argv: []},
+      {task: "T-G02-04", verification: "VERIFY-G02-04", state: "planned", argv: []},
+      {task: "T-G02-05", verification: "VERIFY-G02-05", state: "planned", argv: []}
+    ] as $expected
+    | [.task[] | select(.id | startswith("T-G02-"))]
+      == [$expected[] | {id: .task, verification_id: .verification, state, include_quality: true}]
+    and [.verification[] | select(.owner_task | startswith("T-G02-"))]
+      == [$expected[] | {id: .verification, owner_task: .task, state, argv, timeout_seconds: 1800}]
+  ' "$file" >/dev/null
+}
+check_g2_entry_map "$TMP/task-verification.json" || fail "G2 entry map differs from the reviewed executable baseline"
 
 check_argv_policy() {
   local file=$1
@@ -596,6 +614,15 @@ if [[ ${1:-} == "--self-test" ]]; then
   jq '(.verification[] | select(.id == "VERIFY-G01-03")).argv = ["scripts/verify-g1-core.sh"]' "$TMP/task-verification.json" > "$TMP/negative-g1-verification-map.json"
   if check_g1_verification_map "$TMP/negative-g1-verification-map.json"; then
     fail "substituted G1 verification argv was accepted"
+  fi
+
+  jq '
+    (.task[] | select(.id == "T-G02-01")).state = "planned"
+    | (.verification[] | select(.id == "VERIFY-G02-01")).state = "planned"
+    | (.verification[] | select(.id == "VERIFY-G02-01")).argv = []
+  ' "$TMP/task-verification.json" > "$TMP/negative-g2-entry-map.json"
+  if check_g2_entry_map "$TMP/negative-g2-entry-map.json"; then
+    fail "substituted G2-01 verification state/argv was accepted"
   fi
 
   jq '(.verification[] | select(.state == "ready")).argv = ["env", "bash", "-c", "touch /tmp/planning-pwn"]' "$TMP/task-verification.json" > "$TMP/negative-hostile-argv.json"

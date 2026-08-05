@@ -190,14 +190,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G02-01"
 verification_id = "VERIFY-G02-01"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G02-01"
 owner_task = "T-G02-01"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g2-storage-contract.sh"]
 timeout_seconds = 1800
 
 [[task]]
