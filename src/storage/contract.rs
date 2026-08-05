@@ -17,9 +17,10 @@ use crate::{
   storage::{
     MetadataStore,
     receipt::{
-      PreparedTransaction, ReceiptCleanupOutcome, ReceiptIdentity, ReceiptReferenceOutcome,
-      ReceiptReferenceToken, WallClock, decode_wall_time, eligibility_anchor_key, encode_wall_time,
-      internal_namespace, reference_head_key, used_id_key,
+      ACTIVE_MARKER_VALUE, FORGOTTEN_MARKER_VALUE, PreparedTransaction, ReceiptCleanupOutcome,
+      ReceiptIdentity, ReceiptReferenceOutcome, ReceiptReferenceToken, WallClock, decode_wall_time,
+      eligibility_anchor_key, encode_wall_time, increment_reference_count, internal_namespace,
+      reference_edge_key, reference_head_key, used_id_key,
     },
   },
 };
@@ -307,6 +308,12 @@ fn reference_commit(
     return Ok(CommitOutcome::Conflict);
   }
 
+  let next_generation = state.generation.checked_add(1).ok_or_else(|| {
+    Error::provider(
+      ProviderErrorKind::ResourceExhausted,
+      ProviderErrorContext::StorageCommit,
+    )
+  })?;
   let mut entries = state.entries.clone();
   for operation in transaction.operations() {
     match operation {
@@ -336,7 +343,7 @@ fn reference_commit(
       }
     }
   }
-  state.generation += 1;
+  state.generation = next_generation;
   state.entries = entries;
   let receipt = CommitReceipt::new(
     transaction.id().clone(),
@@ -391,7 +398,7 @@ fn expectation_matches(value: Option<&StoreValue>, expected: &StoreExpectation) 
   }
 }
 
-async fn run_storage_contract<F>(fresh: F)
+pub(super) async fn run_storage_contract<F>(fresh: F)
 where
   F: Fn() -> Arc<dyn StorageFactory>, {
   storage_contract_snapshot_lookup_and_ordering(fresh()).await;
@@ -935,7 +942,7 @@ async fn storage_contract_prepared_transactions_are_atomic_idempotent_and_perman
         value,
       } if namespace.as_str() == internal_namespace().unwrap().as_str()
         && key == &marker_key
-        && value.as_bytes().is_empty()
+        && value.as_bytes() == ACTIVE_MARKER_VALUE
     )
   }));
 
@@ -996,7 +1003,83 @@ async fn storage_contract_prepared_transactions_are_atomic_idempotent_and_perman
       .unwrap(),
     ReceiptCleanupOutcome::Forgotten(_)
   ));
+  let forgotten_snapshot = store.snapshot().await.unwrap();
+  assert_eq!(
+    forgotten_snapshot
+      .get(&internal_namespace().unwrap(), &marker_key)
+      .await
+      .unwrap()
+      .unwrap()
+      .as_bytes(),
+    FORGOTTEN_MARKER_VALUE,
+  );
+  let reused = store
+    .prepare_transaction(
+      target.transaction().clone(),
+      forgotten_snapshot.revision().clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace("current-reuse"),
+        key: store_key(b"otherwise-valid"),
+        expected: StoreExpectation::Absent,
+        value: value(b"must-not-commit"),
+      }],
+    )
+    .unwrap();
+  drop(forgotten_snapshot);
+  let commits_before_reuse = factory.commit_calls.load(Ordering::SeqCst);
+  assert!(matches!(
+    store.commit(reused).await.unwrap(),
+    CommitOutcome::Conflict
+  ));
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    commits_before_reuse + 1,
+  );
   drop(store);
+
+  let reopened = open_engine(&factory, Duration::from_secs(10), Arc::clone(&clock)).await;
+  let stale_token = ReceiptReferenceToken::from_digest(Digest::from_bytes([99; 32]));
+  let state_before_stale_attempts = {
+    let state = factory.state.lock().unwrap();
+    (
+      state.generation,
+      state.entries.clone(),
+      state.receipts.clone(),
+    )
+  };
+  let commits_before_stale_attempts = factory.commit_calls.load(Ordering::SeqCst);
+  assert!(matches!(
+    reopened
+      .add_receipt_reference(&target, &stale_token, contract_transaction_id(7))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Conflict
+  ));
+  assert!(matches!(
+    reopened
+      .remove_receipt_reference(&target, &stale_token, contract_transaction_id(8))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Conflict
+  ));
+  assert!(matches!(
+    reopened
+      .cleanup_receipt(&target, contract_transaction_id(9))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Conflict
+  ));
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    commits_before_stale_attempts,
+  );
+  {
+    let state = factory.state.lock().unwrap();
+    assert_eq!(state.generation, state_before_stale_attempts.0);
+    assert_eq!(state.entries, state_before_stale_attempts.1);
+    assert_eq!(state.receipts, state_before_stale_attempts.2);
+  }
+  drop(reopened);
 
   let raw = factory.open(StoreRequirements::metadata()).await.unwrap();
   assert!(matches!(
@@ -1010,7 +1093,7 @@ async fn storage_contract_prepared_transactions_are_atomic_idempotent_and_perman
     raw.commit(prepared.0.clone()).await.unwrap(),
     CommitOutcome::Conflict
   ));
-  assert!(
+  assert_eq!(
     raw
       .snapshot()
       .await
@@ -1018,7 +1101,9 @@ async fn storage_contract_prepared_transactions_are_atomic_idempotent_and_perman
       .get(&internal_namespace().unwrap(), &marker_key)
       .await
       .unwrap()
-      .is_some()
+      .unwrap()
+      .as_bytes(),
+    FORGOTTEN_MARKER_VALUE,
   );
 }
 
@@ -1342,6 +1427,217 @@ async fn storage_contract_reserved_injection_duplicates_corruption_and_overflow_
     factory.commit_calls.load(Ordering::SeqCst),
     before_duplicate
   );
+}
+
+#[test]
+fn storage_contract_reference_count_overflow_is_resource_exhaustion() {
+  assert_eq!(
+    increment_reference_count(u64::MAX).unwrap_err().kind(),
+    crate::ErrorKind::ResourceExhausted,
+  );
+  assert_eq!(increment_reference_count(u64::MAX - 1).unwrap(), u64::MAX);
+}
+
+#[tokio::test]
+async fn storage_contract_streamed_edge_audit_rejects_orphans_and_count_mismatches() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(425)));
+  let store = open_engine(&factory, Duration::from_secs(10), clock).await;
+  let namespace = internal_namespace().unwrap();
+
+  let (_, orphan_target) = commit_target(&store, 770).await;
+  let orphan_token = ReceiptReferenceToken::from_digest(Digest::from_bytes([21; 32]));
+  let orphan_edge = reference_edge_key(orphan_target.transaction(), &orphan_token).unwrap();
+  {
+    factory.state.lock().unwrap().entries.insert(
+      (namespace.clone(), orphan_edge),
+      StoreValue::new(Arc::from([])),
+    );
+  }
+  let orphan_state = factory.state.lock().unwrap().entries.clone();
+  let before_orphan_cleanup = factory.commit_calls.load(Ordering::SeqCst);
+  assert_eq!(
+    store
+      .cleanup_receipt(&orphan_target, contract_transaction_id(771))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt,
+  );
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_orphan_cleanup,
+  );
+  assert_eq!(factory.state.lock().unwrap().entries, orphan_state);
+  assert!(
+    factory
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .contains_key(orphan_target.transaction()),
+  );
+
+  let (_, undercount_target) = commit_target(&store, 780).await;
+  let undercount_tokens = [
+    ReceiptReferenceToken::from_digest(Digest::from_bytes([22; 32])),
+    ReceiptReferenceToken::from_digest(Digest::from_bytes([23; 32])),
+  ];
+  for (offset, token) in undercount_tokens.iter().enumerate() {
+    assert!(matches!(
+      store
+        .add_receipt_reference(
+          &undercount_target,
+          token,
+          contract_transaction_id(781 + u16::try_from(offset).unwrap()),
+        )
+        .await
+        .unwrap(),
+      ReceiptReferenceOutcome::Applied(_)
+    ));
+  }
+  let undercount_head = reference_head_key(undercount_target.transaction()).unwrap();
+  factory.state.lock().unwrap().entries.insert(
+    (namespace.clone(), undercount_head),
+    StoreValue::new(Arc::from(1_u64.to_be_bytes())),
+  );
+  let undercount_state = factory.state.lock().unwrap().entries.clone();
+  let before_undercount = factory.commit_calls.load(Ordering::SeqCst);
+  assert_eq!(
+    store
+      .remove_receipt_reference(
+        &undercount_target,
+        &undercount_tokens[0],
+        contract_transaction_id(783),
+      )
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt,
+  );
+  assert_eq!(
+    store
+      .cleanup_receipt(&undercount_target, contract_transaction_id(784))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt,
+  );
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_undercount
+  );
+  assert_eq!(factory.state.lock().unwrap().entries, undercount_state);
+
+  let (_, overcount_target) = commit_target(&store, 790).await;
+  let overcount_tokens = [
+    ReceiptReferenceToken::from_digest(Digest::from_bytes([24; 32])),
+    ReceiptReferenceToken::from_digest(Digest::from_bytes([25; 32])),
+  ];
+  for (offset, token) in overcount_tokens.iter().enumerate() {
+    assert!(matches!(
+      store
+        .add_receipt_reference(
+          &overcount_target,
+          token,
+          contract_transaction_id(791 + u16::try_from(offset).unwrap()),
+        )
+        .await
+        .unwrap(),
+      ReceiptReferenceOutcome::Applied(_)
+    ));
+  }
+  let overcount_head = reference_head_key(overcount_target.transaction()).unwrap();
+  factory.state.lock().unwrap().entries.insert(
+    (namespace.clone(), overcount_head),
+    StoreValue::new(Arc::from(3_u64.to_be_bytes())),
+  );
+  let before_overcount = factory.commit_calls.load(Ordering::SeqCst);
+  assert_eq!(
+    store
+      .cleanup_receipt(&overcount_target, contract_transaction_id(793))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt,
+  );
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_overcount
+  );
+
+  let (_, malformed_marker_target) = commit_target(&store, 800).await;
+  let malformed_marker_key = used_id_key(malformed_marker_target.transaction()).unwrap();
+  factory.state.lock().unwrap().entries.insert(
+    (namespace, malformed_marker_key),
+    StoreValue::new(Arc::from(b"\x01forgotten\0malformed".as_slice())),
+  );
+  let malformed_state = factory.state.lock().unwrap().entries.clone();
+  let before_malformed = factory.commit_calls.load(Ordering::SeqCst);
+  assert_eq!(
+    store
+      .add_receipt_reference(
+        &malformed_marker_target,
+        &ReceiptReferenceToken::from_digest(Digest::from_bytes([26; 32])),
+        contract_transaction_id(801),
+      )
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt,
+  );
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_malformed
+  );
+  assert_eq!(factory.state.lock().unwrap().entries, malformed_state);
+}
+
+#[tokio::test]
+async fn storage_contract_reference_provider_revision_exhaustion_is_atomic() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let storage = factory.open(StoreRequirements::metadata()).await.unwrap();
+  factory.state.lock().unwrap().generation = u64::MAX - 1;
+
+  let near_max = storage.snapshot().await.unwrap();
+  let reaches_max = transaction(
+    40,
+    near_max.revision().clone(),
+    vec![StoreOperation::Put {
+      namespace: namespace("revision-overflow"),
+      key: store_key(b"first"),
+      expected: StoreExpectation::Absent,
+      value: value(b"first"),
+    }],
+  )
+  .unwrap();
+  let receipt = committed(storage.commit(reaches_max).await.unwrap());
+  assert_eq!(receipt.committed_revision(), &reference_revision(u64::MAX));
+
+  let at_max = storage.snapshot().await.unwrap();
+  let exhausted = transaction(
+    41,
+    at_max.revision().clone(),
+    vec![StoreOperation::Put {
+      namespace: namespace("revision-overflow"),
+      key: store_key(b"second"),
+      expected: StoreExpectation::Absent,
+      value: value(b"second"),
+    }],
+  )
+  .unwrap();
+  let state_before = {
+    let state = factory.state.lock().unwrap();
+    (state.entries.clone(), state.receipts.clone())
+  };
+  assert_eq!(
+    storage.commit(exhausted).await.unwrap_err().kind(),
+    crate::ErrorKind::ResourceExhausted,
+  );
+  let state = factory.state.lock().unwrap();
+  assert_eq!(state.generation, u64::MAX);
+  assert_eq!(state.entries, state_before.0);
+  assert_eq!(state.receipts, state_before.1);
 }
 
 #[tokio::test]
