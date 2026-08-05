@@ -44,13 +44,13 @@ require a plan amendment.
 | T-G01-02 Tokio lifecycle/typed bus | P0/L | 01-01 | Sealed command/query/event facade, supervisor, injected entropy, no wall-clock read before an owned deadline exists, start/shutdown | runtime/facade | SC-G01-P0-02, SC-G01-P1-03; lifecycle/time boundary | R1 |
 | T-G01-03 Deterministic network/time simulator | P0/L | 01-01,02 | Directed links, finite work, loss/reorder/partition/restart/readdress and wall-clock rollback/freeze/jump | simulation | SC-G01-P0-03, SC-G01-P1-04; deterministic replay | R0 |
 | T-G01-04 Failure artifact/replay | P0/M | 01-03 | Bounded allowlisted artifacts and closed argv excluding secrets, packet bytes, paths, and addresses | test-support/simulation fixtures | SC-G01-P0-04..05; redaction/provenance/replay tests | R0 |
-| T-G01-05 G1 facade/MSRV/lint closure | P0/M | 01-01..04 | Prove revised minimal facade, MSRV/stable/locked dependency and panic-free production gates | facade/quality scripts | SC-G01-P0-06..07; public facade and quality closure | R0 |
+| T-G01-05 G1 facade/MSRV/lint closure | P0/M | 01-01..04 | Freeze the complete externally implementable Key/Storage SPI shape, validation, canonical transaction/operation digest helper, constructors/accessors, and revised minimal facade; prove MSRV/stable/locked dependency and panic-free production gates | facade/quality scripts | SC-G01-P0-06..07; public facade and quality closure | R0 |
 
 ## G2: Internal Metadata Persistence
 
 | Task | Risk | Depends | Deliverable / exact API impact | Owned paths | Evidence | RB |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-G02-01 Metadata storage contract | P0/M | 01-05 | Provider-owned immutable snapshots, exact lookup, ordered stream scans, conditional transactions, receipts/reconcile/capabilities | storage contract | SC-G02-P0-01, SC-G02-P1-01; order/conflict/outcome/retention contract | R1 |
+| T-G02-01 Metadata storage contract | P0/M | 01-05 | Execute semantic contract suites and provider calls for conditional transactions, engine/reconciliation cleanup, and JSON/redb and real-backend semantics using the G1-frozen SPI | storage contract | SC-G02-P0-01, SC-G02-P1-01; order/conflict/outcome/retention contract | R1 |
 | T-G02-02 Identity/genesis/admission records | P0/H | 02-01,01-01 | Key SPI and canonical identity/admission metadata; provider capacity and private custody remain external | identity/key/storage records | SC-G02-P0-02..03; uniqueness/reconcile/redaction | R1 |
 | T-G02-03 JSON test adapter | P0/M | 02-01,02 | Immutable checksummed JSON generations implementing stream scans and typed provider exhaustion; feature powerset | JSON modules/feature CI | SC-G02-P0-04, SC-G02-P1-02; adapter and feature contract | R1 |
 | T-G02-04 JSON/provider crash matrix | P0/M | 02-03,01-04 | Fault metadata commits and key intents at every write/flush/rename/reopen/result boundary | JSON/key crash fixtures | SC-G02-P0-05..06; old/new/unknown and referenced-key safety | R0 |
