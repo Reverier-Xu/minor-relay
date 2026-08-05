@@ -145,6 +145,66 @@ jobs:
       - name: cargo test
         run: cargo +stable test --workspace --all-features --locked
 
+  macos:
+    name: macos
+    runs-on: macos-latest
+    timeout-minutes: 12
+    env:
+      RUSTFLAGS: -Dwarnings
+      RUSTDOCFLAGS: -Dwarnings
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: install MSRV toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - name: cargo check
+        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
+
+      - name: cargo clippy
+        run: cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo +1.97.1 test --workspace --all-features --locked
+
+      - name: fixed simulator gate
+        run: cargo +1.97.1 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
+
+  windows:
+    name: windows
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      RUSTFLAGS: -Dwarnings
+      RUSTDOCFLAGS: -Dwarnings
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: install MSRV toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - name: cargo check
+        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
+
+      - name: cargo clippy
+        run: cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo +1.97.1 test --workspace --all-features --locked
+
+      - name: fixed simulator gate
+        run: cargo +1.97.1 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
+
   container:
     name: container
     runs-on: ubuntu-latest

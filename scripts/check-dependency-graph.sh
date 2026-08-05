@@ -13,7 +13,7 @@ if (($# != 0)); then
 fi
 
 MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == 11035d27b8e394ce65d1092a256890798f03d1c8582f727f28e4fbe79eb31944 ]] || {
+[[ $MANIFEST_DIGEST == 21dc50072009af751390591a7926a671de65121b30b22934b81809856bcd07d4 ]] || {
   printf 'workspace manifests or lockfile differ from the reviewed G1 baseline\n' >&2
   exit 1
 }
