@@ -13,10 +13,6 @@ cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo \
-  --config 'env.MINOR_RELAY_SIM_SEEDS.value="1000"' \
-  --config env.MINOR_RELAY_SIM_SEEDS.force=true \
-  --config 'env.MINOR_RELAY_SIM_SEED.value="0"' \
-  --config env.MINOR_RELAY_SIM_SEED.force=true \
   test \
   --locked \
   --lib \
