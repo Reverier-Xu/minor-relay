@@ -125,66 +125,66 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G01-01"
 verification_id = "VERIFY-G01-01"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-01"
 owner_task = "T-G01-01"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g1-core.sh"]
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-02"
 verification_id = "VERIFY-G01-02"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-02"
 owner_task = "T-G01-02"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g1-lifecycle.sh"]
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-03"
 verification_id = "VERIFY-G01-03"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-03"
 owner_task = "T-G01-03"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g1-simulator.sh"]
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-04"
 verification_id = "VERIFY-G01-04"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-04"
 owner_task = "T-G01-04"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g1-artifacts.sh"]
 timeout_seconds = 1800
 
 [[task]]
 id = "T-G01-05"
 verification_id = "VERIFY-G01-05"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G01-05"
 owner_task = "T-G01-05"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g1-closure.sh"]
 timeout_seconds = 1800
 
 [[task]]

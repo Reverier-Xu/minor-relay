@@ -205,7 +205,7 @@ first = 3
 verification_id = "VERIFY-G01-02"
 kind = "contract"
 cases = [
-  { title = "Drive time and randomness through injected facades", acceptance = "Clock sleeps and monotonic reads advance deterministically under virtual time, entropy packets consume reproducible bytes, checked time arithmetic rejects overflow, and production lifecycle code has no ambient timing or randomness dependency.", rebaseline = "ADR-0007", threats = [
+  { title = "Prove injected entropy and the G1 time boundary", acceptance = "Injected entropy supplies reproducible bytes and typed redacted failure. G1 production code performs no ambient wall-clock read because G1 owns no deadline. Simulator scheduler time remains separate from modeled wall time across rollback, freeze, and forward jumps, with checked arithmetic rejecting overflow. Any future owned SystemTime deadline code must read time only through a crate-private test seam.", rebaseline = "ADR-0007", threats = [
     "THR-011",
   ] },
 ]
