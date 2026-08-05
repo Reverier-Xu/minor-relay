@@ -13,10 +13,13 @@ use crate::{
 
 const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-internal-v1";
 const USED_ID_TAG: &[u8] = b"\x01used-id\0";
+pub(super) const ACTIVE_MARKER_VALUE: &[u8] = b"";
+pub(super) const FORGOTTEN_MARKER_VALUE: &[u8] = b"\x01forgotten\0";
 const REFERENCE_HEAD_TAG: &[u8] = b"\x02reference-head\0";
 const REFERENCE_EDGE_TAG: &[u8] = b"\x03reference-edge\0";
 const ELIGIBILITY_ANCHOR_TAG: &[u8] = b"\x04eligibility-anchor\0";
 const EDGE_DELIMITER: u8 = 0;
+const REFERENCE_TOKEN_WIDTH: usize = 32;
 const WALL_TIME_WIDTH: usize = 13;
 const NANOS_PER_SECOND: u32 = 1_000_000_000;
 
@@ -121,7 +124,10 @@ impl MetadataStore {
   ) -> crate::Result<ReceiptReferenceOutcome> {
     let snapshot = self.snapshot().await?;
     let namespace = internal_namespace()?;
-    verify_used_marker(snapshot.as_ref(), &namespace, target.transaction()).await?;
+    match verify_live_marker(snapshot.as_ref(), &namespace, target.transaction()).await? {
+      LiveMarker::Active(_) => {}
+      LiveMarker::Forgotten => return Ok(ReceiptReferenceOutcome::Conflict),
+    };
 
     let head_key = reference_head_key(target.transaction())?;
     let edge_key = reference_edge_key(target.transaction(), token)?;
@@ -129,20 +135,23 @@ impl MetadataStore {
     let head = snapshot.get(&namespace, &head_key).await?;
     let edge = snapshot.get(&namespace, &edge_key).await?;
     let anchor = snapshot.get(&namespace, &anchor_key).await?;
+    audit_reference_index(
+      snapshot.as_ref(),
+      &namespace,
+      target.transaction(),
+      head.as_ref(),
+      anchor.as_ref(),
+    )
+    .await?;
 
     if edge.is_some() {
-      let head = head.as_ref().ok_or_else(storage_corrupt)?;
-      decode_reference_count(head)?;
-      if anchor.is_some() {
-        return Err(storage_corrupt());
-      }
       return Ok(ReceiptReferenceOutcome::Conflict);
     }
 
     let (head_expectation, next_count) = match head.as_ref() {
       Some(value) => {
         let count = decode_reference_count(value)?;
-        let next = count.checked_add(1).ok_or_else(storage_corrupt)?;
+        let next = increment_reference_count(count)?;
         (StoreExpectation::Exact(value.digest().clone()), next)
       }
       None => (StoreExpectation::Absent, 1),
@@ -183,7 +192,10 @@ impl MetadataStore {
   ) -> crate::Result<ReceiptReferenceOutcome> {
     let snapshot = self.snapshot().await?;
     let namespace = internal_namespace()?;
-    verify_used_marker(snapshot.as_ref(), &namespace, target.transaction()).await?;
+    match verify_live_marker(snapshot.as_ref(), &namespace, target.transaction()).await? {
+      LiveMarker::Active(_) => {}
+      LiveMarker::Forgotten => return Ok(ReceiptReferenceOutcome::Conflict),
+    }
 
     let head_key = reference_head_key(target.transaction())?;
     let edge_key = reference_edge_key(target.transaction(), token)?;
@@ -191,22 +203,19 @@ impl MetadataStore {
     let head = snapshot.get(&namespace, &head_key).await?;
     let edge = snapshot.get(&namespace, &edge_key).await?;
     let anchor = snapshot.get(&namespace, &anchor_key).await?;
+    audit_reference_index(
+      snapshot.as_ref(),
+      &namespace,
+      target.transaction(),
+      head.as_ref(),
+      anchor.as_ref(),
+    )
+    .await?;
 
-    let (head, edge) = match (head, edge) {
-      (None, None) => return Ok(ReceiptReferenceOutcome::Conflict),
-      (Some(head), None) => {
-        decode_reference_count(&head)?;
-        if anchor.is_some() {
-          return Err(storage_corrupt());
-        }
-        return Ok(ReceiptReferenceOutcome::Conflict);
-      }
-      (None, Some(_)) => return Err(storage_corrupt()),
-      (Some(head), Some(edge)) => (head, edge),
+    let Some(edge) = edge else {
+      return Ok(ReceiptReferenceOutcome::Conflict);
     };
-    if anchor.is_some() {
-      return Err(storage_corrupt());
-    }
+    let head = head.ok_or_else(storage_corrupt)?;
     let count = decode_reference_count(&head)?;
 
     let mut operations = Vec::new();
@@ -243,18 +252,27 @@ impl MetadataStore {
   ) -> crate::Result<ReceiptCleanupOutcome> {
     let snapshot = self.snapshot().await?;
     let namespace = internal_namespace()?;
-    verify_used_marker(snapshot.as_ref(), &namespace, target.transaction()).await?;
+    let active_marker =
+      match verify_live_marker(snapshot.as_ref(), &namespace, target.transaction()).await? {
+        LiveMarker::Active(marker) => marker,
+        LiveMarker::Forgotten => return Ok(ReceiptCleanupOutcome::Conflict),
+      };
 
     let head_key = reference_head_key(target.transaction())?;
     let anchor_key = eligibility_anchor_key(target.transaction())?;
+    let marker_key = used_id_key(target.transaction())?;
     let head = snapshot.get(&namespace, &head_key).await?;
     let anchor = snapshot.get(&namespace, &anchor_key).await?;
+    let reference_count = audit_reference_index(
+      snapshot.as_ref(),
+      &namespace,
+      target.transaction(),
+      head.as_ref(),
+      anchor.as_ref(),
+    )
+    .await?;
 
-    if let Some(head) = head {
-      decode_reference_count(&head)?;
-      if anchor.is_some() {
-        return Err(storage_corrupt());
-      }
+    if reference_count > 0 {
       return Ok(ReceiptCleanupOutcome::Referenced);
     }
 
@@ -288,9 +306,15 @@ impl MetadataStore {
             expected: StoreExpectation::Absent,
           },
           StoreOperation::Delete {
-            namespace,
+            namespace: namespace.clone(),
             key: anchor_key,
             expected: anchor.digest().clone(),
+          },
+          StoreOperation::Put {
+            namespace,
+            key: marker_key,
+            expected: StoreExpectation::Exact(active_marker.digest().clone()),
+            value: marker_value(FORGOTTEN_MARKER_VALUE),
           },
           StoreOperation::ForgetReceipt {
             transaction: target.transaction().clone(),
@@ -330,7 +354,7 @@ pub(super) fn prepare_internal_transaction(
     namespace: internal_namespace()?,
     key: used_id_key(&id)?,
     expected: StoreExpectation::Absent,
-    value: StoreValue::new(Arc::from([])),
+    value: marker_value(ACTIVE_MARKER_VALUE),
   });
   StoreTransaction::new(id, base_revision, operations).map(PreparedTransaction)
 }
@@ -350,15 +374,65 @@ fn map_reference_outcome(outcome: CommitOutcome) -> crate::Result<ReceiptReferen
   })
 }
 
-async fn verify_used_marker(
+enum LiveMarker {
+  Active(StoreValue),
+  Forgotten,
+}
+
+async fn verify_live_marker(
   snapshot: &dyn crate::provider::StoreSnapshot, namespace: &StoreNamespace,
   transaction: &TransactionId,
-) -> crate::Result<()> {
+) -> crate::Result<LiveMarker> {
   let marker = snapshot.get(namespace, &used_id_key(transaction)?).await?;
   match marker {
-    Some(value) if value.as_bytes().is_empty() => Ok(()),
+    Some(value) if value.as_bytes() == ACTIVE_MARKER_VALUE => Ok(LiveMarker::Active(value)),
+    Some(value) if value.as_bytes() == FORGOTTEN_MARKER_VALUE => Ok(LiveMarker::Forgotten),
     _ => Err(storage_corrupt()),
   }
+}
+
+async fn audit_reference_index(
+  snapshot: &dyn crate::provider::StoreSnapshot, namespace: &StoreNamespace,
+  transaction: &TransactionId, head: Option<&StoreValue>, anchor: Option<&StoreValue>,
+) -> crate::Result<u64> {
+  let prefix = reference_edge_prefix(transaction)?;
+  let mut scan = snapshot.scan(namespace, &prefix).await?;
+  let mut count = 0_u64;
+  while let Some(entry) = scan.next().await? {
+    let key = entry.key().as_bytes();
+    if entry.namespace() != namespace
+      || !key.starts_with(&prefix)
+      || key.len()
+        != prefix
+          .len()
+          .checked_add(REFERENCE_TOKEN_WIDTH)
+          .ok_or_else(|| Error::resource_exhausted("receipt reference key"))?
+      || !entry.value().as_bytes().is_empty()
+    {
+      return Err(storage_corrupt());
+    }
+    count = increment_reference_count(count)?;
+  }
+
+  match head {
+    None if count == 0 => {}
+    Some(value) if decode_reference_count(value)? == count => {}
+    _ => return Err(storage_corrupt()),
+  }
+  if count > 0 && anchor.is_some() {
+    return Err(storage_corrupt());
+  }
+  Ok(count)
+}
+
+pub(super) fn increment_reference_count(count: u64) -> crate::Result<u64> {
+  count
+    .checked_add(1)
+    .ok_or_else(|| Error::resource_exhausted("receipt reference count"))
+}
+
+fn marker_value(bytes: &'static [u8]) -> StoreValue {
+  StoreValue::new(Arc::from(bytes))
 }
 
 fn operation_uses_reserved_namespace(operation: &StoreOperation) -> bool {
@@ -401,9 +475,7 @@ fn tagged_transaction_key(tag: &[u8], transaction: &TransactionId) -> crate::Res
   Ok(StoreKey::new(Arc::from(key)))
 }
 
-pub(super) fn reference_edge_key(
-  transaction: &TransactionId, token: &ReceiptReferenceToken,
-) -> crate::Result<StoreKey> {
+fn reference_edge_prefix(transaction: &TransactionId) -> crate::Result<Vec<u8>> {
   let transaction = transaction.as_str().as_bytes();
   let transaction_length = u16::try_from(transaction.len())
     .map_err(|_| Error::resource_exhausted("receipt reference key"))?;
@@ -412,16 +484,25 @@ pub(super) fn reference_edge_key(
     .checked_add(2)
     .and_then(|value| value.checked_add(transaction.len()))
     .and_then(|value| value.checked_add(1))
-    .and_then(|value| value.checked_add(token.0.as_bytes().len()))
     .ok_or_else(|| Error::resource_exhausted("receipt reference key"))?;
-  let mut key = Vec::new();
-  key
+  let mut prefix = Vec::new();
+  prefix
     .try_reserve_exact(capacity)
     .map_err(|_| Error::resource_exhausted("receipt reference key"))?;
-  key.extend_from_slice(REFERENCE_EDGE_TAG);
-  key.extend_from_slice(&transaction_length.to_be_bytes());
-  key.extend_from_slice(transaction);
-  key.push(EDGE_DELIMITER);
+  prefix.extend_from_slice(REFERENCE_EDGE_TAG);
+  prefix.extend_from_slice(&transaction_length.to_be_bytes());
+  prefix.extend_from_slice(transaction);
+  prefix.push(EDGE_DELIMITER);
+  Ok(prefix)
+}
+
+pub(super) fn reference_edge_key(
+  transaction: &TransactionId, token: &ReceiptReferenceToken,
+) -> crate::Result<StoreKey> {
+  let mut key = reference_edge_prefix(transaction)?;
+  key
+    .try_reserve_exact(token.0.as_bytes().len())
+    .map_err(|_| Error::resource_exhausted("receipt reference key"))?;
   key.extend_from_slice(token.0.as_bytes());
   Ok(StoreKey::new(Arc::from(key)))
 }
