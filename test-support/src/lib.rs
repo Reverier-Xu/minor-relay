@@ -7,7 +7,7 @@ use sha2::{Digest as ShaDigest, Sha256};
 
 pub const MAX_ARTIFACT_BYTES: usize = 1_048_576;
 pub const MAX_RETAINED_EVENTS: usize = 10_000;
-const EVENT_DIGEST_DOMAIN: &[u8] = b"relay.woooo.tech/failure-replay/event-stream/v1";
+const EVENT_DIGEST_DOMAIN: &[u8] = b"relay.woooo.tech/failure-replay/event-stream/v2";
 const FAILURE_SCHEMA: &str = "relay.woooo.tech/schemas/failure-replay";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +128,6 @@ pub enum NormalizedDropReason {
   StaleLink,
   StaleBoot,
   StaleAddress,
-  Offline,
 }
 
 impl NormalizedDropReason {
@@ -138,14 +137,13 @@ impl NormalizedDropReason {
       Self::StaleLink => "stale-link",
       Self::StaleBoot => "stale-boot",
       Self::StaleAddress => "stale-address",
-      Self::Offline => "offline",
     }
   }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EventKind {
-  StateTransition,
+  CheckpointReached,
   SendAccepted,
   Lost,
   DuplicateCreated,
@@ -156,14 +154,14 @@ enum EventKind {
   Healed,
   Restarted,
   AddressChanged,
-  ClockSkewChanged,
+  WallClockChanged,
   QueueRejected,
 }
 
 impl EventKind {
   const fn as_str(self) -> &'static str {
     match self {
-      Self::StateTransition => "state-transition",
+      Self::CheckpointReached => "checkpoint-reached",
       Self::SendAccepted => "send-accepted",
       Self::Lost => "lost",
       Self::DuplicateCreated => "duplicate-created",
@@ -174,7 +172,7 @@ impl EventKind {
       Self::Healed => "healed",
       Self::Restarted => "restarted",
       Self::AddressChanged => "address-changed",
-      Self::ClockSkewChanged => "clock-skew-changed",
+      Self::WallClockChanged => "wall-clock-changed",
       Self::QueueRejected => "queue-rejected",
     }
   }
@@ -182,39 +180,39 @@ impl EventKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NormalizedEvent {
-  StateTransition {
+  CheckpointReached {
     at_nanos: u64,
-    machine: EvidenceId,
-    state: EvidenceId,
+    component: EvidenceId,
+    checkpoint: EvidenceId,
   },
   SendAccepted {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
     path: Alias,
     copies: u8,
-    payload_len: u32,
+    frame_bytes: u32,
   },
   Lost {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
   },
   DuplicateCreated {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
   },
   Reordered {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
     copy: u8,
   },
   Delivered {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
     copy: u8,
   },
   Dropped {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
     copy: u8,
     reason: NormalizedDropReason,
   },
@@ -241,31 +239,34 @@ pub enum NormalizedEvent {
     endpoint: Alias,
     generation: u32,
   },
-  ClockSkewChanged {
+  WallClockChanged {
     at_nanos: u64,
     node: Alias,
-    skew_nanos: i64,
+    previous: u64,
+    current: u64,
   },
   QueueRejected {
     at_nanos: u64,
-    message: u64,
+    frame_id: u64,
     copies: u8,
-    payload_len: u32,
+    frame_bytes: u32,
   },
 }
 
 impl NormalizedEvent {
-  pub const fn state_transition(at_nanos: u64, machine: EvidenceId, state: EvidenceId) -> Self {
-    Self::StateTransition {
+  pub const fn checkpoint_reached(
+    at_nanos: u64, component: EvidenceId, checkpoint: EvidenceId,
+  ) -> Self {
+    Self::CheckpointReached {
       at_nanos,
-      machine,
-      state,
+      component,
+      checkpoint,
     }
   }
 
   const fn kind(self) -> EventKind {
     match self {
-      Self::StateTransition { .. } => EventKind::StateTransition,
+      Self::CheckpointReached { .. } => EventKind::CheckpointReached,
       Self::SendAccepted { .. } => EventKind::SendAccepted,
       Self::Lost { .. } => EventKind::Lost,
       Self::DuplicateCreated { .. } => EventKind::DuplicateCreated,
@@ -276,14 +277,14 @@ impl NormalizedEvent {
       Self::Healed { .. } => EventKind::Healed,
       Self::Restarted { .. } => EventKind::Restarted,
       Self::AddressChanged { .. } => EventKind::AddressChanged,
-      Self::ClockSkewChanged { .. } => EventKind::ClockSkewChanged,
+      Self::WallClockChanged { .. } => EventKind::WallClockChanged,
       Self::QueueRejected { .. } => EventKind::QueueRejected,
     }
   }
 
   const fn at_nanos(self) -> u64 {
     match self {
-      Self::StateTransition { at_nanos, .. }
+      Self::CheckpointReached { at_nanos, .. }
       | Self::SendAccepted { at_nanos, .. }
       | Self::Lost { at_nanos, .. }
       | Self::DuplicateCreated { at_nanos, .. }
@@ -294,7 +295,7 @@ impl NormalizedEvent {
       | Self::Healed { at_nanos, .. }
       | Self::Restarted { at_nanos, .. }
       | Self::AddressChanged { at_nanos, .. }
-      | Self::ClockSkewChanged { at_nanos, .. }
+      | Self::WallClockChanged { at_nanos, .. }
       | Self::QueueRejected { at_nanos, .. } => at_nanos,
     }
   }
@@ -313,7 +314,7 @@ impl NormalizedEvent {
         require(path, AliasKind::Path)?;
         require(fault, AliasKind::Fault)
       }
-      Self::Restarted { node, .. } | Self::ClockSkewChanged { node, .. } => {
+      Self::Restarted { node, .. } | Self::WallClockChanged { node, .. } => {
         require(node, AliasKind::Node)
       }
       Self::AddressChanged { node, endpoint, .. } => {
@@ -567,8 +568,8 @@ pub struct ReplaySpec {
   kind: ReplayKind,
 }
 
-const SIMULATION_MATRIX_GATE_TEST: &str =
-  "simulation::network::tests::simulation_network_fault_matrix_gate";
+const SIMULATION_MATRIX_REPLAY_TEST: &str =
+  "simulation::network::tests::simulation_network_fault_matrix_replay_exact_seed";
 
 impl ReplaySpec {
   pub const fn cargo_test(test: CargoTestId) -> Self {
@@ -638,17 +639,13 @@ impl ReplaySpec {
       ],
       ReplayKind::SimulationNetworkFaultMatrix { seed } => vec![
         "--config".to_owned(),
-        "env.MINOR_RELAY_SIM_SEEDS.value=\"1\"".to_owned(),
-        "--config".to_owned(),
-        "env.MINOR_RELAY_SIM_SEEDS.force=true".to_owned(),
-        "--config".to_owned(),
         format!("env.MINOR_RELAY_SIM_SEED.value=\"{seed}\""),
         "--config".to_owned(),
         "env.MINOR_RELAY_SIM_SEED.force=true".to_owned(),
         "test".to_owned(),
         "--locked".to_owned(),
         "--lib".to_owned(),
-        SIMULATION_MATRIX_GATE_TEST.to_owned(),
+        SIMULATION_MATRIX_REPLAY_TEST.to_owned(),
         "--".to_owned(),
         "--ignored".to_owned(),
         "--exact".to_owned(),
@@ -1208,47 +1205,51 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
   writer.raw(b",\"at_nanos\":")?;
   writer.unsigned(event.at_nanos())?;
   match event {
-    NormalizedEvent::StateTransition { machine, state, .. } => {
-      writer.raw(b",\"machine\":")?;
-      writer.quoted(machine.as_str())?;
-      writer.raw(b",\"state\":")?;
-      writer.quoted(state.as_str())?;
-    }
-    NormalizedEvent::SendAccepted {
-      message,
-      path,
-      copies,
-      payload_len,
+    NormalizedEvent::CheckpointReached {
+      component,
+      checkpoint,
       ..
     } => {
-      writer.raw(b",\"message\":")?;
-      writer.unsigned(message)?;
+      writer.raw(b",\"component\":")?;
+      writer.quoted(component.as_str())?;
+      writer.raw(b",\"checkpoint\":")?;
+      writer.quoted(checkpoint.as_str())?;
+    }
+    NormalizedEvent::SendAccepted {
+      frame_id,
+      path,
+      copies,
+      frame_bytes,
+      ..
+    } => {
+      writer.raw(b",\"frame_id\":")?;
+      writer.unsigned(frame_id)?;
       writer.raw(b",\"path\":")?;
       writer.quoted(&path.render())?;
       writer.raw(b",\"copies\":")?;
       writer.unsigned(u64::from(copies))?;
-      writer.raw(b",\"payload_len\":")?;
-      writer.unsigned(u64::from(payload_len))?;
+      writer.raw(b",\"frame_bytes\":")?;
+      writer.unsigned(u64::from(frame_bytes))?;
     }
-    NormalizedEvent::Lost { message, .. } | NormalizedEvent::DuplicateCreated { message, .. } => {
-      writer.raw(b",\"message\":")?;
-      writer.unsigned(message)?;
+    NormalizedEvent::Lost { frame_id, .. } | NormalizedEvent::DuplicateCreated { frame_id, .. } => {
+      writer.raw(b",\"frame_id\":")?;
+      writer.unsigned(frame_id)?;
     }
-    NormalizedEvent::Reordered { message, copy, .. }
-    | NormalizedEvent::Delivered { message, copy, .. } => {
-      writer.raw(b",\"message\":")?;
-      writer.unsigned(message)?;
+    NormalizedEvent::Reordered { frame_id, copy, .. }
+    | NormalizedEvent::Delivered { frame_id, copy, .. } => {
+      writer.raw(b",\"frame_id\":")?;
+      writer.unsigned(frame_id)?;
       writer.raw(b",\"copy\":")?;
       writer.unsigned(u64::from(copy))?;
     }
     NormalizedEvent::Dropped {
-      message,
+      frame_id,
       copy,
       reason,
       ..
     } => {
-      writer.raw(b",\"message\":")?;
-      writer.unsigned(message)?;
+      writer.raw(b",\"frame_id\":")?;
+      writer.unsigned(frame_id)?;
       writer.raw(b",\"copy\":")?;
       writer.unsigned(u64::from(copy))?;
       writer.raw(b",\"reason\":")?;
@@ -1294,26 +1295,31 @@ fn write_event(writer: &mut JsonWriter, event: NormalizedEvent) -> Result<(), Ar
       writer.raw(b",\"generation\":")?;
       writer.unsigned(u64::from(generation))?;
     }
-    NormalizedEvent::ClockSkewChanged {
-      node, skew_nanos, ..
+    NormalizedEvent::WallClockChanged {
+      node,
+      previous,
+      current,
+      ..
     } => {
       writer.raw(b",\"node\":")?;
       writer.quoted(&node.render())?;
-      writer.raw(b",\"skew_nanos\":")?;
-      writer.signed(skew_nanos)?;
+      writer.raw(b",\"previous\":")?;
+      writer.unsigned(previous)?;
+      writer.raw(b",\"current\":")?;
+      writer.unsigned(current)?;
     }
     NormalizedEvent::QueueRejected {
-      message,
+      frame_id,
       copies,
-      payload_len,
+      frame_bytes,
       ..
     } => {
-      writer.raw(b",\"message\":")?;
-      writer.unsigned(message)?;
+      writer.raw(b",\"frame_id\":")?;
+      writer.unsigned(frame_id)?;
       writer.raw(b",\"copies\":")?;
       writer.unsigned(u64::from(copies))?;
-      writer.raw(b",\"payload_len\":")?;
-      writer.unsigned(u64::from(payload_len))?;
+      writer.raw(b",\"frame_bytes\":")?;
+      writer.unsigned(u64::from(frame_bytes))?;
     }
   }
   writer.raw(b"}")
@@ -1374,10 +1380,6 @@ impl JsonWriter {
 
   fn unsigned_usize(&mut self, value: usize) -> Result<(), ArtifactError> {
     self.unsigned(u64::try_from(value).map_err(|_| ArtifactError::EncodingOverflow)?)
-  }
-
-  fn signed(&mut self, value: i64) -> Result<(), ArtifactError> {
-    self.raw(value.to_string().as_bytes())
   }
 
   fn boolean(&mut self, value: bool) -> Result<(), ArtifactError> {
@@ -1546,9 +1548,9 @@ mod tests {
   }
 
   fn state_event(value: u64) -> NormalizedEvent {
-    NormalizedEvent::state_transition(
+    NormalizedEvent::checkpoint_reached(
       value,
-      EvidenceId::new("fixture-machine").unwrap(),
+      EvidenceId::new("fixture-component").unwrap(),
       EvidenceId::new("ready").unwrap(),
     )
   }
@@ -1566,6 +1568,30 @@ mod tests {
       assert_eq!(artifact.producer(), producer);
       assert_eq!(source.event_reads.get(), 1);
       assert!(artifact.as_bytes().len() <= MAX_ARTIFACT_BYTES);
+      assert!(
+        artifact
+          .as_bytes()
+          .windows(18)
+          .any(|value| value == b"checkpoint-reached")
+      );
+      assert!(
+        !artifact
+          .as_bytes()
+          .windows(16)
+          .any(|value| value == b"state-transition")
+      );
+      assert!(
+        !artifact
+          .as_bytes()
+          .windows(10)
+          .any(|value| value == b"\"machine\":")
+      );
+      assert!(
+        !artifact
+          .as_bytes()
+          .windows(8)
+          .any(|value| value == b"\"state\":")
+      );
     }
   }
 
