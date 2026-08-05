@@ -131,7 +131,9 @@ impl MetadataStore {
     let anchor = snapshot.get(&namespace, &anchor_key).await?;
 
     if edge.is_some() {
-      if head.is_none() {
+      let head = head.as_ref().ok_or_else(storage_corrupt)?;
+      decode_reference_count(head)?;
+      if anchor.is_some() {
         return Err(storage_corrupt());
       }
       return Ok(ReceiptReferenceOutcome::Conflict);
@@ -191,7 +193,14 @@ impl MetadataStore {
     let anchor = snapshot.get(&namespace, &anchor_key).await?;
 
     let (head, edge) = match (head, edge) {
-      (None, None) | (Some(_), None) => return Ok(ReceiptReferenceOutcome::Conflict),
+      (None, None) => return Ok(ReceiptReferenceOutcome::Conflict),
+      (Some(head), None) => {
+        decode_reference_count(&head)?;
+        if anchor.is_some() {
+          return Err(storage_corrupt());
+        }
+        return Ok(ReceiptReferenceOutcome::Conflict);
+      }
       (None, Some(_)) => return Err(storage_corrupt()),
       (Some(head), Some(edge)) => (head, edge),
     };

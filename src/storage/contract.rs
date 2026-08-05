@@ -1310,6 +1310,21 @@ async fn storage_contract_reserved_injection_duplicates_corruption_and_overflow_
   {
     let mut state = factory.state.lock().unwrap();
     state.entries.insert(
+      (internal_namespace().unwrap(), head_key.clone()),
+      StoreValue::new(Arc::from([1_u8, 2, 3].as_slice())),
+    );
+  }
+  assert_eq!(
+    store
+      .add_receipt_reference(&target, &token, contract_transaction_id(751))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  {
+    let mut state = factory.state.lock().unwrap();
+    state.entries.insert(
       (internal_namespace().unwrap(), head_key),
       StoreValue::new(Arc::from(u64::MAX.to_be_bytes())),
     );
@@ -1347,6 +1362,18 @@ async fn storage_contract_malformed_reference_count_and_anchor_fail_without_muta
     );
   }
   let before = factory.commit_calls.load(Ordering::SeqCst);
+  assert_eq!(
+    store
+      .remove_receipt_reference(
+        &target,
+        &ReceiptReferenceToken::from_digest(Digest::from_bytes([15; 32])),
+        contract_transaction_id(861),
+      )
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
   assert_eq!(
     store
       .cleanup_receipt(&target, contract_transaction_id(86))
