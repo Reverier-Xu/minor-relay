@@ -169,7 +169,6 @@ dependencies = [
 name = "minor-relay"
 version = "0.1.0"
 dependencies = [
- "getrandom 0.4.3",
  "minicbor",
  "minor-relay-test-support",
  "proptest",

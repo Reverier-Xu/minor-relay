@@ -1,8 +1,7 @@
 use std::any::{Any, TypeId};
 
 use crate::{
-  Command, Error, Event, EventOptions, EventSubscription, GetNodeStatus, NodeStatus, Query, Result,
-  Shutdown, WaitForShutdown, runtime::RuntimeClient,
+  Command, Error, GetNodeStatus, Query, Result, Shutdown, WaitForShutdown, runtime::RuntimeClient,
 };
 
 #[derive(Clone)]
@@ -37,14 +36,6 @@ impl NodeHandle {
 
     drop(query);
     Err(Error::unsupported("node query"))
-  }
-
-  pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>> {
-    let _ = options;
-    if self.runtime.status() != NodeStatus::Running {
-      return Err(Error::shutting_down("node events"));
-    }
-    Err(Error::unsupported("node events"))
   }
 }
 

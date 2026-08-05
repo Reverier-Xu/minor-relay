@@ -7,8 +7,7 @@ use tokio::{
 };
 
 use crate::{
-  Error, ExtensionRegistry, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
-  api::{Clock, Entropy},
+  Error, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
   provider::{KeyProvider, StorageFactory},
   runtime::{Control, LifecycleSnapshot, RuntimeClient},
 };
@@ -50,10 +49,6 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) _storage: Arc<dyn StorageFactory>,
   pub(crate) _keys: Arc<dyn KeyProvider>,
   pub(crate) _config: NodeConfig,
-  pub(crate) _extensions: ExtensionRegistry,
-  pub(crate) _clock: Arc<dyn Clock>,
-  pub(crate) _entropy: Arc<dyn Entropy>,
-  pub(crate) _runtime_seed: [u8; 32],
 }
 
 pub(crate) async fn spawn_runtime(dependencies: RuntimeDependencies) -> Result<RuntimeClient> {
@@ -104,11 +99,11 @@ async fn finish_shutdown(
   drop(control);
   drop(dependencies);
 
-  lifecycle.stop(ShutdownReason::Requested);
+  lifecycle.stop(ShutdownReason::Explicit);
   if let Some(reply) = first_reply {
-    let _ = reply.send(ShutdownOutcome::new(false));
+    let _ = reply.send(ShutdownOutcome::new(ShutdownReason::Explicit));
   }
   for reply in queued_replies {
-    let _ = reply.send(ShutdownOutcome::new(true));
+    let _ = reply.send(ShutdownOutcome::new(ShutdownReason::Explicit));
   }
 }

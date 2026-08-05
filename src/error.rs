@@ -122,13 +122,6 @@ impl Error {
     }
   }
 
-  pub(crate) const fn shutting_down(context: &'static str) -> Self {
-    Self {
-      kind: ErrorKind::ShuttingDown,
-      context,
-    }
-  }
-
   pub(crate) const fn not_ready(context: &'static str) -> Self {
     Self {
       kind: ErrorKind::NotReady,

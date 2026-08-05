@@ -77,8 +77,8 @@ impl RuntimeClient {
   }
 
   pub(crate) async fn shutdown(&self) -> Result<ShutdownOutcome> {
-    if self.state.borrow().reason().is_some() {
-      return Ok(ShutdownOutcome::new(true));
+    if let Some(reason) = self.state.borrow().reason() {
+      return Ok(ShutdownOutcome::new(reason));
     }
 
     let (reply, response) = oneshot::channel();
@@ -88,16 +88,12 @@ impl RuntimeClient {
       .await
       .is_err()
     {
-      self.wait_for_shutdown().await?;
-      return Ok(ShutdownOutcome::new(true));
+      return self.wait_for_shutdown().await.map(ShutdownOutcome::new);
     }
 
     match response.await {
       Ok(outcome) => Ok(outcome),
-      Err(_) => {
-        self.wait_for_shutdown().await?;
-        Ok(ShutdownOutcome::new(true))
-      }
+      Err(_) => self.wait_for_shutdown().await.map(ShutdownOutcome::new),
     }
   }
 

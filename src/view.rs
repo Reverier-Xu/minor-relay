@@ -13,22 +13,22 @@ pub enum NodeStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ShutdownReason {
-  Requested,
+  Explicit,
   ActiveLeave,
   Fatal(ErrorKind),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShutdownOutcome {
-  already_stopped: bool,
+  reason: ShutdownReason,
 }
 
 impl ShutdownOutcome {
-  pub fn already_stopped(&self) -> bool {
-    self.already_stopped
+  pub fn reason(&self) -> &ShutdownReason {
+    &self.reason
   }
 
-  pub(crate) const fn new(already_stopped: bool) -> Self {
-    Self { already_stopped }
+  pub(crate) const fn new(reason: ShutdownReason) -> Self {
+    Self { reason }
   }
 }
