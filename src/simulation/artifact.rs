@@ -369,11 +369,12 @@ mod tests {
         "--untracked-files=all",
         "--ignore-submodules=none",
         "--",
-        ".",
-        ":(exclude)target",
-        ":(exclude)target/**",
-        ":(exclude).pi-subagents",
-        ":(exclude).pi-subagents/**",
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+        "src",
+        "tests",
+        "test-support",
       ])
       .current_dir(root)
       .output()
