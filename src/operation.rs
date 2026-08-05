@@ -12,6 +12,9 @@ pub trait Query: private::Sealed + Send + 'static {
   type Output: Send + 'static;
 }
 
+#[allow(private_bounds)]
+pub trait Event: private::Sealed + Clone + Send + Sync + 'static {}
+
 pub struct Shutdown {
   _private: (),
 }

@@ -8,6 +8,7 @@ use tokio::{
 
 use crate::{
   Error, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
+  api::Entropy,
   provider::{KeyProvider, StorageFactory},
   runtime::{Control, LifecycleSnapshot, RuntimeClient},
 };
@@ -49,10 +50,15 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) _storage: Arc<dyn StorageFactory>,
   pub(crate) _keys: Arc<dyn KeyProvider>,
   pub(crate) _config: NodeConfig,
+  pub(crate) entropy: Arc<dyn Entropy>,
+  pub(crate) _runtime_seed: Option<[u8; 32]>,
 }
 
-pub(crate) async fn spawn_runtime(dependencies: RuntimeDependencies) -> Result<RuntimeClient> {
+pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Result<RuntimeClient> {
   let runtime = Handle::try_current().map_err(|_| Error::not_ready("Tokio runtime"))?;
+  let mut runtime_seed = [0; 32];
+  dependencies.entropy.fill(&mut runtime_seed)?;
+  dependencies._runtime_seed = Some(runtime_seed);
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();

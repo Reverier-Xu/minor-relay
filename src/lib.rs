@@ -12,8 +12,8 @@
 //! use minor_relay::runtime;
 //! ```
 //!
-//! Superseded limits, public clock injection, and placeholder extension/event
-//! surfaces are absent.
+//! Superseded limits, public clock injection, and the placeholder extension
+//! registry are absent.
 //!
 //! ```compile_fail,E0432
 //! use minor_relay::{AdmissionLimits, Clock, MonotonicTime, ProtocolLimits, TraceLimits};
@@ -24,7 +24,7 @@
 //! ```
 //!
 //! ```compile_fail,E0432
-//! use minor_relay::{EventOptions, ExtensionRegistry};
+//! use minor_relay::ExtensionRegistry;
 //! ```
 //!
 //! ```compile_fail,E0599
@@ -51,8 +51,8 @@ pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Resul
 pub use identity::{
   ClusterId, Digest, NodeId, OperationId, PublicKey, Signature, TraceId, TransactionId,
 };
-pub use node::{NodeBuilder, NodeHandle};
-pub use operation::{Command, GetNodeStatus, Query, Shutdown, WaitForShutdown};
+pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
+pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};
 pub use protocol::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};
 pub use provider::{
   CommitOutcome, CommitReceipt, CreatedKey, DurabilityLevel, KeyCapabilities, KeyCreateState,
@@ -63,5 +63,8 @@ pub use provider::{
 pub use view::{NodeStatus, ShutdownOutcome, ShutdownReason};
 
 pub mod extension {
-  pub use crate::provider::{KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot};
+  pub use crate::{
+    api::Entropy,
+    provider::{KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot},
+  };
 }
