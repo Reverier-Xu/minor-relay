@@ -1,6 +1,9 @@
 use std::{
   collections::{BTreeMap, HashMap},
-  sync::{Arc, Mutex},
+  sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+  },
 };
 
 use crate::{
@@ -14,6 +17,7 @@ use crate::{
 #[derive(Debug)]
 struct ReferenceState {
   generation: u64,
+  open: bool,
   entries: BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
   receipts: HashMap<TransactionId, CommitReceipt>,
 }
@@ -30,6 +34,7 @@ impl ReferenceFactory {
       capabilities,
       state: Arc::new(Mutex::new(ReferenceState {
         generation: 1,
+        open: false,
         entries: BTreeMap::new(),
         receipts: HashMap::new(),
       })),
@@ -43,6 +48,27 @@ struct ReferenceStorage {
   state: Arc<Mutex<ReferenceState>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum UnknownFaultMode {
+  Applied,
+  NotApplied,
+}
+
+#[derive(Debug)]
+struct UnknownFaultFactory {
+  reference: ReferenceFactory,
+  mode: UnknownFaultMode,
+  commit_calls: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct UnknownFaultStorage {
+  reference: Box<dyn Storage>,
+  mode: UnknownFaultMode,
+  commit_calls: Arc<AtomicUsize>,
+  pending: Mutex<Option<(TransactionId, Digest)>>,
+}
+
 #[derive(Debug)]
 struct ReferenceSnapshot {
   revision: StoreRevision,
@@ -50,8 +76,10 @@ struct ReferenceSnapshot {
 }
 
 #[derive(Debug)]
-struct ReferenceScan {
-  entries: std::vec::IntoIter<StoreEntry>,
+struct ReferenceScan<'a> {
+  entries: std::collections::btree_map::Iter<'a, (StoreNamespace, StoreKey), StoreValue>,
+  namespace: &'a StoreNamespace,
+  prefix: &'a [u8],
 }
 
 impl StorageFactory for ReferenceFactory {
@@ -67,11 +95,27 @@ impl StorageFactory for ReferenceFactory {
           ProviderErrorContext::StorageOpen,
         ));
       }
+      {
+        let mut state = state.lock().unwrap();
+        if state.open {
+          return Err(Error::provider(
+            ProviderErrorKind::StorageLocked,
+            ProviderErrorContext::StorageOpen,
+          ));
+        }
+        state.open = true;
+      }
       Ok(Box::new(ReferenceStorage {
         capabilities,
         state,
       }) as Box<dyn Storage>)
     })
+  }
+}
+
+impl Drop for ReferenceStorage {
+  fn drop(&mut self) {
+    self.state.lock().unwrap().open = false;
   }
 }
 
@@ -113,6 +157,76 @@ impl Storage for ReferenceStorage {
   }
 }
 
+impl StorageFactory for UnknownFaultFactory {
+  fn open<'a>(
+    &'a self, requirements: StoreRequirements,
+  ) -> BoxFuture<'a, Result<Box<dyn Storage>>> {
+    let mode = self.mode;
+    let commit_calls = Arc::clone(&self.commit_calls);
+    Box::pin(async move {
+      let reference = self.reference.open(requirements).await?;
+      Ok(Box::new(UnknownFaultStorage {
+        reference,
+        mode,
+        commit_calls,
+        pending: Mutex::new(None),
+      }) as Box<dyn Storage>)
+    })
+  }
+}
+
+impl Storage for UnknownFaultStorage {
+  fn capabilities(&self) -> StoreCapabilities {
+    self.reference.capabilities()
+  }
+
+  fn snapshot<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn StoreSnapshot>>> {
+    self.reference.snapshot()
+  }
+
+  fn commit<'a>(&'a self, transaction: StoreTransaction) -> BoxFuture<'a, Result<CommitOutcome>> {
+    self.commit_calls.fetch_add(1, Ordering::SeqCst);
+    let identity = (
+      transaction.id().clone(),
+      transaction.operation_digest().clone(),
+    );
+    *self.pending.lock().unwrap() = Some(identity.clone());
+    Box::pin(async move {
+      if matches!(self.mode, UnknownFaultMode::Applied) {
+        assert!(matches!(
+          self.reference.commit(transaction).await?,
+          CommitOutcome::Committed(_)
+        ));
+      }
+      Ok(CommitOutcome::Unknown {
+        transaction: identity.0,
+        operation_digest: identity.1,
+      })
+    })
+  }
+
+  fn reconcile<'a>(
+    &'a self, transaction: &'a TransactionId, digest: &'a Digest,
+  ) -> BoxFuture<'a, Result<ReconcileOutcome>> {
+    let pending = self.pending.lock().unwrap().clone();
+    Box::pin(async move {
+      if pending
+        .as_ref()
+        .is_some_and(|(pending_transaction, pending_digest)| {
+          pending_transaction == transaction && pending_digest != digest
+        })
+      {
+        return Ok(ReconcileOutcome::DigestConflict);
+      }
+      self.reference.reconcile(transaction, digest).await
+    })
+  }
+
+  fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
+    self.reference.flush()
+  }
+}
+
 impl StoreSnapshot for ReferenceSnapshot {
   fn revision(&self) -> &StoreRevision {
     &self.revision
@@ -128,24 +242,21 @@ impl StoreSnapshot for ReferenceSnapshot {
   fn scan<'a>(
     &'a self, namespace: &'a StoreNamespace, prefix: &'a [u8],
   ) -> BoxFuture<'a, Result<Box<dyn StoreScan + 'a>>> {
-    let entries = self
-      .entries
-      .iter()
-      .filter(|((entry_namespace, key), _)| {
-        entry_namespace == namespace && key.as_bytes().starts_with(prefix)
-      })
-      .map(|((entry_namespace, key), value)| {
-        StoreEntry::new(entry_namespace.clone(), key.clone(), value.clone())
-      })
-      .collect::<Vec<_>>()
-      .into_iter();
-    Box::pin(async move { Ok(Box::new(ReferenceScan { entries }) as Box<dyn StoreScan + 'a>) })
+    let scan = ReferenceScan {
+      entries: self.entries.iter(),
+      namespace,
+      prefix,
+    };
+    Box::pin(async move { Ok(Box::new(scan) as Box<dyn StoreScan + 'a>) })
   }
 }
 
-impl StoreScan for ReferenceScan {
+impl StoreScan for ReferenceScan<'_> {
   fn next<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<StoreEntry>>> {
-    let next = self.entries.next();
+    let next = self.entries.find_map(|((namespace, key), value)| {
+      (namespace == self.namespace && key.as_bytes().starts_with(self.prefix))
+        .then(|| StoreEntry::new(namespace.clone(), key.clone(), value.clone()))
+    });
     Box::pin(async move { Ok(next) })
   }
 }
@@ -172,7 +283,7 @@ fn reference_commit(
     .iter()
     .all(|operation| condition_matches(&state, operation))
   {
-    return Ok(CommitOutcome::Aborted);
+    return Ok(CommitOutcome::Conflict);
   }
 
   let mut entries = state.entries.clone();
@@ -298,9 +409,9 @@ async fn storage_contract_snapshot_lookup_and_ordering(factory: Arc<dyn StorageF
       value: value(b"other"),
     }])
     .collect();
-  let transaction = transaction(0, old_revision.clone(), operations).unwrap();
+  let initial_transaction = transaction(0, old_revision.clone(), operations).unwrap();
   assert!(matches!(
-    storage.commit(transaction).await.unwrap(),
+    storage.commit(initial_transaction).await.unwrap(),
     CommitOutcome::Committed(_)
   ));
 
@@ -358,6 +469,73 @@ async fn storage_contract_snapshot_lookup_and_ordering(factory: Arc<dyn StorageF
     .unwrap();
   assert!(empty.next().await.unwrap().is_none());
   assert!(empty.next().await.unwrap().is_none());
+  drop(empty);
+
+  let overwrite_and_delete = transaction(
+    1,
+    current.revision().clone(),
+    vec![
+      StoreOperation::Put {
+        namespace: target_namespace.clone(),
+        key: store_key(&[0x80]),
+        expected: StoreExpectation::Exact(value(&[3]).digest().clone()),
+        value: value(b"overwritten"),
+      },
+      StoreOperation::Delete {
+        namespace: target_namespace.clone(),
+        key: store_key(&[0x7F]),
+        expected: value(&[2]).digest().clone(),
+      },
+    ],
+  )
+  .unwrap();
+  assert!(matches!(
+    storage.commit(overwrite_and_delete).await.unwrap(),
+    CommitOutcome::Committed(_)
+  ));
+  assert_eq!(
+    current
+      .get(&target_namespace, &store_key(&[0x80]))
+      .await
+      .unwrap()
+      .unwrap()
+      .as_bytes(),
+    &[3],
+  );
+  assert_eq!(
+    current
+      .get(&target_namespace, &store_key(&[0x7F]))
+      .await
+      .unwrap()
+      .unwrap()
+      .as_bytes(),
+    &[2],
+  );
+  let retained = collect_scan(current.scan(&target_namespace, &[]).await.unwrap()).await;
+  assert_eq!(
+    retained
+      .iter()
+      .map(|entry| entry.key().as_bytes().to_vec())
+      .collect::<Vec<_>>(),
+    keys,
+  );
+  let latest = storage.snapshot().await.unwrap();
+  assert_eq!(
+    latest
+      .get(&target_namespace, &store_key(&[0x80]))
+      .await
+      .unwrap()
+      .unwrap()
+      .as_bytes(),
+    b"overwritten",
+  );
+  assert!(
+    latest
+      .get(&target_namespace, &store_key(&[0x7F]))
+      .await
+      .unwrap()
+      .is_none()
+  );
 }
 
 async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn StorageFactory>) {
@@ -412,7 +590,7 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
   .unwrap();
   assert!(matches!(
     storage.commit(failed_condition).await.unwrap(),
-    CommitOutcome::Aborted
+    CommitOutcome::Conflict
   ));
 
   let atomic_failure = transaction(
@@ -436,7 +614,7 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
   .unwrap();
   assert!(matches!(
     storage.commit(atomic_failure).await.unwrap(),
-    CommitOutcome::Aborted
+    CommitOutcome::Conflict
   ));
   let unchanged = storage.snapshot().await.unwrap();
   assert!(
@@ -453,7 +631,52 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
       .unwrap()
       .is_none()
   );
-  for failed_id in [transaction_id(11), transaction_id(12), transaction_id(13)] {
+
+  let delete_failure = transaction(
+    18,
+    unchanged.revision().clone(),
+    vec![
+      StoreOperation::Put {
+        namespace: second_namespace.clone(),
+        key: store_key(b"delete-rollback"),
+        expected: StoreExpectation::Absent,
+        value: value(b"must-not-commit"),
+      },
+      StoreOperation::Delete {
+        namespace: first_namespace.clone(),
+        key: first_key.clone(),
+        expected: Digest::from_bytes([8; 32]),
+      },
+    ],
+  )
+  .unwrap();
+  assert!(matches!(
+    storage.commit(delete_failure).await.unwrap(),
+    CommitOutcome::Conflict
+  ));
+  let after_delete_failure = storage.snapshot().await.unwrap();
+  assert!(
+    after_delete_failure
+      .get(&second_namespace, &store_key(b"delete-rollback"))
+      .await
+      .unwrap()
+      .is_none()
+  );
+  assert_eq!(
+    after_delete_failure
+      .get(&first_namespace, &first_key)
+      .await
+      .unwrap()
+      .unwrap()
+      .as_bytes(),
+    b"first",
+  );
+  for failed_id in [
+    transaction_id(11),
+    transaction_id(12),
+    transaction_id(13),
+    transaction_id(18),
+  ] {
     assert!(matches!(
       storage
         .reconcile(&failed_id, &Digest::from_bytes([0; 32]))
@@ -470,11 +693,11 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
   assert_eq!(repeated, original_receipt);
   let changed_digest = transaction(
     10,
-    unchanged.revision().clone(),
+    initial.revision().clone(),
     vec![StoreOperation::Check {
       namespace: first_namespace.clone(),
       key: first_key.clone(),
-      expected: StoreExpectation::Exact(value(b"first").digest().clone()),
+      expected: StoreExpectation::Absent,
     }],
   )
   .unwrap();
@@ -528,6 +751,80 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
     ReconcileOutcome::Aborted
   ));
 
+  let forget_mismatch = transaction(
+    19,
+    receipt.committed_revision().clone(),
+    vec![
+      StoreOperation::ForgetReceipt {
+        transaction: original_receipt.transaction().clone(),
+        expected_operation_digest: Digest::from_bytes([7; 32]),
+      },
+      StoreOperation::Put {
+        namespace: second_namespace.clone(),
+        key: store_key(b"receipt-rollback"),
+        expected: StoreExpectation::Absent,
+        value: value(b"must-not-commit"),
+      },
+    ],
+  )
+  .unwrap();
+  assert!(matches!(
+    storage.commit(forget_mismatch).await.unwrap(),
+    CommitOutcome::Conflict
+  ));
+  let after_forget_mismatch = storage.snapshot().await.unwrap();
+  assert!(
+    after_forget_mismatch
+      .get(&second_namespace, &store_key(b"receipt-rollback"))
+      .await
+      .unwrap()
+      .is_none()
+  );
+  assert!(matches!(
+    storage
+      .reconcile(
+        original_receipt.transaction(),
+        original_receipt.operation_digest(),
+      )
+      .await
+      .unwrap(),
+    ReconcileOutcome::Committed(found) if found == original_receipt
+  ));
+
+  let forget = transaction(
+    20,
+    after_forget_mismatch.revision().clone(),
+    vec![StoreOperation::ForgetReceipt {
+      transaction: original_receipt.transaction().clone(),
+      expected_operation_digest: original_receipt.operation_digest().clone(),
+    }],
+  )
+  .unwrap();
+  let forget_receipt = match storage.commit(forget).await.unwrap() {
+    CommitOutcome::Committed(receipt) => receipt,
+    outcome => panic!("unexpected outcome: {outcome:?}"),
+  };
+  assert!(matches!(
+    storage
+      .reconcile(
+        original_receipt.transaction(),
+        original_receipt.operation_digest(),
+      )
+      .await
+      .unwrap(),
+    ReconcileOutcome::Aborted
+  ));
+  assert!(matches!(
+    storage
+      .reconcile(
+        forget_receipt.transaction(),
+        forget_receipt.operation_digest(),
+      )
+      .await
+      .unwrap(),
+    ReconcileOutcome::Committed(found) if found == forget_receipt
+  ));
+
   let duplicate = vec![
     StoreOperation::Check {
       namespace: first_namespace.clone(),
@@ -559,6 +856,94 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
 #[tokio::test]
 async fn storage_contract_reference_provider_covers_raw_storage_semantics() {
   run_storage_contract(|| Arc::new(ReferenceFactory::new(required_capabilities()))).await;
+}
+
+#[tokio::test]
+async fn storage_contract_reference_provider_holds_exclusive_lock_for_storage_lifetime() {
+  let factory = ReferenceFactory::new(required_capabilities());
+  let storage = factory.open(StoreRequirements::metadata()).await.unwrap();
+
+  let unsupported = factory
+    .open(StoreRequirements::metadata().transactional_migration(true))
+    .await
+    .unwrap_err();
+  assert_eq!(unsupported.kind(), crate::ErrorKind::UnsupportedCapability);
+  let locked = factory
+    .open(StoreRequirements::metadata())
+    .await
+    .unwrap_err();
+  assert_eq!(locked.kind(), crate::ErrorKind::StorageLocked);
+
+  drop(storage);
+  assert!(factory.open(StoreRequirements::metadata()).await.is_ok());
+}
+
+#[tokio::test]
+async fn storage_contract_unknown_fault_adapter_proves_exact_raw_reconciliation() {
+  for (mode, expected) in [
+    (UnknownFaultMode::Applied, true),
+    (UnknownFaultMode::NotApplied, false),
+  ] {
+    let commit_calls = Arc::new(AtomicUsize::new(0));
+    let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
+      reference: ReferenceFactory::new(required_capabilities()),
+      mode,
+      commit_calls: Arc::clone(&commit_calls),
+    });
+    storage_contract_unknown_reconciliation(factory, expected, &commit_calls).await;
+  }
+}
+
+async fn storage_contract_unknown_reconciliation(
+  factory: Arc<dyn StorageFactory>, applied: bool, commit_calls: &AtomicUsize,
+) {
+  let storage = factory.open(StoreRequirements::metadata()).await.unwrap();
+  let snapshot = storage.snapshot().await.unwrap();
+  let submitted = transaction(
+    30,
+    snapshot.revision().clone(),
+    vec![StoreOperation::Put {
+      namespace: namespace("unknown"),
+      key: store_key(b"key"),
+      expected: StoreExpectation::Absent,
+      value: value(b"value"),
+    }],
+  )
+  .unwrap();
+  let transaction_id = submitted.id().clone();
+  let operation_digest = submitted.operation_digest().clone();
+  assert_eq!(
+    storage.commit(submitted).await.unwrap(),
+    CommitOutcome::Unknown {
+      transaction: transaction_id.clone(),
+      operation_digest: operation_digest.clone(),
+    },
+  );
+  assert_eq!(commit_calls.load(Ordering::SeqCst), 1);
+  assert!(matches!(
+    storage
+      .reconcile(&transaction_id, &Digest::from_bytes([4; 32]))
+      .await
+      .unwrap(),
+    ReconcileOutcome::DigestConflict
+  ));
+  let reconciled = storage
+    .reconcile(&transaction_id, &operation_digest)
+    .await
+    .unwrap();
+  if applied {
+    assert_eq!(
+      reconciled,
+      ReconcileOutcome::Committed(CommitReceipt::new(
+        transaction_id,
+        operation_digest,
+        reference_revision(2),
+      )),
+    );
+  } else {
+    assert!(matches!(reconciled, ReconcileOutcome::Aborted));
+  }
+  assert_eq!(commit_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
