@@ -13,7 +13,10 @@ use crate::{
   StoreCapabilities, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements,
   StoreRevision, StoreTransaction, StoreValue, TransactionId,
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
-  storage::MetadataStore,
+  storage::{
+    MetadataStore,
+    receipt::{PreparedTransaction, prepare_internal_transaction},
+  },
 };
 
 #[derive(Clone, Debug)]
@@ -498,7 +501,12 @@ async fn scripted(
   let factory: Arc<dyn StorageFactory> = Arc::new(ScriptFactory {
     state: Arc::clone(&state),
   });
-  (MetadataStore::open(&factory).await.unwrap(), state)
+  (
+    MetadataStore::open(&factory, std::time::Duration::from_secs(30))
+      .await
+      .unwrap(),
+    state,
+  )
 }
 
 fn complete_capabilities() -> StoreCapabilities {
@@ -509,11 +517,11 @@ fn complete_capabilities() -> StoreCapabilities {
     .exclusive_lifetime_lock(true)
 }
 
-fn transaction(index: u8) -> StoreTransaction {
+fn transaction(index: u8) -> PreparedTransaction {
   let namespace =
     StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/engine-test").unwrap())
       .unwrap();
-  StoreTransaction::new(
+  prepare_internal_transaction(
     transaction_id(index),
     revision(1),
     vec![StoreOperation::Put {

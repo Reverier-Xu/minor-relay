@@ -54,6 +54,10 @@ impl NodeConfig {
     Ok(self)
   }
 
+  pub(crate) const fn receipt_retention(&self) -> Duration {
+    self.receipt_retention
+  }
+
   pub fn require_feature(mut self, value: FeatureTag) -> Result<Self> {
     if !self.required_features.insert(value) {
       return Err(Error::conflict("required feature"));

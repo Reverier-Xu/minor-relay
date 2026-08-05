@@ -39,7 +39,7 @@ impl NodeBuilder {
       storage_factory: self.storage,
       metadata: None,
       _keys: self.keys,
-      _config: self.config,
+      config: self.config,
       entropy: self.entropy,
       _runtime_seed: None,
     })
