@@ -85,7 +85,7 @@ fn event_channel<E: Event>(options: EventOptions) -> (broadcast::Sender<E>, Even
 #[cfg(test)]
 mod tests {
   use super::event_channel;
-  use crate::{Event, EventOptions, EventReceive, operation::private};
+  use crate::{ErrorKind, Event, EventOptions, EventReceive, operation::private};
 
   #[derive(Clone, Debug, Eq, PartialEq)]
   struct TestEvent(u8);
@@ -97,8 +97,21 @@ mod tests {
   fn g1_lifecycle_event_capacity_accepts_values_above_old_maximum() {
     EventOptions::new().capacity(1_025).unwrap();
     EventOptions::new().capacity(4_097).unwrap();
-    assert!(EventOptions::new().capacity(0).is_err());
-    assert!(EventOptions::new().capacity(usize::MAX).is_err());
+    assert_eq!(
+      EventOptions::new().capacity(0).unwrap_err().kind(),
+      ErrorKind::InvalidInput,
+    );
+    assert_eq!(
+      EventOptions::new().capacity(usize::MAX).unwrap_err().kind(),
+      ErrorKind::InvalidInput,
+    );
+    assert_eq!(
+      EventOptions::new()
+        .capacity(isize::MAX as usize)
+        .unwrap_err()
+        .kind(),
+      ErrorKind::ResourceExhausted,
+    );
   }
 
   #[tokio::test]

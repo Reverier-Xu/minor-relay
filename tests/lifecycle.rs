@@ -201,6 +201,7 @@ async fn g1_lifecycle_start_and_shutdown_do_not_invoke_providers() {
 
   let outcome = handle.command(Shutdown::new()).await.unwrap();
   assert_eq!(outcome.reason(), &ShutdownReason::Explicit);
+  assert_eq!(entropy.calls(), 1);
   assert_eq!(counters.calls(), 0);
 }
 
