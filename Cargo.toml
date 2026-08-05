@@ -15,6 +15,9 @@ minicbor  = { version = "2.3", features = ["derive", "std"] }
 sha2      = "0.11"
 tokio     = { version = "1.53", features = ["rt", "sync", "time"] }
 
+[build-dependencies]
+sha2 = "0.11"
+
 [dev-dependencies]
 minor-relay-test-support = { path = "test-support" }
 proptest = "1.11"

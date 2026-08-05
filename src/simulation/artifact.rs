@@ -2,7 +2,6 @@ use std::{
   fs::{self, File, OpenOptions},
   io::{self, Write},
   path::{Path, PathBuf},
-  process::Command as ProcessCommand,
   sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -46,9 +45,10 @@ impl MatrixFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FailureCaptureError {
-  GitUnavailable,
+  DirtyBuildProvenance,
+  InvalidBuildProvenance,
   InvalidCommit,
-  LockfileUnavailable,
+  InvalidLockfile,
   InvalidMetadata,
   InvalidSource,
   Artifact,
@@ -64,26 +64,45 @@ struct TrustedProvenance {
 }
 
 fn trusted_provenance() -> Result<TrustedProvenance, FailureCaptureError> {
-  let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-  let output = ProcessCommand::new("git")
-    .args(["rev-parse", "HEAD"])
-    .current_dir(root)
-    .output()
-    .map_err(|_| FailureCaptureError::GitUnavailable)?;
-  if !output.status.success() {
-    return Err(FailureCaptureError::GitUnavailable);
+  parse_embedded_provenance(
+    env!("MINOR_RELAY_BUILD_COMMIT"),
+    env!("MINOR_RELAY_BUILD_LOCKFILE"),
+    env!("MINOR_RELAY_BUILD_DIRTY"),
+  )
+}
+
+fn parse_embedded_provenance(
+  commit: &str, lockfile: &str, dirty: &str,
+) -> Result<TrustedProvenance, FailureCaptureError> {
+  match dirty {
+    "true" => return Err(FailureCaptureError::DirtyBuildProvenance),
+    "false" => {}
+    _ => return Err(FailureCaptureError::InvalidBuildProvenance),
   }
-  let commit_text = std::str::from_utf8(&output.stdout)
-    .map_err(|_| FailureCaptureError::InvalidCommit)?
-    .trim_end_matches(['\r', '\n']);
-  let commit =
-    CommitDigest::parse_hex(commit_text).map_err(|_| FailureCaptureError::InvalidCommit)?;
-  let lockfile =
-    fs::read(root.join("Cargo.lock")).map_err(|_| FailureCaptureError::LockfileUnavailable)?;
-  Ok(TrustedProvenance {
-    commit,
-    lockfile: LockfileDigest::sha256(&lockfile),
-  })
+  let commit = CommitDigest::parse_hex(commit).map_err(|_| FailureCaptureError::InvalidCommit)?;
+  let lockfile = parse_lockfile_digest(lockfile)?;
+  Ok(TrustedProvenance { commit, lockfile })
+}
+
+fn parse_lockfile_digest(value: &str) -> Result<LockfileDigest, FailureCaptureError> {
+  if value.len() != 64 {
+    return Err(FailureCaptureError::InvalidLockfile);
+  }
+  let mut bytes = [0_u8; 32];
+  for (destination, pair) in bytes.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+    let high = lower_hex_nibble(pair[0]).ok_or(FailureCaptureError::InvalidLockfile)?;
+    let low = lower_hex_nibble(pair[1]).ok_or(FailureCaptureError::InvalidLockfile)?;
+    *destination = (high << 4) | low;
+  }
+  Ok(LockfileDigest::from_bytes(bytes))
+}
+
+const fn lower_hex_nibble(byte: u8) -> Option<u8> {
+  match byte {
+    b'0'..=b'9' => Some(byte - b'0'),
+    b'a'..=b'f' => Some(byte - b'a' + 10),
+    _ => None,
+  }
 }
 
 fn synthetic_fixture_provenance() -> Result<TrustedProvenance, FailureCaptureError> {
@@ -167,15 +186,19 @@ fn write_failure_artifact(
     "simulation-network-fault-matrix-{}-seed-{seed}.json",
     failure.diagnostic()
   ));
-  publish_new_file(&path, |file| {
-    file.write_all(artifact.as_bytes())?;
-    file.sync_all()
-  })?;
+  publish_new_file(&path, |file| file.write_all(artifact.as_bytes()))?;
   Ok(path)
 }
 
 fn publish_new_file(
   final_path: &Path, write_complete: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<(), FailureCaptureError> {
+  publish_new_file_with_sync(final_path, write_complete, sync_directory)
+}
+
+fn publish_new_file_with_sync(
+  final_path: &Path, write_complete: impl FnOnce(&mut File) -> io::Result<()>,
+  mut sync_directory: impl FnMut(&Path) -> io::Result<()>,
 ) -> Result<(), FailureCaptureError> {
   let directory = final_path.parent().ok_or(FailureCaptureError::Directory)?;
   let file_name = final_path
@@ -183,11 +206,45 @@ fn publish_new_file(
     .and_then(|value| value.to_str())
     .ok_or(FailureCaptureError::Write)?;
   let (temp_path, mut file) = create_temp_file(directory, file_name)?;
-  let write_result = write_complete(&mut file);
+  let write_result = write_complete(&mut file).and_then(|()| file.sync_all());
   drop(file);
-  let result = write_result.and_then(|()| fs::hard_link(&temp_path, final_path));
-  let _ = fs::remove_file(&temp_path);
-  result.map_err(|_| FailureCaptureError::Write)
+  if write_result.is_err() {
+    let _ = fs::remove_file(&temp_path);
+    return Err(FailureCaptureError::Write);
+  }
+  if fs::hard_link(&temp_path, final_path).is_err() {
+    let _ = fs::remove_file(&temp_path);
+    return Err(FailureCaptureError::Write);
+  }
+  if sync_directory(directory).is_err() {
+    return Err(FailureCaptureError::Write);
+  }
+  if fs::remove_file(&temp_path).is_err() {
+    return Err(FailureCaptureError::Write);
+  }
+  sync_directory(directory).map_err(|_| FailureCaptureError::Write)
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> io::Result<()> {
+  File::open(directory)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_directory(directory: &Path) -> io::Result<()> {
+  use std::os::windows::fs::OpenOptionsExt;
+
+  const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+  OpenOptions::new()
+    .read(true)
+    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+    .open(directory)?
+    .sync_all()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_directory(directory: &Path) -> io::Result<()> {
+  File::open(directory)?.sync_all()
 }
 
 fn create_temp_file(
@@ -223,17 +280,20 @@ pub(crate) fn capture_network_fault_matrix_fixture(
 #[cfg(test)]
 mod tests {
   use std::{
+    cell::Cell,
     fs,
     io::{self, Write},
     path::Path,
+    process::Command as ProcessCommand,
   };
 
-  use minor_relay_test_support::MAX_ARTIFACT_BYTES;
+  use minor_relay_test_support::{LockfileDigest, MAX_ARTIFACT_BYTES};
 
   use super::{
     FailureCaptureError, MatrixFailure, build_matrix_artifact,
-    capture_network_fault_matrix_fixture, publish_new_file, retain_matrix_failure_at,
-    synthetic_fixture_provenance, trusted_provenance, write_failure_artifact,
+    capture_network_fault_matrix_fixture, parse_embedded_provenance, publish_new_file,
+    publish_new_file_with_sync, retain_matrix_failure_at, synthetic_fixture_provenance,
+    trusted_provenance, write_failure_artifact,
   };
 
   #[test]
@@ -300,8 +360,71 @@ mod tests {
   }
 
   #[test]
-  fn simulation_failure_artifact_security_real_provenance_is_validated() {
-    assert!(trusted_provenance().is_ok());
+  fn simulation_failure_artifact_security_embedded_provenance_matches_clean_checkout() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let status = ProcessCommand::new("git")
+      .args([
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+        "--",
+        ".",
+        ":(exclude)target",
+        ":(exclude)target/**",
+        ":(exclude).pi-subagents",
+        ":(exclude).pi-subagents/**",
+      ])
+      .current_dir(root)
+      .output()
+      .unwrap();
+    assert!(status.status.success());
+    assert!(
+      status.stdout.is_empty(),
+      "provenance test requires a clean checkout"
+    );
+
+    let commit = ProcessCommand::new("git")
+      .args(["rev-parse", "HEAD"])
+      .current_dir(root)
+      .output()
+      .unwrap();
+    assert!(commit.status.success());
+    let expected_commit = std::str::from_utf8(&commit.stdout)
+      .unwrap()
+      .trim_end_matches(['\r', '\n']);
+    let expected_lockfile = LockfileDigest::sha256(&fs::read(root.join("Cargo.lock")).unwrap());
+    let provenance = trusted_provenance().unwrap();
+
+    assert_eq!(provenance.commit.as_hex(), expected_commit);
+    assert_eq!(provenance.lockfile, expected_lockfile);
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_rejects_untrusted_embedded_provenance() {
+    let commit = "1111111111111111111111111111111111111111";
+    let lockfile = "2222222222222222222222222222222222222222222222222222222222222222";
+    assert_eq!(
+      parse_embedded_provenance(commit, lockfile, "true").map(|_| ()),
+      Err(FailureCaptureError::DirtyBuildProvenance),
+    );
+    assert_eq!(
+      parse_embedded_provenance(commit, lockfile, "unknown").map(|_| ()),
+      Err(FailureCaptureError::InvalidBuildProvenance),
+    );
+    assert_eq!(
+      parse_embedded_provenance("/private/source", lockfile, "false").map(|_| ()),
+      Err(FailureCaptureError::InvalidCommit),
+    );
+    assert_eq!(
+      parse_embedded_provenance(commit, "/private/source", "false").map(|_| ()),
+      Err(FailureCaptureError::InvalidLockfile),
+    );
+    let error = match parse_embedded_provenance(commit, "/private/source", "false") {
+      Ok(_) => panic!("invalid lockfile provenance was accepted"),
+      Err(error) => error,
+    };
+    assert_eq!(format!("{error:?}"), "InvalidLockfile");
   }
 
   #[test]
@@ -351,6 +474,107 @@ mod tests {
     assert!(!final_path.exists());
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     fs::remove_dir_all(&root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_first_directory_barrier_failure_is_conservative() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-first-barrier-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let final_path = root.join("artifact.json");
+    let barriers = Cell::new(0);
+
+    let result = publish_new_file_with_sync(
+      &final_path,
+      |file| file.write_all(b"complete"),
+      |directory| {
+        assert_eq!(directory, root);
+        barriers.set(barriers.get() + 1);
+        Err(io::Error::other("injected first barrier failure"))
+      },
+    );
+
+    assert_eq!(result, Err(FailureCaptureError::Write));
+    assert_eq!(barriers.get(), 1);
+    assert_eq!(fs::read(&final_path).unwrap(), b"complete");
+    let entries = fs::read_dir(&root)
+      .unwrap()
+      .collect::<Result<Vec<_>, _>>()
+      .unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+      assert_eq!(fs::read(entry.path()).unwrap(), b"complete");
+    }
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_second_directory_barrier_failure_is_conservative() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-second-barrier-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let final_path = root.join("artifact.json");
+    let barriers = Cell::new(0);
+
+    let result = publish_new_file_with_sync(
+      &final_path,
+      |file| file.write_all(b"complete"),
+      |directory| {
+        assert_eq!(directory, root);
+        barriers.set(barriers.get() + 1);
+        if barriers.get() == 2 {
+          Err(io::Error::other("injected second barrier failure"))
+        } else {
+          Ok(())
+        }
+      },
+    );
+
+    assert_eq!(result, Err(FailureCaptureError::Write));
+    assert_eq!(barriers.get(), 2);
+    assert_eq!(fs::read(&final_path).unwrap(), b"complete");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_publication_never_overwrites() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-no-overwrite-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let final_path = root.join("artifact.json");
+    fs::write(&final_path, b"existing").unwrap();
+    let barriers = Cell::new(0);
+
+    let result = publish_new_file_with_sync(
+      &final_path,
+      |file| file.write_all(b"replacement"),
+      |_| {
+        barriers.set(barriers.get() + 1);
+        Ok(())
+      },
+    );
+
+    assert_eq!(result, Err(FailureCaptureError::Write));
+    assert_eq!(barriers.get(), 0);
+    assert_eq!(fs::read(&final_path).unwrap(), b"existing");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
   }
 
   #[test]
