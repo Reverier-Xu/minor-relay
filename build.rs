@@ -54,11 +54,12 @@ fn capture_provenance() -> Result<(), BuildError> {
       "--untracked-files=all",
       "--ignore-submodules=none",
       "--",
-      ".",
-      ":(exclude)target",
-      ":(exclude)target/**",
-      ":(exclude).pi-subagents",
-      ":(exclude).pi-subagents/**",
+      "Cargo.toml",
+      "Cargo.lock",
+      "build.rs",
+      "src",
+      "tests",
+      "test-support",
     ],
   )?;
   if !status.status.success() {
