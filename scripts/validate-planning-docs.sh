@@ -54,16 +54,16 @@ verify_frozen_document() {
 verify_frozen_document docs/adr/0005-sixteen-node-slo-profile.md 26f5d67c84ad4331e5d2c33d699f4f107849933f15951cc5b6f76d6676447431
 verify_frozen_document docs/adr/0007-core-responsibility-and-metadata.md cdc4851aef0ca0109077ab20ecd7298e7f2310b34eec1150003950554e689eab
 verify_frozen_document docs/roadmap.md 12e95f6275643b46380845df556223838f7325552e8e3a2bc0ca4d065731e7fd
-verify_frozen_document docs/development-gates.md 1398e24224b0a1dc2a2bbeb1041b6090addd6ca004490687c7fe0dae2073ae5e
-verify_frozen_document docs/implementation-plan.md c716bafbcb8ab34dddf9d26b918cdeb37bbc1376d9e427031e981ae909f788f0
+verify_frozen_document docs/development-gates.md 9ca75674c8b56b44fe523b52f1c898cf27aefdeed74290c428071f6ab14ab7fe
+verify_frozen_document docs/implementation-plan.md 9fedcff07b31e1347ecd539efce9bc9fc5b48a7db2e33228b38a87499fd9aa23
 verify_frozen_document docs/api-manifest.md f05e65cd78ba238f0a92fe4f8bd2e4ce01c8de1026e71cfdc59ca739849e9caf
 verify_frozen_document docs/api-inventory.toml 9b5f6174725554fc4f174bf3c1be920b596f3217c45fb2e8cb8b5d3a65facf59
 verify_frozen_document docs/decision-register.toml 196721e8aa89decd64abdf734b953c072e9cf4d1439ce39eeee20bd2866c65b5
-verify_frozen_document docs/scenario-catalog.toml 1216beeaa2c5db5acaac9b87d7988d37cefaeb6a8d7aad1bc36447f7414a66f0
+verify_frozen_document docs/scenario-catalog.toml b8ec2f028969a7013626880494416e679807b6d40dd5bb22bc3efdef2bf79d48
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml 747f06c8532af1f4c000635720180890cf2a00edef1206db2af64eb7b5742c9b
-verify_frozen_document docs/evidence-impact.toml cb897e52a58091b691b2f4201ec3dadd2401abdd0f8dad5addadb60735588f35
+verify_frozen_document docs/task-verification.toml 8a16a4e221f65f71296c6d7d967be553f234ee0ca4f92b787abbf51e0a0c3a6f
+verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
 
 for file in "${TOML_FILES[@]}"; do
   name=$(basename "$file" .toml)
@@ -190,10 +190,23 @@ jq -e '
     )
 ' "$TMP/task-verification.json" >/dev/null || fail "task readiness or argv state invalid"
 
-jq -e '
-  all(.task[] | select(.id | startswith("T-G01-")); .state == "planned")
-  and all(.verification[] | select(.owner_task | startswith("T-G01-")); .state == "planned" and (.argv | length) == 0)
-' "$TMP/task-verification.json" >/dev/null || fail "reopened G1 accepted stale verification argv"
+check_g1_verification_map() {
+  local file=$1
+  jq -e '
+    [
+      {task: "T-G01-01", verification: "VERIFY-G01-01", argv: ["scripts/verify-g1-core.sh"]},
+      {task: "T-G01-02", verification: "VERIFY-G01-02", argv: ["scripts/verify-g1-lifecycle.sh"]},
+      {task: "T-G01-03", verification: "VERIFY-G01-03", argv: ["scripts/verify-g1-simulator.sh"]},
+      {task: "T-G01-04", verification: "VERIFY-G01-04", argv: ["scripts/verify-g1-artifacts.sh"]},
+      {task: "T-G01-05", verification: "VERIFY-G01-05", argv: ["scripts/verify-g1-closure.sh"]}
+    ] as $expected
+    | [.task[] | select(.id | startswith("T-G01-"))]
+      == [$expected[] | {id: .task, verification_id: .verification, state: "ready", include_quality: true}]
+    and [.verification[] | select(.owner_task | startswith("T-G01-"))]
+      == [$expected[] | {id: .verification, owner_task: .task, state: "ready", argv, timeout_seconds: 1800}]
+  ' "$file" >/dev/null
+}
+check_g1_verification_map "$TMP/task-verification.json" || fail "G1 verification map differs from the reviewed executable baseline"
 
 check_argv_policy() {
   local file=$1
@@ -578,6 +591,11 @@ if [[ ${1:-} == "--self-test" ]]; then
   printf '\n```rust\npub fn leak() -> redb::Database;\n```\n' >> "$TMP/negative-api-document.md"
   if check_forbidden_api_tokens "$TMP/negative-api-document.md" "$TMP/api-inventory.json"; then
     fail "forbidden public API token was accepted"
+  fi
+
+  jq '(.verification[] | select(.id == "VERIFY-G01-03")).argv = ["scripts/verify-g1-core.sh"]' "$TMP/task-verification.json" > "$TMP/negative-g1-verification-map.json"
+  if check_g1_verification_map "$TMP/negative-g1-verification-map.json"; then
+    fail "substituted G1 verification argv was accepted"
   fi
 
   jq '(.verification[] | select(.state == "ready")).argv = ["env", "bash", "-c", "touch /tmp/planning-pwn"]' "$TMP/task-verification.json" > "$TMP/negative-hostile-argv.json"

@@ -86,11 +86,12 @@ A gate is `NOT_STARTED`, `ACTIVE`, `BLOCKED`, or `PASS`.
 ### G1: Establish Deterministic Foundations
 
 - **Build:** Canonical IDs/tags including text-roundtripping `TransactionId`, checked caller-selected
-  finite limits, errors, Tokio lifecycle, sealed bus, seeded entropy, wall-clock test seam, simulator,
-  and secret-safe replay artifacts.
+  finite limits, errors, Tokio lifecycle, sealed bus, injected entropy, no production wall-clock read
+  before an owned deadline exists, simulator time separation, and secret-safe replay artifacts.
 - **Depends on:** G0.
-- **Verify:** `Q`; namespace/text/encoding properties; lifecycle; deterministic link and wall-clock
-  discontinuity replay; artifact redaction and closed argv.
+- **Verify:** `Q`; namespace/text/encoding properties; lifecycle and injected entropy; no ambient G1
+  wall-clock read; deterministic scheduler/wall-time rollback, freeze, and jump replay; checked time
+  arithmetic; artifact redaction and closed argv.
 - **Pass:** The minimal facade and deterministic harness contain only approved responsibilities.
 
 ### G2: Establish Internal Metadata Persistence

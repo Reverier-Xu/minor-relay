@@ -41,7 +41,7 @@ require a plan amendment.
 | Task | Risk | Depends | Deliverable / exact API impact | Owned paths | Evidence | RB |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-G01-01 Core values/envelopes | P0/M | 00-06 | Canonical IDs/tags/errors/finite limits, `TransactionId` text roundtrip, prelude and CBOR; no population ceiling | core values/protocol | SC-G01-P0-01, SC-G01-P1-01..02; canonical/bound properties | R1 |
-| T-G01-02 Tokio lifecycle/typed bus | P0/L | 01-01 | Sealed command/query/event facade, supervisor, host-wall-clock test seam, entropy, start/shutdown | runtime/facade | SC-G01-P0-02, SC-G01-P1-03; lifecycle/time contract | R1 |
+| T-G01-02 Tokio lifecycle/typed bus | P0/L | 01-01 | Sealed command/query/event facade, supervisor, injected entropy, no wall-clock read before an owned deadline exists, start/shutdown | runtime/facade | SC-G01-P0-02, SC-G01-P1-03; lifecycle/time boundary | R1 |
 | T-G01-03 Deterministic network/time simulator | P0/L | 01-01,02 | Directed links, finite work, loss/reorder/partition/restart/readdress and wall-clock rollback/freeze/jump | simulation | SC-G01-P0-03, SC-G01-P1-04; deterministic replay | R0 |
 | T-G01-04 Failure artifact/replay | P0/M | 01-03 | Bounded allowlisted artifacts and closed argv excluding secrets, packet bytes, paths, and addresses | test-support/simulation fixtures | SC-G01-P0-04..05; redaction/provenance/replay tests | R0 |
 | T-G01-05 G1 facade/MSRV/lint closure | P0/M | 01-01..04 | Prove revised minimal facade, MSRV/stable/locked dependency and panic-free production gates | facade/quality scripts | SC-G01-P0-06..07; public facade and quality closure | R0 |

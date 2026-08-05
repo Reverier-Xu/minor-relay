@@ -4,6 +4,7 @@ relevant_roots = [
   "AGENTS.md",
   "Cargo.toml",
   "Cargo.lock",
+  "build.rs",
   "deny.toml",
   "rustfmt.toml",
   "taplo.toml",
@@ -41,6 +42,14 @@ verification_ids = [
   "VERIFY-G10-07",
 ]
 threat_ids = ["THR-025", "THR-027", "THR-029"]
+
+[[path_rule]]
+id = "IMPACT-BUILD-PROVENANCE"
+globs = ["build.rs"]
+precedence = 400
+owner_task = "T-G01-04"
+verification_ids = ["VERIFY-G01-04", "VERIFY-G01-05"]
+threat_ids = ["THR-024", "THR-025", "THR-029"]
 
 [[path_rule]]
 id = "IMPACT-WORKFLOWS"
