@@ -1,6 +1,6 @@
 #!/usr/bin/bash -p
 set -euo pipefail
-unset BASH_ENV ENV CDPATH GLOBIGNORE
+unset BASH_ENV ENV CDPATH GLOBIGNORE MINOR_RELAY_SIM_SEED
 export PATH="/usr/bin:/bin:${HOME}/.cargo/bin"
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,5 +35,13 @@ run_rust_lane() {
 
 run_rust_lane 1.97.1
 run_rust_lane stable
+cargo test --locked --test foundation_public
+cargo test \
+  --locked \
+  --lib \
+  'simulation::network::tests::simulation_network_fault_matrix_gate' \
+  -- \
+  --ignored \
+  --exact
 scripts/check-dependency-graph.sh
 cargo deny --locked --workspace check
