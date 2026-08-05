@@ -5,12 +5,12 @@ use crate::{
   simulation::topology::{AddressId, LinkKey, NodeKey, PartitionId, SimResult, SimulationError},
 };
 
-const EVENT_STREAM_DOMAIN: &[u8] = b"relay.woooo.tech/simulation/event-stream/v1";
+const EVENT_STREAM_DOMAIN: &[u8] = b"relay.woooo.tech/simulation/event-stream/v2";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct MessageId(u64);
+pub(crate) struct FrameId(u64);
 
-impl MessageId {
+impl FrameId {
   pub(crate) const fn new(value: u64) -> Self {
     Self(value)
   }
@@ -34,7 +34,7 @@ pub(crate) struct EventKey {
   phase: EventPhase,
   reorder_rank: u64,
   ordinal: u64,
-  message: MessageId,
+  frame: FrameId,
   copy: u8,
   enqueue_id: u64,
 }
@@ -42,7 +42,7 @@ pub(crate) struct EventKey {
 impl EventKey {
   #[allow(clippy::too_many_arguments)]
   pub(crate) const fn new(
-    deadline_nanos: u64, phase: EventPhase, reorder_rank: u64, ordinal: u64, message: MessageId,
+    deadline_nanos: u64, phase: EventPhase, reorder_rank: u64, ordinal: u64, frame: FrameId,
     copy: u8, enqueue_id: u64,
   ) -> Self {
     Self {
@@ -50,7 +50,7 @@ impl EventKey {
       phase,
       reorder_rank,
       ordinal,
-      message,
+      frame,
       copy,
       enqueue_id,
     }
@@ -71,39 +71,38 @@ pub(crate) enum DropReason {
   StaleLink,
   StaleBoot,
   StaleAddress,
-  Offline,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EventRecord {
   SendAccepted {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
     link: LinkKey,
     copies: u8,
     bytes: u32,
   },
   Lost {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
   },
   DuplicateCreated {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
   },
   Reordered {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
     copy: u8,
   },
   Delivered {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
     copy: u8,
   },
   Dropped {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
     copy: u8,
     reason: DropReason,
   },
@@ -130,14 +129,15 @@ pub(crate) enum EventRecord {
     address: AddressId,
     generation: u32,
   },
-  ClockSkewChanged {
+  WallClockChanged {
     at_nanos: u64,
     node: NodeKey,
-    skew_nanos: i64,
+    previous: u64,
+    current: u64,
   },
   QueueRejected {
     at_nanos: u64,
-    message: MessageId,
+    frame: FrameId,
     copies: u8,
     bytes: u32,
   },
@@ -156,7 +156,7 @@ impl EventRecord {
       | Self::Healed { at_nanos, .. }
       | Self::Restarted { at_nanos, .. }
       | Self::AddressChanged { at_nanos, .. }
-      | Self::ClockSkewChanged { at_nanos, .. }
+      | Self::WallClockChanged { at_nanos, .. }
       | Self::QueueRejected { at_nanos, .. } => at_nanos,
     }
   }
@@ -173,9 +173,13 @@ impl EventLog {
     if max_records == 0 {
       return Err(SimulationError::InvalidLimit);
     }
+    let mut records = Vec::new();
+    records
+      .try_reserve_exact(max_records)
+      .map_err(|_| SimulationError::Capacity)?;
     Ok(Self {
       max_records,
-      records: Vec::new(),
+      records,
     })
   }
 
@@ -216,51 +220,51 @@ fn encode_record(hasher: &mut Sha256, record: EventRecord) {
   match record {
     EventRecord::SendAccepted {
       at_nanos,
-      message,
+      frame,
       link,
       copies,
       bytes,
     } => {
       encode_header(hasher, 1, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
       encode_link(hasher, link);
       hasher.update([copies]);
       hasher.update(bytes.to_be_bytes());
     }
-    EventRecord::Lost { at_nanos, message } => {
+    EventRecord::Lost { at_nanos, frame } => {
       encode_header(hasher, 2, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
     }
-    EventRecord::DuplicateCreated { at_nanos, message } => {
+    EventRecord::DuplicateCreated { at_nanos, frame } => {
       encode_header(hasher, 3, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
     }
     EventRecord::Reordered {
       at_nanos,
-      message,
+      frame,
       copy,
     } => {
       encode_header(hasher, 4, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
       hasher.update([copy]);
     }
     EventRecord::Delivered {
       at_nanos,
-      message,
+      frame,
       copy,
     } => {
       encode_header(hasher, 5, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
       hasher.update([copy]);
     }
     EventRecord::Dropped {
       at_nanos,
-      message,
+      frame,
       copy,
       reason,
     } => {
       encode_header(hasher, 6, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
       hasher.update([copy, drop_reason_code(reason)]);
     }
     EventRecord::Partitioned {
@@ -305,23 +309,25 @@ fn encode_record(hasher: &mut Sha256, record: EventRecord) {
       hasher.update(address.value().to_be_bytes());
       hasher.update(generation.to_be_bytes());
     }
-    EventRecord::ClockSkewChanged {
+    EventRecord::WallClockChanged {
       at_nanos,
       node,
-      skew_nanos,
+      previous,
+      current,
     } => {
       encode_header(hasher, 11, at_nanos);
       hasher.update(node.value().to_be_bytes());
-      hasher.update(skew_nanos.to_be_bytes());
+      hasher.update(previous.to_be_bytes());
+      hasher.update(current.to_be_bytes());
     }
     EventRecord::QueueRejected {
       at_nanos,
-      message,
+      frame,
       copies,
       bytes,
     } => {
       encode_header(hasher, 12, at_nanos);
-      encode_message(hasher, message);
+      encode_frame(hasher, frame);
       hasher.update([copies]);
       hasher.update(bytes.to_be_bytes());
     }
@@ -333,8 +339,8 @@ fn encode_header(hasher: &mut Sha256, variant: u8, at_nanos: u64) {
   hasher.update(at_nanos.to_be_bytes());
 }
 
-fn encode_message(hasher: &mut Sha256, message: MessageId) {
-  hasher.update(message.value().to_be_bytes());
+fn encode_frame(hasher: &mut Sha256, frame: FrameId) {
+  hasher.update(frame.value().to_be_bytes());
 }
 
 fn encode_link(hasher: &mut Sha256, link: LinkKey) {
@@ -348,25 +354,24 @@ const fn drop_reason_code(reason: DropReason) -> u8 {
     DropReason::StaleLink => 2,
     DropReason::StaleBoot => 3,
     DropReason::StaleAddress => 4,
-    DropReason::Offline => 5,
   }
 }
 
 #[cfg(test)]
 mod tests {
   use crate::simulation::{
-    event::{DropReason, EventKey, EventLog, EventPhase, EventRecord, MessageId},
+    event::{DropReason, EventKey, EventLog, EventPhase, EventRecord, FrameId},
     topology::{AddressId, LinkKey, NodeKey},
   };
 
   #[test]
   fn simulation_event_order_is_total_at_equal_deadline() {
     let mut keys = [
-      EventKey::new(10, EventPhase::Delivery, 0, 4, MessageId::new(2), 1, 7),
-      EventKey::new(10, EventPhase::Topology, 0, 3, MessageId::new(0), 0, 6),
-      EventKey::new(10, EventPhase::Send, 0, 2, MessageId::new(1), 0, 5),
-      EventKey::new(10, EventPhase::Node, 0, 1, MessageId::new(0), 0, 4),
-      EventKey::new(10, EventPhase::Delivery, 1, 4, MessageId::new(2), 0, 8),
+      EventKey::new(10, EventPhase::Delivery, 0, 4, FrameId::new(2), 1, 7),
+      EventKey::new(10, EventPhase::Topology, 0, 3, FrameId::new(0), 0, 6),
+      EventKey::new(10, EventPhase::Send, 0, 2, FrameId::new(1), 0, 5),
+      EventKey::new(10, EventPhase::Node, 0, 1, FrameId::new(0), 0, 4),
+      EventKey::new(10, EventPhase::Delivery, 1, 4, FrameId::new(2), 0, 8),
     ];
     keys.sort();
 
@@ -390,14 +395,14 @@ mod tests {
     let records = [
       EventRecord::SendAccepted {
         at_nanos: 5,
-        message: MessageId::new(9),
+        frame: FrameId::new(9),
         link,
         copies: 2,
         bytes: 16,
       },
       EventRecord::Dropped {
         at_nanos: 7,
-        message: MessageId::new(9),
+        frame: FrameId::new(9),
         copy: 1,
         reason: DropReason::StaleAddress,
       },
@@ -421,9 +426,9 @@ mod tests {
     assert_eq!(
       first.digest().as_bytes(),
       &[
-        0x83, 0xA1, 0x8D, 0xDE, 0x16, 0x09, 0x9E, 0x3B, 0x12, 0xB8, 0xC6, 0x08, 0x9C, 0xBD, 0x1F,
-        0x10, 0x79, 0x25, 0x24, 0x0E, 0x16, 0x24, 0x7C, 0x36, 0x4C, 0xC3, 0x58, 0x19, 0xCC, 0x15,
-        0xCB, 0x19,
+        0x84, 0x8F, 0xBB, 0x10, 0xE4, 0xD7, 0x9F, 0x3E, 0xE1, 0x41, 0x58, 0xA5, 0x66, 0xA0, 0x2B,
+        0x87, 0xE7, 0xC7, 0x25, 0x02, 0xC0, 0x63, 0xE7, 0xEC, 0xB1, 0x98, 0x23, 0x60, 0x32, 0x16,
+        0x43, 0x46,
       ],
     );
     assert_eq!(first.records(), second.records());
@@ -432,7 +437,7 @@ mod tests {
     changed
       .push(EventRecord::SendAccepted {
         at_nanos: 5,
-        message: MessageId::new(9),
+        frame: FrameId::new(9),
         link,
         copies: 1,
         bytes: 16,
@@ -442,23 +447,41 @@ mod tests {
   }
 
   #[test]
+  fn simulation_event_digest_consumes_upper_node_key_bits() {
+    let frame = FrameId::new(5);
+    let low = EventRecord::SendAccepted {
+      at_nanos: 1,
+      frame,
+      link: LinkKey::new(NodeKey::new(1), NodeKey::new(2)),
+      copies: 1,
+      bytes: 8,
+    };
+    let high = EventRecord::SendAccepted {
+      at_nanos: 1,
+      frame,
+      link: LinkKey::new(NodeKey::new((1_u64 << 63) | 1), NodeKey::new(2)),
+      copies: 1,
+      bytes: 8,
+    };
+    let mut low_log = EventLog::new(1).unwrap();
+    let mut high_log = EventLog::new(1).unwrap();
+    low_log.push(low).unwrap();
+    high_log.push(high).unwrap();
+    assert_ne!(low_log.digest(), high_log.digest());
+  }
+
+  #[test]
   fn simulation_event_encoder_covers_closed_record_set() {
     let left = NodeKey::new(1);
     let right = NodeKey::new(2);
     let link = LinkKey::new(left, right);
-    let message = MessageId::new(3);
+    let frame = FrameId::new(3);
     let mut records = vec![
-      EventRecord::Lost {
-        at_nanos: 1,
-        message,
-      },
-      EventRecord::DuplicateCreated {
-        at_nanos: 2,
-        message,
-      },
+      EventRecord::Lost { at_nanos: 1, frame },
+      EventRecord::DuplicateCreated { at_nanos: 2, frame },
       EventRecord::Reordered {
         at_nanos: 3,
-        message,
+        frame,
         copy: 1,
       },
       EventRecord::Partitioned {
@@ -478,14 +501,15 @@ mod tests {
         node: right,
         boot_epoch: 1,
       },
-      EventRecord::ClockSkewChanged {
+      EventRecord::WallClockChanged {
         at_nanos: 7,
         node: right,
-        skew_nanos: -9,
+        previous: 12,
+        current: 3,
       },
       EventRecord::QueueRejected {
         at_nanos: 8,
-        message,
+        frame,
         copies: 2,
         bytes: 64,
       },
@@ -495,14 +519,13 @@ mod tests {
       DropReason::StaleLink,
       DropReason::StaleBoot,
       DropReason::StaleAddress,
-      DropReason::Offline,
     ]
     .into_iter()
     .enumerate()
     {
       records.push(EventRecord::Dropped {
         at_nanos: 9 + offset as u64,
-        message,
+        frame,
         copy: 0,
         reason,
       });
@@ -519,11 +542,12 @@ mod tests {
   #[test]
   fn simulation_event_log_rejects_capacity_before_mutation() {
     assert!(EventLog::new(0).is_err());
+    assert!(EventLog::new(usize::MAX).is_err());
     let mut log = EventLog::new(1).unwrap();
     log
       .push(EventRecord::Delivered {
         at_nanos: 1,
-        message: MessageId::new(1),
+        frame: FrameId::new(1),
         copy: 0,
       })
       .unwrap();
@@ -533,7 +557,7 @@ mod tests {
       log
         .push(EventRecord::Delivered {
           at_nanos: 2,
-          message: MessageId::new(2),
+          frame: FrameId::new(2),
           copy: 0,
         })
         .is_err()

@@ -3,18 +3,17 @@ use std::{
   time::Duration,
 };
 
-const MAX_NODES: usize = 1_024;
 const PROBABILITY_SCALE: u32 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct NodeKey(u16);
+pub(crate) struct NodeKey(u64);
 
 impl NodeKey {
-  pub(crate) const fn new(value: u16) -> Self {
+  pub(crate) const fn new(value: u64) -> Self {
     Self(value)
   }
 
-  pub(crate) const fn value(self) -> u16 {
+  pub(crate) const fn value(self) -> u64 {
     self.0
   }
 }
@@ -69,43 +68,42 @@ impl LinkKey {
 pub(crate) struct SimulationLimits {
   max_nodes: usize,
   max_links: usize,
-  max_pending_events: usize,
+  max_pending_frames: usize,
   max_pending_bytes: usize,
   max_recorded_events: usize,
-  max_message_bytes: usize,
+  max_frame_bytes: usize,
 }
 
 impl SimulationLimits {
   pub(crate) fn new(
-    max_nodes: usize, max_pending_events: usize, max_pending_bytes: usize,
-    max_recorded_events: usize, max_message_bytes: usize,
+    max_nodes: usize, max_links: usize, max_pending_frames: usize, max_pending_bytes: usize,
+    max_recorded_events: usize, max_frame_bytes: usize,
   ) -> SimResult<Self> {
     let max_recordable_bytes = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
-    if !(1..=MAX_NODES).contains(&max_nodes)
-      || max_pending_events == 0
+    if max_nodes == 0
+      || u64::try_from(max_nodes).is_err()
+      || max_links == 0
+      || max_pending_frames == 0
       || max_pending_bytes == 0
-      || max_pending_bytes > max_recordable_bytes
       || max_recorded_events == 0
-      || max_message_bytes == 0
-      || max_message_bytes > max_pending_bytes
+      || max_frame_bytes == 0
+      || max_frame_bytes > max_recordable_bytes
+      || max_frame_bytes > max_pending_bytes
     {
       return Err(SimulationError::InvalidLimit);
     }
-    let max_links = max_nodes
-      .checked_mul(max_nodes.saturating_sub(1))
-      .ok_or(SimulationError::Overflow)?;
     Ok(Self {
       max_nodes,
       max_links,
-      max_pending_events,
+      max_pending_frames,
       max_pending_bytes,
       max_recorded_events,
-      max_message_bytes,
+      max_frame_bytes,
     })
   }
 
-  pub(crate) const fn max_pending_events(self) -> usize {
-    self.max_pending_events
+  pub(crate) const fn max_pending_frames(self) -> usize {
+    self.max_pending_frames
   }
 
   pub(crate) const fn max_pending_bytes(self) -> usize {
@@ -116,8 +114,8 @@ impl SimulationLimits {
     self.max_recorded_events
   }
 
-  pub(crate) const fn max_message_bytes(self) -> usize {
-    self.max_message_bytes
+  pub(crate) const fn max_frame_bytes(self) -> usize {
+    self.max_frame_bytes
   }
 }
 
@@ -213,8 +211,7 @@ pub(crate) struct NodeState {
   address: AddressId,
   boot_epoch: u32,
   address_generation: u32,
-  clock_skew_nanos: i64,
-  running: bool,
+  wall_time_nanos: u64,
 }
 
 impl NodeState {
@@ -223,8 +220,7 @@ impl NodeState {
       address,
       boot_epoch: 0,
       address_generation: 0,
-      clock_skew_nanos: 0,
-      running: true,
+      wall_time_nanos: 0,
     }
   }
 
@@ -237,10 +233,6 @@ impl NodeState {
     }
   }
 
-  pub(crate) const fn running(self) -> bool {
-    self.running
-  }
-
   pub(crate) const fn boot_epoch(self) -> u32 {
     self.boot_epoch
   }
@@ -251,6 +243,10 @@ impl NodeState {
 
   pub(crate) const fn address_generation(self) -> u32 {
     self.address_generation
+  }
+
+  pub(crate) const fn wall_time_nanos(self) -> u64 {
+    self.wall_time_nanos
   }
 }
 
@@ -368,7 +364,6 @@ impl Topology {
       .checked_add(1)
       .ok_or(SimulationError::Overflow)?;
     node.boot_epoch = boot_epoch;
-    node.running = true;
     Ok(boot_epoch)
   }
 
@@ -386,26 +381,14 @@ impl Topology {
     Ok(generation)
   }
 
-  pub(crate) fn set_clock_skew(&mut self, key: NodeKey, skew_nanos: i64) -> SimResult<()> {
+  pub(crate) fn set_wall_time(&mut self, key: NodeKey, wall_time_nanos: u64) -> SimResult<u64> {
     let node = self
       .nodes
       .get_mut(&key)
       .ok_or(SimulationError::UnknownNode)?;
-    node.clock_skew_nanos = skew_nanos;
-    Ok(())
-  }
-
-  pub(crate) fn observed_utc(&self, key: NodeKey, base_utc_nanos: u64) -> SimResult<u64> {
-    let node = self.nodes.get(&key).ok_or(SimulationError::UnknownNode)?;
-    if node.clock_skew_nanos >= 0 {
-      base_utc_nanos
-        .checked_add(node.clock_skew_nanos.unsigned_abs())
-        .ok_or(SimulationError::Overflow)
-    } else {
-      base_utc_nanos
-        .checked_sub(node.clock_skew_nanos.unsigned_abs())
-        .ok_or(SimulationError::Overflow)
-    }
+    let previous = node.wall_time_nanos;
+    node.wall_time_nanos = wall_time_nanos;
+    Ok(previous)
   }
 
   pub(crate) fn stamp(&self, key: NodeKey) -> SimResult<EndpointStamp> {
@@ -451,7 +434,7 @@ mod tests {
   use super::{AddressId, LinkKey, LinkPolicy, NodeKey, PartitionId, SimulationLimits, Topology};
 
   fn limits(max_nodes: usize) -> SimulationLimits {
-    SimulationLimits::new(max_nodes, 32, 4_096, 128, 1_024).unwrap()
+    SimulationLimits::new(max_nodes, 2, 32, 4_096, 128, 1_024).unwrap()
   }
 
   fn policy(delay: u64) -> LinkPolicy {
@@ -468,19 +451,26 @@ mod tests {
 
   #[test]
   fn simulation_topology_rejects_invalid_bounds_atomically() {
-    assert!(SimulationLimits::new(0, 1, 1, 1, 1).is_err());
-    assert!(SimulationLimits::new(1_025, 1, 1, 1, 1).is_err());
-    assert!(SimulationLimits::new(2, 0, 1, 1, 1).is_err());
-    assert!(SimulationLimits::new(2, 1, 0, 1, 1).is_err());
-    assert!(SimulationLimits::new(2, 1, 1, 0, 1).is_err());
-    assert!(SimulationLimits::new(2, 1, 1, 1, 0).is_err());
+    assert!(SimulationLimits::new(0, 1, 1, 1, 1, 1).is_err());
+    assert!(SimulationLimits::new(1, 0, 1, 1, 1, 1).is_err());
+    assert!(SimulationLimits::new(2, 1, 0, 1, 1, 1).is_err());
+    assert!(SimulationLimits::new(2, 1, 1, 0, 1, 1).is_err());
+    assert!(SimulationLimits::new(2, 1, 1, 1, 0, 1).is_err());
+    assert!(SimulationLimits::new(2, 1, 1, 1, 1, 0).is_err());
+    assert!(SimulationLimits::new(2, 1, 1, 1, 1, 2).is_err());
+
+    let huge = SimulationLimits::new(usize::MAX, 1, 1, 1, 1, 1).unwrap();
+    let mut sparse = Topology::new(huge);
+    sparse
+      .add_node(NodeKey::new(u64::MAX), AddressId::new(1))
+      .unwrap();
 
     let mut topology = Topology::new(limits(2));
     let configured = topology.limits();
-    assert_eq!(configured.max_pending_events(), 32);
+    assert_eq!(configured.max_pending_frames(), 32);
     assert_eq!(configured.max_pending_bytes(), 4_096);
     assert_eq!(configured.max_recorded_events(), 128);
-    assert_eq!(configured.max_message_bytes(), 1_024);
+    assert_eq!(configured.max_frame_bytes(), 1_024);
     assert!(topology.node(NodeKey::new(99)).is_err());
     topology
       .add_node(NodeKey::new(1), AddressId::new(10))
@@ -559,11 +549,28 @@ mod tests {
     let before_partition = topology.clone();
     assert!(topology.partition(link, PartitionId::new(9)).is_err());
     assert_eq!(topology, before_partition);
+  }
 
-    topology.set_clock_skew(left, 1).unwrap();
-    assert!(topology.observed_utc(left, u64::MAX).is_err());
-    topology.set_clock_skew(left, -1).unwrap();
-    assert!(topology.observed_utc(left, 0).is_err());
+  #[test]
+  fn simulation_topology_populates_more_than_1024_nodes_and_caps_links_independently() {
+    let limits = SimulationLimits::new(1_025, 1, 1, 1, 1, 1).unwrap();
+    let mut topology = Topology::new(limits);
+    for value in 0..1_025_u64 {
+      topology
+        .add_node(NodeKey::new(value), AddressId::new(value as u32))
+        .unwrap();
+    }
+    assert!(topology.node(NodeKey::new(1_024)).is_ok());
+
+    topology
+      .add_link(LinkKey::new(NodeKey::new(0), NodeKey::new(1)), policy(1))
+      .unwrap();
+    let before = topology.clone();
+    assert_eq!(
+      topology.add_link(LinkKey::new(NodeKey::new(1), NodeKey::new(2)), policy(1),),
+      Err(super::SimulationError::Capacity),
+    );
+    assert_eq!(topology, before);
   }
 
   #[test]

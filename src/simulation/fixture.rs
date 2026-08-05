@@ -28,9 +28,9 @@ impl ScenarioFixture {
 
   pub(crate) fn network_fault_matrix() -> Result<Self, SourceError> {
     let mut fixture = Self::empty();
-    for value in 1..=4_u16 {
+    for value in 1..=4_u64 {
       fixture.register_node(NodeKey::new(value))?;
-      fixture.register_endpoint(AddressId::new(u32::from(value) * 10))?;
+      fixture.register_endpoint(AddressId::new(value as u32 * 10))?;
     }
     fixture.register_endpoint(AddressId::new(99))?;
     for (from, to) in [
@@ -73,53 +73,51 @@ impl ScenarioFixture {
     match *record {
       EventRecord::SendAccepted {
         at_nanos,
-        message,
+        frame,
         link,
         copies,
         bytes,
       } => Ok(NormalizedEvent::SendAccepted {
         at_nanos,
-        message: message.value(),
+        frame_id: frame.value(),
         path: self.paths.resolve(link)?,
         copies,
-        payload_len: bytes,
+        frame_bytes: bytes,
       }),
-      EventRecord::Lost { at_nanos, message } => Ok(NormalizedEvent::Lost {
+      EventRecord::Lost { at_nanos, frame } => Ok(NormalizedEvent::Lost {
         at_nanos,
-        message: message.value(),
+        frame_id: frame.value(),
       }),
-      EventRecord::DuplicateCreated { at_nanos, message } => {
-        Ok(NormalizedEvent::DuplicateCreated {
-          at_nanos,
-          message: message.value(),
-        })
-      }
+      EventRecord::DuplicateCreated { at_nanos, frame } => Ok(NormalizedEvent::DuplicateCreated {
+        at_nanos,
+        frame_id: frame.value(),
+      }),
       EventRecord::Reordered {
         at_nanos,
-        message,
+        frame,
         copy,
       } => Ok(NormalizedEvent::Reordered {
         at_nanos,
-        message: message.value(),
+        frame_id: frame.value(),
         copy,
       }),
       EventRecord::Delivered {
         at_nanos,
-        message,
+        frame,
         copy,
       } => Ok(NormalizedEvent::Delivered {
         at_nanos,
-        message: message.value(),
+        frame_id: frame.value(),
         copy,
       }),
       EventRecord::Dropped {
         at_nanos,
-        message,
+        frame,
         copy,
         reason,
       } => Ok(NormalizedEvent::Dropped {
         at_nanos,
-        message: message.value(),
+        frame_id: frame.value(),
         copy,
         reason: normalize_drop_reason(reason),
       }),
@@ -165,25 +163,27 @@ impl ScenarioFixture {
         endpoint: self.endpoints.resolve(address)?,
         generation,
       }),
-      EventRecord::ClockSkewChanged {
+      EventRecord::WallClockChanged {
         at_nanos,
         node,
-        skew_nanos,
-      } => Ok(NormalizedEvent::ClockSkewChanged {
+        previous,
+        current,
+      } => Ok(NormalizedEvent::WallClockChanged {
         at_nanos,
         node: self.nodes.resolve(node)?,
-        skew_nanos,
+        previous,
+        current,
       }),
       EventRecord::QueueRejected {
         at_nanos,
-        message,
+        frame,
         copies,
         bytes,
       } => Ok(NormalizedEvent::QueueRejected {
         at_nanos,
-        message: message.value(),
+        frame_id: frame.value(),
         copies,
-        payload_len: bytes,
+        frame_bytes: bytes,
       }),
     }
   }
@@ -285,7 +285,6 @@ const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
     DropReason::StaleLink => NormalizedDropReason::StaleLink,
     DropReason::StaleBoot => NormalizedDropReason::StaleBoot,
     DropReason::StaleAddress => NormalizedDropReason::StaleAddress,
-    DropReason::Offline => NormalizedDropReason::Offline,
   }
 }
 
@@ -297,7 +296,7 @@ mod tests {
 
   use super::{ScenarioFixture, SimulationEvidenceSource};
   use crate::simulation::{
-    event::{DropReason, EventRecord, MessageId},
+    event::{DropReason, EventRecord, FrameId},
     topology::{AddressId, LinkKey, NodeKey, PartitionId},
   };
 
@@ -305,31 +304,25 @@ mod tests {
     let left = NodeKey::new(1);
     let right = NodeKey::new(2);
     let link = LinkKey::new(left, right);
-    let message = MessageId::new(7);
+    let frame = FrameId::new(7);
     let mut records = vec![
       EventRecord::SendAccepted {
         at_nanos: 1,
-        message,
+        frame,
         link,
         copies: 2,
         bytes: 64,
       },
-      EventRecord::Lost {
-        at_nanos: 2,
-        message,
-      },
-      EventRecord::DuplicateCreated {
-        at_nanos: 3,
-        message,
-      },
+      EventRecord::Lost { at_nanos: 2, frame },
+      EventRecord::DuplicateCreated { at_nanos: 3, frame },
       EventRecord::Reordered {
         at_nanos: 4,
-        message,
+        frame,
         copy: 1,
       },
       EventRecord::Delivered {
         at_nanos: 5,
-        message,
+        frame,
         copy: 0,
       },
       EventRecord::Partitioned {
@@ -355,14 +348,15 @@ mod tests {
         address: AddressId::new(99),
         generation: 1,
       },
-      EventRecord::ClockSkewChanged {
+      EventRecord::WallClockChanged {
         at_nanos: 10,
         node: right,
-        skew_nanos: -17,
+        previous: 30,
+        current: 13,
       },
       EventRecord::QueueRejected {
         at_nanos: 11,
-        message,
+        frame,
         copies: 2,
         bytes: 128,
       },
@@ -372,14 +366,13 @@ mod tests {
       DropReason::StaleLink,
       DropReason::StaleBoot,
       DropReason::StaleAddress,
-      DropReason::Offline,
     ]
     .into_iter()
     .enumerate()
     {
       records.push(EventRecord::Dropped {
         at_nanos: 12 + offset as u64,
-        message,
+        frame,
         copy: 0,
         reason,
       });
@@ -400,7 +393,7 @@ mod tests {
     assert_eq!(events.len(), records.len());
     let [
       NormalizedEvent::SendAccepted {
-        path, payload_len, ..
+        path, frame_bytes, ..
       },
       NormalizedEvent::Lost { .. },
       NormalizedEvent::DuplicateCreated { .. },
@@ -410,7 +403,7 @@ mod tests {
       NormalizedEvent::Healed { .. },
       NormalizedEvent::Restarted { node, .. },
       NormalizedEvent::AddressChanged { endpoint, .. },
-      NormalizedEvent::ClockSkewChanged { .. },
+      NormalizedEvent::WallClockChanged { .. },
       NormalizedEvent::QueueRejected { .. },
       NormalizedEvent::Dropped {
         reason: NormalizedDropReason::Blocked,
@@ -428,10 +421,6 @@ mod tests {
         reason: NormalizedDropReason::StaleAddress,
         ..
       },
-      NormalizedEvent::Dropped {
-        reason: NormalizedDropReason::Offline,
-        ..
-      },
     ] = events.as_slice()
     else {
       panic!("normalized simulation event sequence differs from the closed record set");
@@ -440,7 +429,7 @@ mod tests {
     assert_eq!(fault.render(), "fault-1");
     assert_eq!(node.render(), "node-2");
     assert_eq!(endpoint.render(), "endpoint-5");
-    assert_eq!(*payload_len, 64);
+    assert_eq!(*frame_bytes, 64);
   }
 
   #[test]

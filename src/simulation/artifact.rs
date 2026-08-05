@@ -25,7 +25,7 @@ pub(crate) enum MatrixFailure {
   DeterministicReplay,
   FaultCoverage,
   EventOrder,
-  PendingEventBound,
+  PendingFrameBound,
   PendingByteBound,
   FingerprintCollision,
 }
@@ -37,7 +37,7 @@ impl MatrixFailure {
       Self::DeterministicReplay => "deterministic-replay",
       Self::FaultCoverage => "complete-fault-matrix",
       Self::EventOrder => "ordered-event-stream",
-      Self::PendingEventBound => "pending-event-bound",
+      Self::PendingFrameBound => "pending-frame-bound",
       Self::PendingByteBound => "pending-byte-bound",
       Self::FingerprintCollision => "seed-fingerprint-uniqueness",
     }
@@ -263,6 +263,40 @@ mod tests {
     let artifact = capture_network_fault_matrix_fixture(4_242).unwrap();
     let golden = include_bytes!("../../tests/fixtures/failure-artifacts/simulation-v1.json");
     assert_eq!(artifact.as_bytes(), golden);
+    for forbidden in [
+      b"\"message\":".as_slice(),
+      b"\"payload_len\":".as_slice(),
+      b"clock-skew-changed".as_slice(),
+      b"\"skew_nanos\":".as_slice(),
+      b"state-transition".as_slice(),
+      b"\"machine\":".as_slice(),
+      b"\"state\":".as_slice(),
+    ] {
+      assert!(
+        !artifact
+          .as_bytes()
+          .windows(forbidden.len())
+          .any(|value| value == forbidden)
+      );
+    }
+    assert!(
+      artifact
+        .as_bytes()
+        .windows(11)
+        .any(|value| value == b"\"frame_id\":")
+    );
+    assert!(
+      artifact
+        .as_bytes()
+        .windows(14)
+        .any(|value| value == b"\"frame_bytes\":")
+    );
+    assert!(
+      artifact
+        .as_bytes()
+        .windows(18)
+        .any(|value| value == b"wall-clock-changed")
+    );
   }
 
   #[test]
