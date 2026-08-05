@@ -4,9 +4,6 @@ use crate::{Error, Result};
 
 const MAGIC: [u8; 4] = *b"MRLY";
 const PRELUDE_LEN: usize = 16;
-const MAX_CBOR_DEPTH: usize = 32;
-const MAX_CBOR_COLLECTION_ITEMS: u64 = 4_096;
-const MAX_CBOR_BODY_LEN: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Prelude {
@@ -117,21 +114,9 @@ struct CborLimits {
 impl CborLimits {
   const fn new(max_depth: usize, max_collection_items: u64, max_body_len: usize) -> Self {
     Self {
-      max_depth: if max_depth > MAX_CBOR_DEPTH {
-        MAX_CBOR_DEPTH
-      } else {
-        max_depth
-      },
-      max_collection_items: if max_collection_items > MAX_CBOR_COLLECTION_ITEMS {
-        MAX_CBOR_COLLECTION_ITEMS
-      } else {
-        max_collection_items
-      },
-      max_body_len: if max_body_len > MAX_CBOR_BODY_LEN {
-        MAX_CBOR_BODY_LEN
-      } else {
-        max_body_len
-      },
+      max_depth,
+      max_collection_items,
+      max_body_len,
     }
   }
 }
@@ -206,117 +191,215 @@ where
 }
 
 fn validate_canonical(bytes: &[u8], limits: CborLimits) -> Result<()> {
-  if bytes.is_empty() || bytes.len() > limits.max_body_len {
-    return Err(Error::invalid_input("CBOR body length"));
+  if limits.max_depth == 0
+    || limits.max_collection_items == 0
+    || limits.max_body_len == 0
+    || bytes.is_empty()
+    || bytes.len() > limits.max_body_len
+  {
+    return Err(Error::invalid_input("CBOR limits"));
   }
 
   let mut decoder = Decoder::new(bytes);
-  validate_item(&mut decoder, bytes, limits, 0)?;
+  validate_item(&mut decoder, bytes, limits)?;
   if decoder.position() != bytes.len() {
     return Err(Error::invalid_input("CBOR trailing data"));
   }
   Ok(())
 }
 
-fn validate_item(
-  decoder: &mut Decoder<'_>, bytes: &[u8], limits: CborLimits, depth: usize,
-) -> Result<()> {
-  let start = decoder.position();
-  let data_type = decoder
-    .datatype()
-    .map_err(|_| Error::invalid_input("CBOR type"))?;
-  match data_type {
-    Type::U8
-    | Type::U16
-    | Type::U32
-    | Type::U64
-    | Type::I8
-    | Type::I16
-    | Type::I32
-    | Type::I64
-    | Type::Int => {
-      let (_, header_len) = canonical_argument(bytes, start)?;
-      decoder
-        .skip()
-        .map_err(|_| Error::invalid_input("CBOR integer"))?;
-      if decoder.position() - start != header_len {
-        return Err(Error::invalid_input("CBOR integer"));
-      }
+#[derive(Debug)]
+enum ContainerFrame {
+  Array {
+    remaining: u64,
+  },
+  Map {
+    remaining: u64,
+    expecting_key: bool,
+    key_start: Option<usize>,
+    previous_key: Option<(usize, usize)>,
+  },
+}
+
+fn validate_item(decoder: &mut Decoder<'_>, bytes: &[u8], limits: CborLimits) -> Result<()> {
+  let mut stack = Vec::<ContainerFrame>::new();
+  loop {
+    if let Some(ContainerFrame::Map {
+      expecting_key: true,
+      key_start,
+      ..
+    }) = stack.last_mut()
+      && key_start.is_none()
+    {
+      *key_start = Some(decoder.position());
     }
-    Type::Bytes => {
-      let (length, header_len) = canonical_argument(bytes, start)?;
-      decoder
-        .bytes()
-        .map_err(|_| Error::invalid_input("CBOR bytes"))?;
-      validate_sized_item(start, decoder.position(), header_len, length)?;
-    }
-    Type::String => {
-      let (length, header_len) = canonical_argument(bytes, start)?;
-      decoder
-        .str()
-        .map_err(|_| Error::invalid_input("CBOR string"))?;
-      validate_sized_item(start, decoder.position(), header_len, length)?;
-    }
-    Type::Array => {
-      validate_container_depth(depth, limits)?;
-      let (length, _) = canonical_argument(bytes, start)?;
-      let decoded_length = decoder
-        .array()
-        .map_err(|_| Error::invalid_input("CBOR array"))?
-        .ok_or_else(|| Error::invalid_input("CBOR indefinite array"))?;
-      if decoded_length != length || length > limits.max_collection_items {
-        return Err(Error::invalid_input("CBOR array length"));
-      }
-      for _ in 0..length {
-        validate_item(decoder, bytes, limits, depth + 1)?;
-      }
-    }
-    Type::Map => {
-      validate_container_depth(depth, limits)?;
-      let (length, _) = canonical_argument(bytes, start)?;
-      let decoded_length = decoder
-        .map()
-        .map_err(|_| Error::invalid_input("CBOR map"))?
-        .ok_or_else(|| Error::invalid_input("CBOR indefinite map"))?;
-      if decoded_length != length || length > limits.max_collection_items {
-        return Err(Error::invalid_input("CBOR map length"));
-      }
-      let mut previous_key: Option<&[u8]> = None;
-      for _ in 0..length {
-        let key_start = decoder.position();
-        validate_item(decoder, bytes, limits, depth + 1)?;
-        let key = &bytes[key_start..decoder.position()];
-        if previous_key.is_some_and(|previous| previous >= key) {
-          return Err(Error::invalid_input("CBOR map key order"));
+
+    let start = decoder.position();
+    let data_type = decoder
+      .datatype()
+      .map_err(|_| Error::invalid_input("CBOR type"))?;
+    let container = match data_type {
+      Type::U8
+      | Type::U16
+      | Type::U32
+      | Type::U64
+      | Type::I8
+      | Type::I16
+      | Type::I32
+      | Type::I64
+      | Type::Int => {
+        let (_, header_len) = canonical_argument(bytes, start)?;
+        decoder
+          .skip()
+          .map_err(|_| Error::invalid_input("CBOR integer"))?;
+        if decoder.position().checked_sub(start) != Some(header_len) {
+          return Err(Error::invalid_input("CBOR integer"));
         }
-        previous_key = Some(key);
-        validate_item(decoder, bytes, limits, depth + 1)?;
+        None
       }
+      Type::Bytes => {
+        let (length, header_len) = canonical_argument(bytes, start)?;
+        decoder
+          .bytes()
+          .map_err(|_| Error::invalid_input("CBOR bytes"))?;
+        validate_sized_item(start, decoder.position(), header_len, length)?;
+        None
+      }
+      Type::String => {
+        let (length, header_len) = canonical_argument(bytes, start)?;
+        decoder
+          .str()
+          .map_err(|_| Error::invalid_input("CBOR string"))?;
+        validate_sized_item(start, decoder.position(), header_len, length)?;
+        None
+      }
+      Type::Array => {
+        validate_container_depth(stack.len(), limits)?;
+        let (length, _) = canonical_argument(bytes, start)?;
+        let decoded_length = decoder
+          .array()
+          .map_err(|_| Error::invalid_input("CBOR array"))?
+          .ok_or_else(|| Error::invalid_input("CBOR indefinite array"))?;
+        if decoded_length != length || length > limits.max_collection_items {
+          return Err(Error::invalid_input("CBOR array length"));
+        }
+        Some(ContainerFrame::Array { remaining: length })
+      }
+      Type::Map => {
+        validate_container_depth(stack.len(), limits)?;
+        let (length, _) = canonical_argument(bytes, start)?;
+        let decoded_length = decoder
+          .map()
+          .map_err(|_| Error::invalid_input("CBOR map"))?
+          .ok_or_else(|| Error::invalid_input("CBOR indefinite map"))?;
+        if decoded_length != length || length > limits.max_collection_items {
+          return Err(Error::invalid_input("CBOR map length"));
+        }
+        Some(ContainerFrame::Map {
+          remaining: length,
+          expecting_key: true,
+          key_start: None,
+          previous_key: None,
+        })
+      }
+      Type::Bool => {
+        decoder
+          .bool()
+          .map_err(|_| Error::invalid_input("CBOR bool"))?;
+        None
+      }
+      Type::Null => {
+        decoder
+          .null()
+          .map_err(|_| Error::invalid_input("CBOR null"))?;
+        None
+      }
+      Type::Undefined
+      | Type::F16
+      | Type::F32
+      | Type::F64
+      | Type::Simple
+      | Type::BytesIndef
+      | Type::StringIndef
+      | Type::ArrayIndef
+      | Type::MapIndef
+      | Type::Tag
+      | Type::Break
+      | Type::Unknown(_) => return Err(Error::invalid_input("CBOR unsupported type")),
+    };
+
+    if let Some(frame) = container {
+      let empty = match frame {
+        ContainerFrame::Array { remaining } | ContainerFrame::Map { remaining, .. } => {
+          remaining == 0
+        }
+      };
+      stack
+        .try_reserve(1)
+        .map_err(|_| Error::resource_exhausted("CBOR nesting state"))?;
+      stack.push(frame);
+      if !empty {
+        continue;
+      }
+      stack.pop();
     }
-    Type::Bool => {
-      decoder
-        .bool()
-        .map_err(|_| Error::invalid_input("CBOR bool"))?;
+
+    if complete_item(decoder.position(), bytes, &mut stack)? {
+      return Ok(());
     }
-    Type::Null => {
-      decoder
-        .null()
-        .map_err(|_| Error::invalid_input("CBOR null"))?;
-    }
-    Type::Undefined
-    | Type::F16
-    | Type::F32
-    | Type::F64
-    | Type::Simple
-    | Type::BytesIndef
-    | Type::StringIndef
-    | Type::ArrayIndef
-    | Type::MapIndef
-    | Type::Tag
-    | Type::Break
-    | Type::Unknown(_) => return Err(Error::invalid_input("CBOR unsupported type")),
   }
-  Ok(())
+}
+
+fn complete_item(position: usize, bytes: &[u8], stack: &mut Vec<ContainerFrame>) -> Result<bool> {
+  loop {
+    let Some(frame) = stack.last_mut() else {
+      return Ok(true);
+    };
+    let container_complete = match frame {
+      ContainerFrame::Array { remaining } => {
+        *remaining = remaining
+          .checked_sub(1)
+          .ok_or_else(|| Error::invalid_input("CBOR array state"))?;
+        *remaining == 0
+      }
+      ContainerFrame::Map {
+        remaining,
+        expecting_key,
+        key_start,
+        previous_key,
+      } => {
+        if *expecting_key {
+          let start = key_start
+            .take()
+            .ok_or_else(|| Error::invalid_input("CBOR map key state"))?;
+          let key = bytes
+            .get(start..position)
+            .ok_or_else(|| Error::invalid_input("CBOR map key"))?;
+          if let Some((previous_start, previous_end)) = *previous_key {
+            let previous = bytes
+              .get(previous_start..previous_end)
+              .ok_or_else(|| Error::invalid_input("CBOR map key"))?;
+            if previous >= key {
+              return Err(Error::invalid_input("CBOR map key order"));
+            }
+          }
+          *previous_key = Some((start, position));
+          *expecting_key = false;
+          false
+        } else {
+          *remaining = remaining
+            .checked_sub(1)
+            .ok_or_else(|| Error::invalid_input("CBOR map state"))?;
+          *expecting_key = true;
+          *remaining == 0
+        }
+      }
+    };
+    if !container_complete {
+      return Ok(false);
+    }
+    stack.pop();
+  }
 }
 
 fn validate_container_depth(depth: usize, limits: CborLimits) -> Result<()> {
@@ -547,12 +630,33 @@ mod tests {
   }
 
   #[test]
-  fn g1_core_cbor_enforces_depth_collection_and_body_limits() {
+  fn g1_core_cbor_enforces_caller_selected_limits() {
     assert!(decode_canonical::<Ignored>(&[0x81, 0x81, 0x00], CborLimits::new(1, 8, 8)).is_err());
     assert!(
       decode_canonical::<Ignored>(&[0x83, 0x00, 0x01, 0x02], CborLimits::new(4, 2, 8)).is_err()
     );
+    assert!(decode_canonical::<Ignored>(&[0x00], CborLimits::new(0, 2, 8)).is_err());
+    assert!(decode_canonical::<Ignored>(&[0x00], CborLimits::new(4, 0, 8)).is_err());
     assert!(decode_canonical::<Ignored>(&[0x00], CborLimits::new(4, 2, 0)).is_err());
+  }
+
+  #[test]
+  fn g1_core_cbor_accepts_limits_above_superseded_maxima() {
+    let mut deep = vec![0x81; 40];
+    deep.push(0x00);
+    decode_canonical::<Ignored>(&deep, CborLimits::new(40, 1, deep.len())).unwrap();
+
+    let mut collection = Vec::with_capacity(4_100);
+    collection.extend_from_slice(&[0x99, 0x10, 0x01]);
+    collection.resize(4_100, 0x00);
+    decode_canonical::<Ignored>(&collection, CborLimits::new(1, 4_097, collection.len())).unwrap();
+
+    let value_len = 8 * 1024 * 1024 + 1;
+    let mut body = Vec::with_capacity(value_len + 5);
+    body.push(0x5A);
+    body.extend_from_slice(&(value_len as u32).to_be_bytes());
+    body.resize(value_len + 5, 0);
+    decode_canonical::<Ignored>(&body, CborLimits::new(1, 1, body.len())).unwrap();
   }
 
   #[test]
@@ -563,25 +667,6 @@ mod tests {
 
     assert!(encode_canonical(&body, CborLimits::new(4, 8, 32)).is_err());
     assert!(body.accepted_items.get() <= 1);
-  }
-
-  #[test]
-  fn g1_core_cbor_enforces_absolute_limits() {
-    let mut too_deep = vec![0x81; 33];
-    too_deep.push(0x00);
-    assert!(
-      decode_canonical::<Ignored>(&too_deep, CborLimits::new(usize::MAX, u64::MAX, usize::MAX))
-        .is_err()
-    );
-
-    let oversized_collection = [0x99, 0x10, 0x01];
-    assert!(
-      decode_canonical::<Ignored>(
-        &oversized_collection,
-        CborLimits::new(usize::MAX, u64::MAX, usize::MAX)
-      )
-      .is_err()
-    );
   }
 
   fn declared(schema: u16, kind: u16) -> bool {
