@@ -62,6 +62,8 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   dependencies.entropy.fill(&mut runtime_seed)?;
   dependencies._runtime_seed = Some(runtime_seed);
   let receipt_retention = dependencies.config.receipt_retention();
+  // T-G02-01 has no persisted operation intents; later families must select
+  // recovered open here.
   dependencies.metadata =
     Some(MetadataStore::open(&dependencies.storage_factory, receipt_retention).await?);
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);

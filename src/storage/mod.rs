@@ -71,8 +71,48 @@ impl MetadataStore {
     Self::open_with_clock(factory, receipt_retention, Arc::new(HostWallClock)).await
   }
 
+  pub(crate) async fn open_recovered(
+    factory: &Arc<dyn StorageFactory>, receipt_retention: Duration, transaction: TransactionId,
+    digest: Digest,
+  ) -> Result<Self> {
+    Self::open_recovered_with_clock(
+      factory,
+      receipt_retention,
+      transaction,
+      digest,
+      Arc::new(HostWallClock),
+    )
+    .await
+  }
+
   async fn open_with_clock(
     factory: &Arc<dyn StorageFactory>, receipt_retention: Duration, clock: Arc<dyn WallClock>,
+  ) -> Result<Self> {
+    Self::open_with_state(factory, receipt_retention, clock, CommitState::Ready).await
+  }
+
+  async fn open_recovered_with_clock(
+    factory: &Arc<dyn StorageFactory>, receipt_retention: Duration, transaction: TransactionId,
+    digest: Digest, clock: Arc<dyn WallClock>,
+  ) -> Result<Self> {
+    Self::open_with_state(
+      factory,
+      receipt_retention,
+      clock,
+      CommitState::Frozen {
+        pending: PendingCommit {
+          transaction,
+          digest,
+        },
+        provider_call_active: false,
+      },
+    )
+    .await
+  }
+
+  async fn open_with_state(
+    factory: &Arc<dyn StorageFactory>, receipt_retention: Duration, clock: Arc<dyn WallClock>,
+    state: CommitState,
   ) -> Result<Self> {
     let requirements = StoreRequirements::metadata();
     let provider = factory.open(requirements).await?;
@@ -84,7 +124,7 @@ impl MetadataStore {
     }
     Ok(Self {
       provider,
-      state: Mutex::new(CommitState::Ready),
+      state: Mutex::new(state),
       clock,
       receipt_retention,
     })

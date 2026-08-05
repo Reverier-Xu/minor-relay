@@ -66,7 +66,8 @@ struct ReferenceStorage {
 enum UnknownFaultMode {
   Applied,
   NotApplied,
-  Pending,
+  PendingApplied,
+  PendingNotApplied,
 }
 
 #[derive(Debug)]
@@ -211,14 +212,19 @@ impl Storage for UnknownFaultStorage {
     *self.pending.lock().unwrap() = Some(identity.clone());
     Box::pin(async move {
       match self.mode {
-        UnknownFaultMode::Applied => {
+        UnknownFaultMode::Applied | UnknownFaultMode::PendingApplied => {
           assert!(matches!(
             self.reference.commit(transaction).await?,
             CommitOutcome::Committed(_)
           ));
         }
-        UnknownFaultMode::NotApplied => {}
-        UnknownFaultMode::Pending => return future::pending().await,
+        UnknownFaultMode::NotApplied | UnknownFaultMode::PendingNotApplied => {}
+      }
+      if matches!(
+        self.mode,
+        UnknownFaultMode::PendingApplied | UnknownFaultMode::PendingNotApplied
+      ) {
+        return future::pending().await;
       }
       Ok(CommitOutcome::Unknown {
         transaction: identity.0,
@@ -1834,7 +1840,7 @@ async fn exercise_unknown_receipt_operation(
     mode,
     commit_calls: Arc::clone(&fault_calls),
   });
-  let wall_clock: Arc<dyn WallClock> = clock;
+  let wall_clock: Arc<dyn WallClock> = clock.clone();
   let store = MetadataStore::open_with_clock(&factory, Duration::from_secs(10), wall_clock)
     .await
     .unwrap();
@@ -1873,6 +1879,19 @@ async fn exercise_unknown_receipt_operation(
     })
   );
   assert_eq!(fault_calls.load(Ordering::SeqCst), 1);
+  let recovered_transaction = unknown.transaction().clone();
+  let recovered_digest = unknown.operation_digest().clone();
+  drop(store);
+  let wall_clock: Arc<dyn WallClock> = clock;
+  let store = MetadataStore::open_recovered_with_clock(
+    &factory,
+    Duration::from_secs(10),
+    recovered_transaction,
+    recovered_digest,
+    wall_clock,
+  )
+  .await
+  .unwrap();
   assert_eq!(
     store
       .cleanup_receipt(&unrelated, contract_transaction_id(97))
@@ -1881,11 +1900,14 @@ async fn exercise_unknown_receipt_operation(
       .kind(),
     crate::ErrorKind::NotReady
   );
+  assert_eq!(fault_calls.load(Ordering::SeqCst), 1);
   let reconciled = store.reconcile().await.unwrap();
   match mode {
     UnknownFaultMode::Applied => assert!(matches!(reconciled, ReconcileOutcome::Committed(_))),
     UnknownFaultMode::NotApplied => assert!(matches!(reconciled, ReconcileOutcome::Aborted)),
-    UnknownFaultMode::Pending => unreachable!("pending mode is tested through cancellation"),
+    UnknownFaultMode::PendingApplied | UnknownFaultMode::PendingNotApplied => {
+      unreachable!("pending modes are tested through cancellation")
+    }
   }
   assert_eq!(
     reference
@@ -1899,6 +1921,189 @@ async fn exercise_unknown_receipt_operation(
       (UnknownFaultMode::Applied, FaultedReceiptOperation::Forget)
     )
   );
+}
+
+#[tokio::test]
+async fn storage_contract_recovered_open_resolves_applied_and_not_applied_unknown() {
+  for (mode, applied) in [
+    (UnknownFaultMode::Applied, true),
+    (UnknownFaultMode::NotApplied, false),
+  ] {
+    let reference = Arc::new(ReferenceFactory::new(required_capabilities()));
+    let fault_calls = Arc::new(AtomicUsize::new(0));
+    let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
+      reference: Arc::clone(&reference),
+      mode,
+      commit_calls: Arc::clone(&fault_calls),
+    });
+    let store = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    let prepared = prepare_contract_put(&store, 110, 0).await;
+    let transaction = prepared.id().clone();
+    let digest = prepared.operation_digest().clone();
+    assert_eq!(
+      store.commit(prepared).await.unwrap(),
+      CommitOutcome::Unknown {
+        transaction: transaction.clone(),
+        operation_digest: digest.clone(),
+      }
+    );
+    let original_receipt = reference
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .get(&transaction)
+      .cloned();
+    assert_eq!(original_receipt.is_some(), applied);
+    drop(store);
+
+    let store =
+      MetadataStore::open_recovered(&factory, Duration::from_secs(10), transaction, digest)
+        .await
+        .unwrap();
+    let unrelated = prepare_contract_put(&store, 111, 1).await;
+    assert_eq!(
+      store.commit(unrelated.clone()).await.unwrap_err().kind(),
+      crate::ErrorKind::NotReady
+    );
+    assert_eq!(fault_calls.load(Ordering::SeqCst), 1);
+
+    let reconciled = store.reconcile().await.unwrap();
+    if let Some(receipt) = original_receipt {
+      assert_eq!(reconciled, ReconcileOutcome::Committed(receipt));
+    } else {
+      assert!(matches!(reconciled, ReconcileOutcome::Aborted));
+    }
+    assert!(matches!(
+      store.commit(unrelated).await.unwrap(),
+      CommitOutcome::Unknown { .. }
+    ));
+    assert_eq!(fault_calls.load(Ordering::SeqCst), 2);
+
+    drop(store);
+    assert!(
+      MetadataStore::open(&factory, Duration::from_secs(10))
+        .await
+        .is_ok()
+    );
+  }
+}
+
+#[tokio::test]
+async fn storage_contract_recovered_open_keeps_wrong_digest_frozen() {
+  let reference = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let fault_calls = Arc::new(AtomicUsize::new(0));
+  let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
+    reference,
+    mode: UnknownFaultMode::Applied,
+    commit_calls: Arc::clone(&fault_calls),
+  });
+  let store = MetadataStore::open(&factory, Duration::from_secs(10))
+    .await
+    .unwrap();
+  let prepared = prepare_contract_put(&store, 112, 0).await;
+  let transaction = prepared.id().clone();
+  assert!(matches!(
+    store.commit(prepared).await.unwrap(),
+    CommitOutcome::Unknown { .. }
+  ));
+  drop(store);
+
+  let wrong_digest = Digest::from_bytes([23; 32]);
+  let store =
+    MetadataStore::open_recovered(&factory, Duration::from_secs(10), transaction, wrong_digest)
+      .await
+      .unwrap();
+  let unrelated = prepare_contract_put(&store, 113, 1).await;
+  assert!(matches!(
+    store.reconcile().await.unwrap(),
+    ReconcileOutcome::DigestConflict
+  ));
+  assert!(matches!(
+    store.reconcile().await.unwrap(),
+    ReconcileOutcome::DigestConflict
+  ));
+  assert_eq!(
+    store.commit(unrelated).await.unwrap_err().kind(),
+    crate::ErrorKind::NotReady
+  );
+  assert_eq!(fault_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn storage_contract_recovered_open_reconciles_cancelled_provider_submission() {
+  for (mode, applied) in [
+    (UnknownFaultMode::PendingApplied, true),
+    (UnknownFaultMode::PendingNotApplied, false),
+  ] {
+    let reference = Arc::new(ReferenceFactory::new(required_capabilities()));
+    let fault_calls = Arc::new(AtomicUsize::new(0));
+    let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
+      reference: Arc::clone(&reference),
+      mode,
+      commit_calls: Arc::clone(&fault_calls),
+    });
+    let store = Arc::new(
+      MetadataStore::open(&factory, Duration::from_secs(10))
+        .await
+        .unwrap(),
+    );
+    let prepared = prepare_contract_put(&store, 114, 0).await;
+    let transaction = prepared.id().clone();
+    let digest = prepared.operation_digest().clone();
+    let task_store = Arc::clone(&store);
+    let task = tokio::spawn(async move { task_store.commit(prepared).await });
+    while fault_calls.load(Ordering::SeqCst) == 0
+      || (applied
+        && !reference
+          .state
+          .lock()
+          .unwrap()
+          .receipts
+          .contains_key(&transaction))
+    {
+      tokio::task::yield_now().await;
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let original_receipt = reference
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .get(&transaction)
+      .cloned();
+    assert_eq!(original_receipt.is_some(), applied);
+    drop(store);
+
+    let store = Arc::new(
+      MetadataStore::open_recovered(&factory, Duration::from_secs(10), transaction, digest)
+        .await
+        .unwrap(),
+    );
+    let unrelated = prepare_contract_put(&store, 115, 1).await;
+    assert_eq!(
+      store.commit(unrelated.clone()).await.unwrap_err().kind(),
+      crate::ErrorKind::NotReady
+    );
+    assert_eq!(fault_calls.load(Ordering::SeqCst), 1);
+    let reconciled = store.reconcile().await.unwrap();
+    if let Some(receipt) = original_receipt {
+      assert_eq!(reconciled, ReconcileOutcome::Committed(receipt));
+    } else {
+      assert!(matches!(reconciled, ReconcileOutcome::Aborted));
+    }
+    let task_store = Arc::clone(&store);
+    let task = tokio::spawn(async move { task_store.commit(unrelated).await });
+    while fault_calls.load(Ordering::SeqCst) < 2 {
+      tokio::task::yield_now().await;
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(fault_calls.load(Ordering::SeqCst), 2);
+  }
 }
 
 #[tokio::test]
@@ -1944,7 +2149,7 @@ async fn exercise_cancelled_receipt_operation(phase: FaultedReceiptOperation) {
   let fault_calls = Arc::new(AtomicUsize::new(0));
   let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
     reference: Arc::clone(&reference),
-    mode: UnknownFaultMode::Pending,
+    mode: UnknownFaultMode::PendingNotApplied,
     commit_calls: Arc::clone(&fault_calls),
   });
   let wall_clock: Arc<dyn WallClock> = clock;
@@ -2131,6 +2336,24 @@ async fn open_engine(
   let wall_clock: Arc<dyn WallClock> = clock;
   MetadataStore::open_with_clock(&storage_factory, retention, wall_clock)
     .await
+    .unwrap()
+}
+
+async fn prepare_contract_put(
+  store: &MetadataStore, transaction: u16, key: u8,
+) -> PreparedTransaction {
+  let snapshot = store.snapshot().await.unwrap();
+  store
+    .prepare_transaction(
+      contract_transaction_id(transaction),
+      snapshot.revision().clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace("recovered-open"),
+        key: store_key(&[key]),
+        expected: StoreExpectation::Absent,
+        value: value(&[key]),
+      }],
+    )
     .unwrap()
 }
 
