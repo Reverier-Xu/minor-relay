@@ -1,13 +1,8 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-//! `minor-relay` exposes its supported API through this crate root and
-//! [`extension`].
-//!
-//! Implementation modules remain inaccessible to downstream crates:
-//!
-//! ```compile_fail,E0603
-//! use minor_relay::protocol;
-//! ```
+//! G1 exposes deterministic foundation values, provider boundaries, and the
+//! node lifecycle through this crate root and [`extension`]. Implementation
+//! modules remain private.
 //!
 //! ```compile_fail,E0603
 //! use minor_relay::provider;
@@ -17,18 +12,23 @@
 //! use minor_relay::runtime;
 //! ```
 //!
-//! Test-only and future implementation modules are absent from the facade:
+//! Superseded limits, public clock injection, and placeholder extension/event
+//! surfaces are absent.
 //!
 //! ```compile_fail,E0432
-//! use minor_relay::simulation;
+//! use minor_relay::{AdmissionLimits, Clock, MonotonicTime, ProtocolLimits, TraceLimits};
 //! ```
 //!
 //! ```compile_fail,E0432
-//! use minor_relay::storage;
+//! use minor_relay::extension::Clock;
 //! ```
 //!
 //! ```compile_fail,E0432
-//! use minor_relay::add;
+//! use minor_relay::{EventOptions, ExtensionRegistry};
+//! ```
+//!
+//! ```compile_fail,E0599
+//! let _ = minor_relay::NodeConfig::new().with_member_limit(1_024);
 //! ```
 
 mod api;
@@ -45,16 +45,14 @@ mod view;
 #[cfg(test)]
 mod simulation;
 
-pub use api::{BoxFuture, MonotonicTime};
+pub use api::BoxFuture;
 pub use config::{NodeConfig, ParserLimits, RecoveryConfig, TraceMetadataLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
 pub use identity::{
   ClusterId, Digest, NodeId, OperationId, PublicKey, Signature, TraceId, TransactionId,
 };
-pub use node::{
-  EventOptions, EventReceive, EventSubscription, ExtensionRegistry, NodeBuilder, NodeHandle,
-};
-pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};
+pub use node::{NodeBuilder, NodeHandle};
+pub use operation::{Command, GetNodeStatus, Query, Shutdown, WaitForShutdown};
 pub use protocol::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};
 pub use provider::{
   CommitOutcome, CommitReceipt, CreatedKey, DurabilityLevel, KeyCapabilities, KeyCreateState,
@@ -65,8 +63,5 @@ pub use provider::{
 pub use view::{NodeStatus, ShutdownOutcome, ShutdownReason};
 
 pub mod extension {
-  pub use crate::{
-    api::{Clock, Entropy},
-    provider::{KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot},
-  };
+  pub use crate::provider::{KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot};
 }
