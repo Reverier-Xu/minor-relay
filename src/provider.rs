@@ -1,20 +1,135 @@
-use std::fmt;
+use std::{fmt, str::FromStr, sync::Arc};
 
-use crate::{BoxFuture, Digest, PublicKey, Result, Signature, TransactionId};
+use sha2::{Digest as ShaDigest, Sha256};
 
-pub struct KeyOperationId {
-  _private: (),
+use crate::{BoxFuture, Digest, Error, PublicKey, QualifiedTag, Result, Signature, TransactionId};
+
+const KEY_OPERATION_PREFIX: &str = "keyop_";
+const ID_SUFFIX_LENGTH: usize = 21;
+const STORE_VALUE_DOMAIN: &[u8] = b"minor-relay/store-value/v1\0";
+const STORE_TRANSACTION_DOMAIN: &[u8] = b"minor-relay/store-transaction/v1\0";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KeyCapabilities {
+  ed25519: bool,
+  reconciliation: bool,
+  deletion: bool,
 }
 
-pub struct KeyHandle {
-  _private: (),
+impl KeyCapabilities {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn ed25519(mut self, supported: bool) -> Self {
+    self.ed25519 = supported;
+    self
+  }
+
+  pub fn reconciliation(mut self, supported: bool) -> Self {
+    self.reconciliation = supported;
+    self
+  }
+
+  pub fn deletion(mut self, supported: bool) -> Self {
+    self.deletion = supported;
+    self
+  }
+
+  pub fn has_ed25519(&self) -> bool {
+    self.ed25519
+  }
+
+  pub fn has_reconciliation(&self) -> bool {
+    self.reconciliation
+  }
+
+  pub fn has_deletion(&self) -> bool {
+    self.deletion
+  }
 }
 
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct KeyOperationId(String);
+
+impl KeyOperationId {
+  pub fn parse(value: &str) -> Result<Self> {
+    validate_key_operation_id(value)?;
+    Ok(Self(value.to_owned()))
+  }
+
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
+}
+
+impl FromStr for KeyOperationId {
+  type Err = Error;
+
+  fn from_str(value: &str) -> Result<Self> {
+    Self::parse(value)
+  }
+}
+
+impl fmt::Debug for KeyOperationId {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_tuple("KeyOperationId")
+      .field(&self.0)
+      .finish()
+  }
+}
+
+impl fmt::Display for KeyOperationId {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(&self.0)
+  }
+}
+
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct KeyHandle(Arc<[u8]>);
+
+impl KeyHandle {
+  pub fn from_provider_bytes(value: Arc<[u8]>) -> Result<Self> {
+    if value.is_empty() {
+      return Err(Error::invalid_input("key handle"));
+    }
+    Ok(Self(value))
+  }
+
+  pub fn expose_provider_handle(&self) -> &[u8] {
+    &self.0
+  }
+}
+
+impl fmt::Debug for KeyHandle {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("KeyHandle(..)")
+  }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreatedKey {
-  _private: (),
+  handle: KeyHandle,
+  public_key: PublicKey,
+}
+
+impl CreatedKey {
+  pub fn new(handle: KeyHandle, public_key: PublicKey) -> Self {
+    Self { handle, public_key }
+  }
+
+  pub fn handle(&self) -> &KeyHandle {
+    &self.handle
+  }
+
+  pub fn public_key(&self) -> &PublicKey {
+    &self.public_key
+  }
 }
 
 #[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyCreateState {
   Present(CreatedKey),
   Absent,
@@ -22,6 +137,7 @@ pub enum KeyCreateState {
 }
 
 #[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyDeleteState {
   Present,
   Absent,
@@ -29,6 +145,8 @@ pub enum KeyDeleteState {
 }
 
 pub trait KeyProvider: fmt::Debug + Send + Sync + 'static {
+  fn capabilities(&self) -> KeyCapabilities;
+
   fn create_ed25519<'a>(
     &'a self, operation: &'a KeyOperationId,
   ) -> BoxFuture<'a, Result<KeyCreateState>>;
@@ -59,27 +177,326 @@ pub enum DurabilityLevel {
   OsCrashDurable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreRequirements {
-  _private: (),
+  required_durability: DurabilityLevel,
+  conditional_batch: bool,
+  ordered_scan: bool,
+  reconciliation: bool,
+  exclusive_lifetime_lock: bool,
+  transactional_migration: bool,
 }
 
+impl StoreRequirements {
+  pub fn required_durability(&self) -> DurabilityLevel {
+    self.required_durability
+  }
+
+  pub fn requires_conditional_batch(&self) -> bool {
+    self.conditional_batch
+  }
+
+  pub fn requires_ordered_scan(&self) -> bool {
+    self.ordered_scan
+  }
+
+  pub fn requires_reconciliation(&self) -> bool {
+    self.reconciliation
+  }
+
+  pub fn requires_exclusive_lifetime_lock(&self) -> bool {
+    self.exclusive_lifetime_lock
+  }
+
+  pub fn requires_transactional_migration(&self) -> bool {
+    self.transactional_migration
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreCapabilities {
-  _private: (),
+  durability: DurabilityLevel,
+  conditional_batch: bool,
+  ordered_scan: bool,
+  reconciliation: bool,
+  exclusive_lifetime_lock: bool,
+  transactional_migration: bool,
 }
 
-pub struct StoreSnapshot {
-  _private: (),
+impl StoreCapabilities {
+  pub fn new(durability: DurabilityLevel) -> Self {
+    Self {
+      durability,
+      conditional_batch: false,
+      ordered_scan: false,
+      reconciliation: false,
+      exclusive_lifetime_lock: false,
+      transactional_migration: false,
+    }
+  }
+
+  pub fn conditional_batch(mut self, supported: bool) -> Self {
+    self.conditional_batch = supported;
+    self
+  }
+
+  pub fn ordered_scan(mut self, supported: bool) -> Self {
+    self.ordered_scan = supported;
+    self
+  }
+
+  pub fn reconciliation(mut self, supported: bool) -> Self {
+    self.reconciliation = supported;
+    self
+  }
+
+  pub fn exclusive_lifetime_lock(mut self, supported: bool) -> Self {
+    self.exclusive_lifetime_lock = supported;
+    self
+  }
+
+  pub fn transactional_migration(mut self, supported: bool) -> Self {
+    self.transactional_migration = supported;
+    self
+  }
+
+  pub fn durability(&self) -> DurabilityLevel {
+    self.durability
+  }
+
+  pub fn has_conditional_batch(&self) -> bool {
+    self.conditional_batch
+  }
+
+  pub fn has_ordered_scan(&self) -> bool {
+    self.ordered_scan
+  }
+
+  pub fn has_reconciliation(&self) -> bool {
+    self.reconciliation
+  }
+
+  pub fn has_exclusive_lifetime_lock(&self) -> bool {
+    self.exclusive_lifetime_lock
+  }
+
+  pub fn has_transactional_migration(&self) -> bool {
+    self.transactional_migration
+  }
 }
 
-pub struct StoreTransaction {
-  _private: (),
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StoreRevision(Arc<[u8]>);
+
+impl StoreRevision {
+  pub fn new(value: Arc<[u8]>) -> Result<Self> {
+    if value.is_empty() {
+      return Err(Error::invalid_input("store revision"));
+    }
+    Ok(Self(value))
+  }
+
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.0
+  }
 }
 
-pub struct CommitReceipt {
-  _private: (),
+impl fmt::Debug for StoreRevision {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_struct("StoreRevision")
+      .field("bytes", &self.0.len())
+      .finish()
+  }
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StoreNamespace(QualifiedTag);
+
+impl StoreNamespace {
+  pub fn new(value: QualifiedTag) -> Result<Self> {
+    Ok(Self(value))
+  }
+
+  pub fn as_str(&self) -> &str {
+    self.0.as_str()
+  }
+}
+
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StoreKey(Arc<[u8]>);
+
+impl StoreKey {
+  pub fn new(value: Arc<[u8]>) -> Self {
+    Self(value)
+  }
+
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.0
+  }
+}
+
+impl fmt::Debug for StoreKey {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("StoreKey(..)")
+  }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoreValue {
+  value: Arc<[u8]>,
+  digest: Digest,
+}
+
+impl StoreValue {
+  pub fn new(value: Arc<[u8]>) -> Self {
+    let digest = digest_store_value(&value);
+    Self { value, digest }
+  }
+
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.value
+  }
+
+  pub fn digest(&self) -> &Digest {
+    &self.digest
+  }
+}
+
+impl fmt::Debug for StoreValue {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_struct("StoreValue")
+      .field("bytes", &self.value.len())
+      .field("digest", &self.digest)
+      .finish()
+  }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreEntry {
+  namespace: StoreNamespace,
+  key: StoreKey,
+  value: StoreValue,
+}
+
+impl StoreEntry {
+  pub fn new(namespace: StoreNamespace, key: StoreKey, value: StoreValue) -> Self {
+    Self {
+      namespace,
+      key,
+      value,
+    }
+  }
+
+  pub fn namespace(&self) -> &StoreNamespace {
+    &self.namespace
+  }
+
+  pub fn key(&self) -> &StoreKey {
+    &self.key
+  }
+
+  pub fn value(&self) -> &StoreValue {
+    &self.value
+  }
 }
 
 #[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoreExpectation {
+  Absent,
+  Exact(Digest),
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoreOperation {
+  Check {
+    namespace: StoreNamespace,
+    key: StoreKey,
+    expected: StoreExpectation,
+  },
+  Put {
+    namespace: StoreNamespace,
+    key: StoreKey,
+    expected: StoreExpectation,
+    value: StoreValue,
+  },
+  Delete {
+    namespace: StoreNamespace,
+    key: StoreKey,
+    expected: Digest,
+  },
+  ForgetReceipt {
+    transaction: TransactionId,
+    expected_operation_digest: Digest,
+  },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreTransaction {
+  id: TransactionId,
+  operation_digest: Digest,
+  base_revision: StoreRevision,
+  operations: Arc<[StoreOperation]>,
+}
+
+impl StoreTransaction {
+  pub fn id(&self) -> &TransactionId {
+    &self.id
+  }
+
+  pub fn operation_digest(&self) -> &Digest {
+    &self.operation_digest
+  }
+
+  pub fn computed_operation_digest(&self) -> Digest {
+    digest_store_operations(&self.base_revision, &self.operations)
+  }
+
+  pub fn base_revision(&self) -> &StoreRevision {
+    &self.base_revision
+  }
+
+  pub fn operations(&self) -> &[StoreOperation] {
+    &self.operations
+  }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitReceipt {
+  transaction: TransactionId,
+  operation_digest: Digest,
+  committed_revision: StoreRevision,
+}
+
+impl CommitReceipt {
+  pub fn new(
+    transaction: TransactionId, operation_digest: Digest, committed_revision: StoreRevision,
+  ) -> Self {
+    Self {
+      transaction,
+      operation_digest,
+      committed_revision,
+    }
+  }
+
+  pub fn transaction(&self) -> &TransactionId {
+    &self.transaction
+  }
+
+  pub fn operation_digest(&self) -> &Digest {
+    &self.operation_digest
+  }
+
+  pub fn committed_revision(&self) -> &StoreRevision {
+    &self.committed_revision
+  }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
   Committed(CommitReceipt),
   Aborted,
@@ -91,11 +508,28 @@ pub enum CommitOutcome {
 }
 
 #[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReconcileOutcome {
   Committed(CommitReceipt),
   Aborted,
   DigestConflict,
   Unknown,
+}
+
+pub trait StoreScan: fmt::Debug + Send {
+  fn next<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<StoreEntry>>>;
+}
+
+pub trait StoreSnapshot: fmt::Debug + Send + Sync + 'static {
+  fn revision(&self) -> &StoreRevision;
+
+  fn get<'a>(
+    &'a self, namespace: &'a StoreNamespace, key: &'a StoreKey,
+  ) -> BoxFuture<'a, Result<Option<StoreValue>>>;
+
+  fn scan<'a>(
+    &'a self, namespace: &'a StoreNamespace, prefix: &'a [u8],
+  ) -> BoxFuture<'a, Result<Box<dyn StoreScan + 'a>>>;
 }
 
 pub trait StorageFactory: fmt::Debug + Send + Sync + 'static {
@@ -105,10 +539,111 @@ pub trait StorageFactory: fmt::Debug + Send + Sync + 'static {
 
 pub trait Storage: fmt::Debug + Send + Sync + 'static {
   fn capabilities(&self) -> StoreCapabilities;
-  fn snapshot<'a>(&'a self) -> BoxFuture<'a, Result<StoreSnapshot>>;
+
+  fn snapshot<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn StoreSnapshot>>>;
+
   fn commit<'a>(&'a self, transaction: StoreTransaction) -> BoxFuture<'a, Result<CommitOutcome>>;
+
   fn reconcile<'a>(
     &'a self, transaction: &'a TransactionId, digest: &'a Digest,
   ) -> BoxFuture<'a, Result<ReconcileOutcome>>;
+
   fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
+}
+
+fn validate_key_operation_id(value: &str) -> Result<()> {
+  if value.len() != KEY_OPERATION_PREFIX.len() + ID_SUFFIX_LENGTH
+    || !value.starts_with(KEY_OPERATION_PREFIX)
+    || !value.as_bytes()[KEY_OPERATION_PREFIX.len()..]
+      .iter()
+      .copied()
+      .all(is_base62)
+  {
+    return Err(Error::invalid_input("key operation id"));
+  }
+  Ok(())
+}
+
+const fn is_base62(byte: u8) -> bool {
+  byte.is_ascii_digit() || byte.is_ascii_lowercase() || byte.is_ascii_uppercase()
+}
+
+fn digest_store_value(value: &[u8]) -> Digest {
+  let mut hasher = Sha256::new();
+  hasher.update(STORE_VALUE_DOMAIN);
+  update_bytes(&mut hasher, value);
+  Digest::from_bytes(hasher.finalize().into())
+}
+
+fn digest_store_operations(base_revision: &StoreRevision, operations: &[StoreOperation]) -> Digest {
+  let mut hasher = Sha256::new();
+  hasher.update(STORE_TRANSACTION_DOMAIN);
+  update_bytes(&mut hasher, base_revision.as_bytes());
+  update_length(&mut hasher, operations.len());
+  for operation in operations {
+    match operation {
+      StoreOperation::Check {
+        namespace,
+        key,
+        expected,
+      } => {
+        hasher.update([0]);
+        update_namespace_and_key(&mut hasher, namespace, key);
+        update_expectation(&mut hasher, expected);
+      }
+      StoreOperation::Put {
+        namespace,
+        key,
+        expected,
+        value,
+      } => {
+        hasher.update([1]);
+        update_namespace_and_key(&mut hasher, namespace, key);
+        update_expectation(&mut hasher, expected);
+        update_bytes(&mut hasher, value.as_bytes());
+      }
+      StoreOperation::Delete {
+        namespace,
+        key,
+        expected,
+      } => {
+        hasher.update([2]);
+        update_namespace_and_key(&mut hasher, namespace, key);
+        hasher.update(expected.as_bytes());
+      }
+      StoreOperation::ForgetReceipt {
+        transaction,
+        expected_operation_digest,
+      } => {
+        hasher.update([3]);
+        update_bytes(&mut hasher, transaction.as_str().as_bytes());
+        hasher.update(expected_operation_digest.as_bytes());
+      }
+    }
+  }
+  Digest::from_bytes(hasher.finalize().into())
+}
+
+fn update_namespace_and_key(hasher: &mut Sha256, namespace: &StoreNamespace, key: &StoreKey) {
+  update_bytes(hasher, namespace.as_str().as_bytes());
+  update_bytes(hasher, key.as_bytes());
+}
+
+fn update_expectation(hasher: &mut Sha256, expectation: &StoreExpectation) {
+  match expectation {
+    StoreExpectation::Absent => hasher.update([0]),
+    StoreExpectation::Exact(digest) => {
+      hasher.update([1]);
+      hasher.update(digest.as_bytes());
+    }
+  }
+}
+
+fn update_bytes(hasher: &mut Sha256, value: &[u8]) {
+  update_length(hasher, value.len());
+  hasher.update(value);
+}
+
+fn update_length(hasher: &mut Sha256, value: usize) {
+  hasher.update((value as u128).to_be_bytes());
 }
