@@ -9,10 +9,11 @@ use std::{
 };
 
 use minor_relay::{
-  BoxFuture, Command, Error, ErrorKind, GetNodeStatus, KeyCapabilities, KeyCreateState,
-  KeyDeleteState, KeyHandle, KeyOperationId, NodeBuilder, NodeConfig, NodeHandle, NodeStatus,
-  ProviderErrorContext, ProviderErrorKind, PublicKey, Query, Result, Shutdown, ShutdownOutcome,
-  ShutdownReason, Signature, StoreRequirements, WaitForShutdown,
+  BoxFuture, Command, CommitOutcome, Digest, DurabilityLevel, Error, ErrorKind, GetNodeStatus,
+  KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId, NodeBuilder,
+  NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey, Query,
+  ReconcileOutcome, Result, Shutdown, ShutdownOutcome, ShutdownReason, Signature,
+  StoreCapabilities, StoreRequirements, StoreTransaction, TransactionId, WaitForShutdown,
   extension::{Entropy, KeyProvider, Storage, StorageFactory},
 };
 use tokio::sync::Notify;
@@ -76,7 +77,7 @@ impl DropTracker {
   async fn wait_for_all(&self) {
     loop {
       let changed = self.changed.notified();
-      if self.count() == 2 {
+      if self.count() == 3 {
         return;
       }
       changed.await;
@@ -103,7 +104,60 @@ impl StorageFactory for CountingStorageFactory {
     &'a self, _requirements: StoreRequirements,
   ) -> BoxFuture<'a, Result<Box<dyn Storage>>> {
     self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageOpen)) })
+    let storage = CountingStorage {
+      counters: Arc::clone(&self.counters),
+      drops: self.drops.clone(),
+    };
+    Box::pin(async move { Ok(Box::new(storage) as Box<dyn Storage>) })
+  }
+}
+
+#[derive(Debug)]
+struct CountingStorage {
+  counters: Arc<ProviderCounters>,
+  drops: Option<Arc<DropTracker>>,
+}
+
+impl Drop for CountingStorage {
+  fn drop(&mut self) {
+    if let Some(drops) = &self.drops {
+      drops.record();
+    }
+  }
+}
+
+impl Storage for CountingStorage {
+  fn capabilities(&self) -> StoreCapabilities {
+    self.counters.record();
+    StoreCapabilities::new(DurabilityLevel::OsCrashDurable)
+      .conditional_batch(true)
+      .ordered_scan(true)
+      .reconciliation(true)
+      .exclusive_lifetime_lock(true)
+  }
+
+  fn snapshot<'a>(
+    &'a self,
+  ) -> BoxFuture<'a, Result<Box<dyn minor_relay::extension::StoreSnapshot>>> {
+    self.counters.record();
+    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageSnapshot)) })
+  }
+
+  fn commit<'a>(&'a self, _transaction: StoreTransaction) -> BoxFuture<'a, Result<CommitOutcome>> {
+    self.counters.record();
+    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageCommit)) })
+  }
+
+  fn reconcile<'a>(
+    &'a self, _transaction: &'a TransactionId, _digest: &'a Digest,
+  ) -> BoxFuture<'a, Result<ReconcileOutcome>> {
+    self.counters.record();
+    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageReconcile)) })
+  }
+
+  fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
+    self.counters.record();
+    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageFlush)) })
   }
 }
 
@@ -183,7 +237,7 @@ fn g1_lifecycle_sealed_operations_preserve_outputs() {
 }
 
 #[tokio::test]
-async fn g1_lifecycle_start_and_shutdown_do_not_invoke_providers() {
+async fn g1_lifecycle_start_and_shutdown_opens_storage_without_key_calls() {
   let counters = Arc::new(ProviderCounters::default());
   let entropy = Arc::new(CountingEntropy::default());
   let handle = builder(Arc::clone(&counters), None, entropy.clone())
@@ -197,12 +251,12 @@ async fn g1_lifecycle_start_and_shutdown_do_not_invoke_providers() {
   );
   assert_eq!(entropy.calls(), 1);
   assert_eq!(entropy.requested_bytes(), 32);
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(counters.calls(), 2);
 
   let outcome = handle.command(Shutdown::new()).await.unwrap();
   assert_eq!(outcome.reason(), &ShutdownReason::Explicit);
   assert_eq!(entropy.calls(), 1);
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(counters.calls(), 2);
 }
 
 #[tokio::test]
@@ -270,8 +324,8 @@ async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
     );
   }
 
-  assert_eq!(drops.count(), 2);
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(drops.count(), 3);
+  assert_eq!(counters.calls(), 2);
 }
 
 #[test]
@@ -313,7 +367,7 @@ fn g1_lifecycle_runtime_loss_publishes_failed_terminal_state() {
       ShutdownReason::Fatal(ErrorKind::Internal),
     );
   });
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(counters.calls(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -324,8 +378,8 @@ async fn g1_lifecycle_shutdown_releases_retained_providers() {
 
   handle.command(Shutdown::new()).await.unwrap();
 
-  assert_eq!(drops.count(), 2);
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(drops.count(), 3);
+  assert_eq!(counters.calls(), 2);
 }
 
 #[tokio::test]
@@ -339,8 +393,8 @@ async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
     .await
     .unwrap();
 
-  assert_eq!(drops.count(), 2);
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(drops.count(), 3);
+  assert_eq!(counters.calls(), 2);
 }
 
 fn builder(

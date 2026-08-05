@@ -188,6 +188,17 @@ pub struct StoreRequirements {
 }
 
 impl StoreRequirements {
+  pub(crate) const fn metadata() -> Self {
+    Self {
+      required_durability: DurabilityLevel::OsCrashDurable,
+      conditional_batch: true,
+      ordered_scan: true,
+      reconciliation: true,
+      exclusive_lifetime_lock: true,
+      transactional_migration: false,
+    }
+  }
+
   pub fn required_durability(&self) -> DurabilityLevel {
     self.required_durability
   }
@@ -283,6 +294,26 @@ impl StoreCapabilities {
   pub fn has_transactional_migration(&self) -> bool {
     self.transactional_migration
   }
+
+  pub(crate) const fn satisfies(&self, requirements: &StoreRequirements) -> bool {
+    durability_satisfies(self.durability, requirements.required_durability)
+      && (!requirements.conditional_batch || self.conditional_batch)
+      && (!requirements.ordered_scan || self.ordered_scan)
+      && (!requirements.reconciliation || self.reconciliation)
+      && (!requirements.exclusive_lifetime_lock || self.exclusive_lifetime_lock)
+      && (!requirements.transactional_migration || self.transactional_migration)
+  }
+}
+
+const fn durability_satisfies(actual: DurabilityLevel, required: DurabilityLevel) -> bool {
+  matches!(
+    (actual, required),
+    (DurabilityLevel::OsCrashDurable, _)
+      | (
+        DurabilityLevel::ProcessCrashAtomic,
+        DurabilityLevel::ProcessCrashAtomic
+      )
+  )
 }
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -443,6 +474,30 @@ pub struct StoreTransaction {
 }
 
 impl StoreTransaction {
+  #[allow(dead_code)]
+  pub(crate) fn new(
+    id: TransactionId, base_revision: StoreRevision, operations: Vec<StoreOperation>,
+  ) -> Result<Self> {
+    if operations.is_empty() {
+      return Err(Error::invalid_input("storage transaction operations"));
+    }
+    validate_distinct_operations(&operations)?;
+
+    let mut owned = Vec::new();
+    owned
+      .try_reserve_exact(operations.len())
+      .map_err(|_| Error::resource_exhausted("storage transaction operations"))?;
+    owned.extend(operations);
+    let operations = Arc::from(owned.into_boxed_slice());
+    let operation_digest = digest_store_operations(&base_revision, &operations);
+    Ok(Self {
+      id,
+      operation_digest,
+      base_revision,
+      operations,
+    })
+  }
+
   pub fn id(&self) -> &TransactionId {
     &self.id
   }
@@ -462,6 +517,48 @@ impl StoreTransaction {
   pub fn operations(&self) -> &[StoreOperation] {
     &self.operations
   }
+}
+
+#[allow(dead_code)]
+fn validate_distinct_operations(operations: &[StoreOperation]) -> Result<()> {
+  for (index, operation) in operations.iter().enumerate() {
+    for previous in &operations[..index] {
+      let duplicate = match (operation, previous) {
+        (
+          StoreOperation::Check { namespace, key, .. }
+          | StoreOperation::Put { namespace, key, .. }
+          | StoreOperation::Delete { namespace, key, .. },
+          StoreOperation::Check {
+            namespace: previous_namespace,
+            key: previous_key,
+            ..
+          }
+          | StoreOperation::Put {
+            namespace: previous_namespace,
+            key: previous_key,
+            ..
+          }
+          | StoreOperation::Delete {
+            namespace: previous_namespace,
+            key: previous_key,
+            ..
+          },
+        ) => namespace == previous_namespace && key == previous_key,
+        (
+          StoreOperation::ForgetReceipt { transaction, .. },
+          StoreOperation::ForgetReceipt {
+            transaction: previous_transaction,
+            ..
+          },
+        ) => transaction == previous_transaction,
+        _ => false,
+      };
+      if duplicate {
+        return Err(Error::invalid_input("storage transaction operations"));
+      }
+    }
+  }
+  Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
