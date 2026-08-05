@@ -56,16 +56,17 @@ pub use node::{
 };
 pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};
 pub use protocol::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};
+pub use provider::{
+  CommitOutcome, CommitReceipt, CreatedKey, DurabilityLevel, KeyCapabilities, KeyCreateState,
+  KeyDeleteState, KeyHandle, KeyOperationId, ReconcileOutcome, StoreCapabilities, StoreEntry,
+  StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
+  StoreTransaction, StoreValue,
+};
 pub use view::{NodeStatus, ShutdownOutcome, ShutdownReason};
 
 pub mod extension {
   pub use crate::{
-    TransactionId,
     api::{Clock, Entropy},
-    provider::{
-      CommitOutcome, CommitReceipt, CreatedKey, DurabilityLevel, KeyCreateState, KeyDeleteState,
-      KeyHandle, KeyOperationId, KeyProvider, ReconcileOutcome, Storage, StorageFactory,
-      StoreCapabilities, StoreRequirements, StoreSnapshot, StoreTransaction,
-    },
+    provider::{KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot},
   };
 }
