@@ -109,11 +109,8 @@ macro_rules! category_tag {
 
 category_tag!(FeatureTag, "features", "feature tag");
 category_tag!(ProtocolTag, "protocols", "protocol tag");
-category_tag!(SchemaTag, "schemas", "schema tag");
 category_tag!(TransportTag, "transports", "transport tag");
 category_tag!(DiscoveryTag, "discovery", "discovery tag");
-category_tag!(ResourceTag, "resources", "resource tag");
-category_tag!(EventTag, "events", "event tag");
 
 fn validate_tag(value: &str) -> Result<(usize, usize)> {
   if !(MIN_TAG_LEN..=MAX_TAG_LEN).contains(&value.len()) || !value.is_ascii() {
