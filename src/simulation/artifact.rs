@@ -487,6 +487,7 @@ mod tests {
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
     let provenance = trusted_provenance().unwrap();
     let path = retain_matrix_failure_at(&root, 92, MatrixFailure::Run, &[], provenance).unwrap();
     let bytes = fs::read(&path).unwrap();
@@ -746,6 +747,7 @@ mod tests {
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
     let artifact = build_matrix_artifact(
       91,
       MatrixFailure::DeterministicReplay,
