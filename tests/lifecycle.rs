@@ -13,7 +13,7 @@ use minor_relay::{
   KeyDeleteState, KeyHandle, KeyOperationId, NodeBuilder, NodeConfig, NodeHandle, NodeStatus,
   ProviderErrorContext, ProviderErrorKind, PublicKey, Query, Result, Shutdown, ShutdownOutcome,
   ShutdownReason, Signature, StoreRequirements, WaitForShutdown,
-  extension::{KeyProvider, Storage, StorageFactory},
+  extension::{Entropy, KeyProvider, Storage, StorageFactory},
 };
 use tokio::sync::Notify;
 
@@ -29,6 +29,31 @@ impl ProviderCounters {
 
   fn calls(&self) -> usize {
     self.calls.load(Ordering::SeqCst)
+  }
+}
+
+#[derive(Debug, Default)]
+struct CountingEntropy {
+  calls: AtomicUsize,
+  requested_bytes: AtomicUsize,
+}
+
+impl CountingEntropy {
+  fn calls(&self) -> usize {
+    self.calls.load(Ordering::SeqCst)
+  }
+
+  fn requested_bytes(&self) -> usize {
+    self.requested_bytes.load(Ordering::SeqCst)
+  }
+}
+
+impl Entropy for CountingEntropy {
+  fn fill(&self, output: &mut [u8]) -> Result<()> {
+    self.calls.fetch_add(1, Ordering::SeqCst);
+    self.requested_bytes.store(output.len(), Ordering::SeqCst);
+    output.fill(0x5A);
+    Ok(())
   }
 }
 
@@ -160,12 +185,18 @@ fn g1_lifecycle_sealed_operations_preserve_outputs() {
 #[tokio::test]
 async fn g1_lifecycle_start_and_shutdown_do_not_invoke_providers() {
   let counters = Arc::new(ProviderCounters::default());
-  let handle = start_node(Arc::clone(&counters), None).await;
+  let entropy = Arc::new(CountingEntropy::default());
+  let handle = builder(Arc::clone(&counters), None, entropy.clone())
+    .start()
+    .await
+    .unwrap();
 
   assert_eq!(
     handle.query(GetNodeStatus::new()).await.unwrap(),
     NodeStatus::Running,
   );
+  assert_eq!(entropy.calls(), 1);
+  assert_eq!(entropy.requested_bytes(), 32);
   assert_eq!(counters.calls(), 0);
 
   let outcome = handle.command(Shutdown::new()).await.unwrap();
@@ -245,13 +276,15 @@ async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
 #[test]
 fn g1_lifecycle_start_without_tokio_returns_not_ready_without_provider_calls() {
   let counters = Arc::new(ProviderCounters::default());
-  let mut start = Box::pin(builder(Arc::clone(&counters), None).start());
+  let entropy = Arc::new(CountingEntropy::default());
+  let mut start = Box::pin(builder(Arc::clone(&counters), None, entropy.clone()).start());
   let waker = Waker::noop();
   let mut context = Context::from_waker(waker);
 
   let result = Future::poll(start.as_mut(), &mut context);
 
   assert!(matches!(result, Poll::Ready(Err(error)) if error.kind() == ErrorKind::NotReady));
+  assert_eq!(entropy.calls(), 0);
   assert_eq!(counters.calls(), 0);
 }
 
@@ -309,7 +342,9 @@ async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
   assert_eq!(counters.calls(), 0);
 }
 
-fn builder(counters: Arc<ProviderCounters>, drops: Option<Arc<DropTracker>>) -> NodeBuilder {
+fn builder(
+  counters: Arc<ProviderCounters>, drops: Option<Arc<DropTracker>>, entropy: Arc<CountingEntropy>,
+) -> NodeBuilder {
   NodeBuilder::new(
     Arc::new(CountingStorageFactory {
       counters: Arc::clone(&counters),
@@ -318,12 +353,16 @@ fn builder(counters: Arc<ProviderCounters>, drops: Option<Arc<DropTracker>>) -> 
     Arc::new(CountingKeys { counters, drops }),
   )
   .config(NodeConfig::new())
+  .entropy(entropy)
 }
 
 async fn start_node(
   counters: Arc<ProviderCounters>, drops: Option<Arc<DropTracker>>,
 ) -> NodeHandle {
-  builder(counters, drops).start().await.unwrap()
+  builder(counters, drops, Arc::new(CountingEntropy::default()))
+    .start()
+    .await
+    .unwrap()
 }
 
 fn provider_error(context: ProviderErrorContext) -> Error {
