@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{BoxFuture, Digest, PublicKey, Result, Signature};
+use crate::{BoxFuture, Digest, PublicKey, Result, Signature, TransactionId};
 
 pub struct KeyOperationId {
   _private: (),
@@ -72,10 +72,6 @@ pub struct StoreSnapshot {
 }
 
 pub struct StoreTransaction {
-  _private: (),
-}
-
-pub struct TransactionId {
   _private: (),
 }
 

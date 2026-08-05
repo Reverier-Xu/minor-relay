@@ -14,14 +14,12 @@ pub enum ErrorKind {
   UnsupportedSchema,
   UnsupportedCapability,
   AuthenticationFailed,
-  DeliveryRejected,
-  DeliveryTimeout,
+  RouteUnavailable,
+  StreamInterrupted,
   Overloaded,
-  ClockUnhealthy,
-  ClockExhausted,
+  ResourceExhausted,
   StorageLocked,
   StorageCorrupt,
-  QuotaExceeded,
   PermissionDenied,
   Io,
   CommitUnknown,
@@ -34,11 +32,13 @@ pub enum ErrorKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderErrorKind {
   Unsupported,
+  UnsupportedSchema,
   UnsupportedCapability,
+  CommitUnknown,
   Overloaded,
+  ResourceExhausted,
   StorageLocked,
   StorageCorrupt,
-  QuotaExceeded,
   PermissionDenied,
   Io,
   Cancelled,
@@ -50,6 +50,7 @@ pub enum ProviderErrorKind {
 pub enum ProviderErrorContext {
   StorageOpen,
   StorageSnapshot,
+  StorageScan,
   StorageCommit,
   StorageReconcile,
   StorageFlush,
@@ -66,9 +67,9 @@ pub enum ProviderErrorContext {
   TransportReceive,
   TransportClose,
   Discovery,
-  ProtocolHandler,
-  StateCodec,
+  PacketConsumer,
   NeighborPolicy,
+  LoadBalancingPolicy,
   RoutingPolicy,
 }
 
@@ -159,11 +160,13 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 const fn provider_error_kind(kind: ProviderErrorKind) -> ErrorKind {
   match kind {
     ProviderErrorKind::Unsupported => ErrorKind::Unsupported,
+    ProviderErrorKind::UnsupportedSchema => ErrorKind::UnsupportedSchema,
     ProviderErrorKind::UnsupportedCapability => ErrorKind::UnsupportedCapability,
+    ProviderErrorKind::CommitUnknown => ErrorKind::CommitUnknown,
     ProviderErrorKind::Overloaded => ErrorKind::Overloaded,
+    ProviderErrorKind::ResourceExhausted => ErrorKind::ResourceExhausted,
     ProviderErrorKind::StorageLocked => ErrorKind::StorageLocked,
     ProviderErrorKind::StorageCorrupt => ErrorKind::StorageCorrupt,
-    ProviderErrorKind::QuotaExceeded => ErrorKind::QuotaExceeded,
     ProviderErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
     ProviderErrorKind::Io => ErrorKind::Io,
     ProviderErrorKind::Cancelled => ErrorKind::Cancelled,
@@ -175,6 +178,7 @@ const fn provider_error_context(context: ProviderErrorContext) -> &'static str {
   match context {
     ProviderErrorContext::StorageOpen => "storage open",
     ProviderErrorContext::StorageSnapshot => "storage snapshot",
+    ProviderErrorContext::StorageScan => "storage scan",
     ProviderErrorContext::StorageCommit => "storage commit",
     ProviderErrorContext::StorageReconcile => "storage reconcile",
     ProviderErrorContext::StorageFlush => "storage flush",
@@ -191,9 +195,9 @@ const fn provider_error_context(context: ProviderErrorContext) -> &'static str {
     ProviderErrorContext::TransportReceive => "transport receive",
     ProviderErrorContext::TransportClose => "transport close",
     ProviderErrorContext::Discovery => "discovery",
-    ProviderErrorContext::ProtocolHandler => "protocol handler",
-    ProviderErrorContext::StateCodec => "state codec",
+    ProviderErrorContext::PacketConsumer => "packet consumer",
     ProviderErrorContext::NeighborPolicy => "neighbor policy",
+    ProviderErrorContext::LoadBalancingPolicy => "load balancing policy",
     ProviderErrorContext::RoutingPolicy => "routing policy",
   }
 }

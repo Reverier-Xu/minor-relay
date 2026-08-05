@@ -2,7 +2,4 @@
 mod envelope;
 mod tag;
 
-pub use tag::{
-  DiscoveryTag, EventTag, FeatureTag, ProtocolTag, QualifiedTag, ResourceTag, SchemaTag,
-  TransportTag,
-};
+pub use tag::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};

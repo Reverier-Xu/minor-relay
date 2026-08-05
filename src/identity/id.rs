@@ -48,6 +48,16 @@ macro_rules! canonical_id {
 canonical_id!(NodeId, "node_", "node id");
 canonical_id!(ClusterId, "cluster_", "cluster id");
 canonical_id!(TraceId, "trace_", "trace id");
+canonical_id!(TransactionId, "txn_", "transaction id");
+
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OperationId([u8; 16]);
+
+impl fmt::Debug for OperationId {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("OperationId(..)")
+  }
+}
 
 fn validate_id(value: &str, prefix: &str, context: &'static str) -> Result<()> {
   let expected_len = prefix.len() + RANDOM_SUFFIX_LEN;

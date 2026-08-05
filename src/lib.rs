@@ -46,26 +46,26 @@ mod view;
 mod simulation;
 
 pub use api::{BoxFuture, MonotonicTime};
-pub use config::{AdmissionLimits, NodeConfig, ProtocolLimits, TraceLimits};
+pub use config::{NodeConfig, ParserLimits, RecoveryConfig, TraceMetadataLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
-pub use identity::{ClusterId, Digest, NodeId, PublicKey, Signature, TraceId};
+pub use identity::{
+  ClusterId, Digest, NodeId, OperationId, PublicKey, Signature, TraceId, TransactionId,
+};
 pub use node::{
   EventOptions, EventReceive, EventSubscription, ExtensionRegistry, NodeBuilder, NodeHandle,
 };
 pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};
-pub use protocol::{
-  DiscoveryTag, EventTag, FeatureTag, ProtocolTag, QualifiedTag, ResourceTag, SchemaTag,
-  TransportTag,
-};
+pub use protocol::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};
 pub use view::{NodeStatus, ShutdownOutcome, ShutdownReason};
 
 pub mod extension {
   pub use crate::{
+    TransactionId,
     api::{Clock, Entropy},
     provider::{
       CommitOutcome, CommitReceipt, CreatedKey, DurabilityLevel, KeyCreateState, KeyDeleteState,
       KeyHandle, KeyOperationId, KeyProvider, ReconcileOutcome, Storage, StorageFactory,
-      StoreCapabilities, StoreRequirements, StoreSnapshot, StoreTransaction, TransactionId,
+      StoreCapabilities, StoreRequirements, StoreSnapshot, StoreTransaction,
     },
   };
 }
