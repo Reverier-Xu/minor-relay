@@ -647,3 +647,90 @@ fn update_bytes(hasher: &mut Sha256, value: &[u8]) {
 fn update_length(hasher: &mut Sha256, value: usize) {
   hasher.update((value as u128).to_be_bytes());
 }
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use super::{
+    DurabilityLevel, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements,
+    StoreRevision, StoreTransaction, StoreValue,
+  };
+  use crate::{Digest, QualifiedTag, TransactionId};
+
+  #[test]
+  fn g1_core_store_requirements_expose_every_required_capability() {
+    let requirements = StoreRequirements {
+      required_durability: DurabilityLevel::OsCrashDurable,
+      conditional_batch: true,
+      ordered_scan: true,
+      reconciliation: true,
+      exclusive_lifetime_lock: true,
+      transactional_migration: true,
+    };
+
+    assert_eq!(
+      requirements.required_durability(),
+      DurabilityLevel::OsCrashDurable,
+    );
+    assert!(requirements.requires_conditional_batch());
+    assert!(requirements.requires_ordered_scan());
+    assert!(requirements.requires_reconciliation());
+    assert!(requirements.requires_exclusive_lifetime_lock());
+    assert!(requirements.requires_transactional_migration());
+  }
+
+  #[test]
+  fn g1_core_store_transaction_digest_is_canonical_and_redacted() {
+    let mut transaction = transaction_fixture(1, b"secret-value");
+    let computed = transaction.computed_operation_digest();
+    transaction.operation_digest = computed.clone();
+
+    assert_eq!(transaction.id().as_str(), "txn_0123456789abcdefghijk");
+    assert_eq!(transaction.operation_digest(), &computed);
+    assert_eq!(transaction.computed_operation_digest(), computed);
+    assert_eq!(transaction.base_revision().as_bytes(), &[1]);
+    assert_eq!(transaction.operations().len(), 1);
+    assert_eq!(
+      computed.as_bytes(),
+      &[
+        89, 119, 103, 95, 71, 31, 154, 27, 115, 56, 18, 38, 9, 154, 106, 92, 177, 51, 198, 69, 83,
+        16, 36, 26, 30, 196, 229, 65, 207, 156, 186, 0,
+      ],
+    );
+
+    let same = transaction_fixture(1, b"secret-value").computed_operation_digest();
+    let changed_revision = transaction_fixture(2, b"secret-value").computed_operation_digest();
+    let changed_value = transaction_fixture(1, b"other-value").computed_operation_digest();
+    assert_eq!(computed, same);
+    assert_ne!(computed, changed_revision);
+    assert_ne!(computed, changed_value);
+
+    let raw_value_digest = StoreValue::new(Arc::from(b"secret-value".as_slice()))
+      .digest()
+      .clone();
+    assert_ne!(computed, raw_value_digest);
+
+    let debug = format!("{transaction:?}");
+    assert!(!debug.contains("secret-key"));
+    assert!(!debug.contains("secret-value"));
+  }
+
+  fn transaction_fixture(revision: u8, value: &[u8]) -> StoreTransaction {
+    let namespace =
+      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap())
+        .unwrap();
+    let operations = Arc::from([StoreOperation::Put {
+      namespace,
+      key: StoreKey::new(Arc::from(b"secret-key".as_slice())),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(value)),
+    }]);
+    StoreTransaction {
+      id: TransactionId::parse("txn_0123456789abcdefghijk").unwrap(),
+      operation_digest: Digest::from_bytes([0; 32]),
+      base_revision: StoreRevision::new(Arc::from([revision])).unwrap(),
+      operations,
+    }
+  }
+}
