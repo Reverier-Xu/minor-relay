@@ -180,14 +180,63 @@ pub(crate) fn fail_matrix(seed: u64, failure: MatrixFailure, records: &[EventRec
 fn write_failure_artifact(
   repository_root: &Path, seed: u64, failure: MatrixFailure, artifact: &ArtifactBytes,
 ) -> Result<PathBuf, FailureCaptureError> {
-  let directory = repository_root.join("target/minor-relay-failures");
-  fs::create_dir_all(&directory).map_err(|_| FailureCaptureError::Directory)?;
+  write_failure_artifact_with_sync(repository_root, seed, failure, artifact, sync_directory)
+}
+
+fn write_failure_artifact_with_sync(
+  repository_root: &Path, seed: u64, failure: MatrixFailure, artifact: &ArtifactBytes,
+  mut sync_directory: impl FnMut(&Path) -> io::Result<()>,
+) -> Result<PathBuf, FailureCaptureError> {
+  let directory = ensure_failure_artifact_directory(repository_root, &mut sync_directory)?;
   let path = directory.join(format!(
     "simulation-network-fault-matrix-{}-seed-{seed}.json",
     failure.diagnostic()
   ));
-  publish_new_file(&path, |file| file.write_all(artifact.as_bytes()))?;
+  publish_new_file_with_sync(
+    &path,
+    |file| file.write_all(artifact.as_bytes()),
+    sync_directory,
+  )?;
   Ok(path)
+}
+
+fn ensure_failure_artifact_directory(
+  repository_root: &Path, sync_directory: &mut impl FnMut(&Path) -> io::Result<()>,
+) -> Result<PathBuf, FailureCaptureError> {
+  if !fs::metadata(repository_root)
+    .map_err(|_| FailureCaptureError::Directory)?
+    .is_dir()
+  {
+    return Err(FailureCaptureError::Directory);
+  }
+
+  let target = repository_root.join("target");
+  ensure_directory_level(&target, repository_root, sync_directory)?;
+  let directory = target.join("minor-relay-failures");
+  ensure_directory_level(&directory, &target, sync_directory)?;
+  Ok(directory)
+}
+
+fn ensure_directory_level(
+  directory: &Path, parent: &Path, sync_directory: &mut impl FnMut(&Path) -> io::Result<()>,
+) -> Result<(), FailureCaptureError> {
+  match fs::create_dir(directory) {
+    Ok(()) => {
+      sync_directory(directory).map_err(|_| FailureCaptureError::Directory)?;
+      sync_directory(parent).map_err(|_| FailureCaptureError::Directory)
+    }
+    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+      if fs::metadata(directory)
+        .map_err(|_| FailureCaptureError::Directory)?
+        .is_dir()
+      {
+        Ok(())
+      } else {
+        Err(FailureCaptureError::Directory)
+      }
+    }
+    Err(_) => Err(FailureCaptureError::Directory),
+  }
 }
 
 fn publish_new_file(
@@ -236,7 +285,7 @@ fn sync_directory(directory: &Path) -> io::Result<()> {
 
   const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
   OpenOptions::new()
-    .read(true)
+    .write(true)
     .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
     .open(directory)?
     .sync_all()
@@ -280,7 +329,7 @@ pub(crate) fn capture_network_fault_matrix_fixture(
 #[cfg(test)]
 mod tests {
   use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     fs,
     io::{self, Write},
     path::Path,
@@ -291,9 +340,10 @@ mod tests {
 
   use super::{
     FailureCaptureError, MatrixFailure, build_matrix_artifact,
-    capture_network_fault_matrix_fixture, parse_embedded_provenance, publish_new_file,
-    publish_new_file_with_sync, retain_matrix_failure_at, synthetic_fixture_provenance,
-    trusted_provenance, write_failure_artifact,
+    capture_network_fault_matrix_fixture, ensure_failure_artifact_directory,
+    parse_embedded_provenance, publish_new_file, publish_new_file_with_sync,
+    retain_matrix_failure_at, synthetic_fixture_provenance, trusted_provenance,
+    write_failure_artifact, write_failure_artifact_with_sync,
   };
 
   #[test]
@@ -451,6 +501,115 @@ mod tests {
       "\"lockfile_digest\":\"{}\"",
       provenance.lockfile.as_hex()
     )));
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_new_directories_are_synced_child_before_parent() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-directory-creation-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let barriers = RefCell::new(Vec::new());
+
+    let directory = ensure_failure_artifact_directory(&root, &mut |path| {
+      barriers.borrow_mut().push(path.to_path_buf());
+      Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(directory, root.join("target/minor-relay-failures"));
+    assert_eq!(
+      barriers.into_inner(),
+      [
+        root.join("target"),
+        root.clone(),
+        root.join("target/minor-relay-failures"),
+        root.join("target"),
+      ]
+    );
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_directory_barrier_failure_prevents_publication() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-directory-barrier-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let artifact = build_matrix_artifact(
+      93,
+      MatrixFailure::Run,
+      synthetic_fixture_provenance().unwrap(),
+      &[],
+    )
+    .unwrap();
+    let barriers = Cell::new(0);
+
+    let result = write_failure_artifact_with_sync(&root, 93, MatrixFailure::Run, &artifact, |_| {
+      barriers.set(barriers.get() + 1);
+      if barriers.get() == 4 {
+        Err(io::Error::other(
+          "injected directory creation barrier failure",
+        ))
+      } else {
+        Ok(())
+      }
+    });
+
+    assert_eq!(result, Err(FailureCaptureError::Directory));
+    assert_eq!(barriers.get(), 4);
+    let directory = root.join("target/minor-relay-failures");
+    assert!(directory.is_dir());
+    assert_eq!(fs::read_dir(directory).unwrap().count(), 0);
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_existing_directories_need_no_creation_barrier() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-existing-directory-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("target/minor-relay-failures")).unwrap();
+
+    let directory = ensure_failure_artifact_directory(&root, &mut |_| {
+      Err(io::Error::other(
+        "existing directory was falsely treated as new",
+      ))
+    })
+    .unwrap();
+
+    assert_eq!(directory, root.join("target/minor-relay-failures"));
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn simulation_failure_artifact_security_existing_levels_must_be_directories() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!(
+        "minor-relay-nondirectory-level-test-{}",
+        std::process::id()
+      ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("target"), b"not a directory").unwrap();
+
+    let result = ensure_failure_artifact_directory(&root, &mut |_| Ok(()));
+
+    assert_eq!(result, Err(FailureCaptureError::Directory));
     fs::remove_dir_all(root).unwrap();
   }
 
