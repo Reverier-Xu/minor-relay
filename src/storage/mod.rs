@@ -1,8 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+  sync::{Arc, Mutex},
+  time::Duration,
+};
 
+use self::receipt::{HostWallClock, PreparedTransaction, WallClock};
 use crate::{
   CommitOutcome, CommitReceipt, Digest, Error, ErrorKind, ProviderErrorContext, ProviderErrorKind,
-  ReconcileOutcome, Result, StoreRequirements, StoreTransaction, TransactionId,
+  ReconcileOutcome, Result, StoreRequirements, TransactionId,
   provider::{Storage, StorageFactory, StoreSnapshot},
 };
 
@@ -26,6 +30,8 @@ enum CommitState {
 pub(crate) struct MetadataStore {
   provider: Box<dyn Storage>,
   state: Mutex<CommitState>,
+  clock: Arc<dyn WallClock>,
+  receipt_retention: Duration,
 }
 
 #[allow(dead_code)]
@@ -59,7 +65,15 @@ impl Drop for ProviderCall<'_> {
 
 #[allow(dead_code)]
 impl MetadataStore {
-  pub(crate) async fn open(factory: &Arc<dyn StorageFactory>) -> Result<Self> {
+  pub(crate) async fn open(
+    factory: &Arc<dyn StorageFactory>, receipt_retention: Duration,
+  ) -> Result<Self> {
+    Self::open_with_clock(factory, receipt_retention, Arc::new(HostWallClock)).await
+  }
+
+  async fn open_with_clock(
+    factory: &Arc<dyn StorageFactory>, receipt_retention: Duration, clock: Arc<dyn WallClock>,
+  ) -> Result<Self> {
     let requirements = StoreRequirements::metadata();
     let provider = factory.open(requirements).await?;
     if !provider.capabilities().satisfies(&requirements) {
@@ -71,6 +85,8 @@ impl MetadataStore {
     Ok(Self {
       provider,
       state: Mutex::new(CommitState::Ready),
+      clock,
+      receipt_retention,
     })
   }
 
@@ -78,7 +94,8 @@ impl MetadataStore {
     self.provider.snapshot().await
   }
 
-  pub(crate) async fn commit(&self, transaction: StoreTransaction) -> Result<CommitOutcome> {
+  pub(crate) async fn commit(&self, transaction: PreparedTransaction) -> Result<CommitOutcome> {
+    let transaction = transaction.0;
     let pending = PendingCommit {
       transaction: transaction.id().clone(),
       digest: transaction.operation_digest().clone(),
@@ -238,6 +255,9 @@ impl MetadataStore {
       .map_err(|_| Error::internal("metadata storage commit state"))
   }
 }
+
+#[allow(dead_code)]
+mod receipt;
 
 #[cfg(test)]
 mod contract;

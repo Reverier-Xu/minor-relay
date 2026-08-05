@@ -1,9 +1,11 @@
 use std::{
   collections::{BTreeMap, HashMap},
+  future,
   sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
   },
+  time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -12,6 +14,14 @@ use crate::{
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
   StoreTransaction, StoreValue, TransactionId,
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
+  storage::{
+    MetadataStore,
+    receipt::{
+      PreparedTransaction, ReceiptCleanupOutcome, ReceiptIdentity, ReceiptReferenceOutcome,
+      ReceiptReferenceToken, WallClock, decode_wall_time, eligibility_anchor_key, encode_wall_time,
+      internal_namespace, reference_head_key, used_id_key,
+    },
+  },
 };
 
 #[derive(Debug)]
@@ -26,6 +36,7 @@ struct ReferenceState {
 struct ReferenceFactory {
   capabilities: StoreCapabilities,
   state: Arc<Mutex<ReferenceState>>,
+  commit_calls: Arc<AtomicUsize>,
 }
 
 impl ReferenceFactory {
@@ -38,6 +49,7 @@ impl ReferenceFactory {
         entries: BTreeMap::new(),
         receipts: HashMap::new(),
       })),
+      commit_calls: Arc::new(AtomicUsize::new(0)),
     }
   }
 }
@@ -46,17 +58,19 @@ impl ReferenceFactory {
 struct ReferenceStorage {
   capabilities: StoreCapabilities,
   state: Arc<Mutex<ReferenceState>>,
+  commit_calls: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum UnknownFaultMode {
   Applied,
   NotApplied,
+  Pending,
 }
 
 #[derive(Debug)]
 struct UnknownFaultFactory {
-  reference: ReferenceFactory,
+  reference: Arc<ReferenceFactory>,
   mode: UnknownFaultMode,
   commit_calls: Arc<AtomicUsize>,
 }
@@ -88,6 +102,7 @@ impl StorageFactory for ReferenceFactory {
   ) -> BoxFuture<'a, Result<Box<dyn Storage>>> {
     let capabilities = self.capabilities;
     let state = Arc::clone(&self.state);
+    let commit_calls = Arc::clone(&self.commit_calls);
     Box::pin(async move {
       if !capabilities.satisfies(&requirements) {
         return Err(Error::provider(
@@ -108,6 +123,7 @@ impl StorageFactory for ReferenceFactory {
       Ok(Box::new(ReferenceStorage {
         capabilities,
         state,
+        commit_calls,
       }) as Box<dyn Storage>)
     })
   }
@@ -134,6 +150,7 @@ impl Storage for ReferenceStorage {
   }
 
   fn commit<'a>(&'a self, transaction: StoreTransaction) -> BoxFuture<'a, Result<CommitOutcome>> {
+    self.commit_calls.fetch_add(1, Ordering::SeqCst);
     let outcome = reference_commit(&self.state, transaction);
     Box::pin(async move { outcome })
   }
@@ -192,11 +209,15 @@ impl Storage for UnknownFaultStorage {
     );
     *self.pending.lock().unwrap() = Some(identity.clone());
     Box::pin(async move {
-      if matches!(self.mode, UnknownFaultMode::Applied) {
-        assert!(matches!(
-          self.reference.commit(transaction).await?,
-          CommitOutcome::Committed(_)
-        ));
+      match self.mode {
+        UnknownFaultMode::Applied => {
+          assert!(matches!(
+            self.reference.commit(transaction).await?,
+            CommitOutcome::Committed(_)
+          ));
+        }
+        UnknownFaultMode::NotApplied => {}
+        UnknownFaultMode::Pending => return future::pending().await,
       }
       Ok(CommitOutcome::Unknown {
         transaction: identity.0,
@@ -213,7 +234,7 @@ impl Storage for UnknownFaultStorage {
       if pending
         .as_ref()
         .is_some_and(|(pending_transaction, pending_digest)| {
-          pending_transaction == transaction && pending_digest != digest
+          pending_transaction != transaction || pending_digest != digest
         })
       {
         return Ok(ReconcileOutcome::DigestConflict);
@@ -853,6 +874,808 @@ async fn storage_contract_conflicts_atomicity_and_idempotence(factory: Arc<dyn S
   assert!(transaction(17, receipt.committed_revision().clone(), duplicate_receipt).is_err());
 }
 
+#[derive(Debug)]
+struct ManualClock {
+  value: Mutex<SystemTime>,
+}
+
+impl ManualClock {
+  fn new(value: SystemTime) -> Self {
+    Self {
+      value: Mutex::new(value),
+    }
+  }
+
+  fn set(&self, value: SystemTime) {
+    *self.value.lock().unwrap() = value;
+  }
+}
+
+impl WallClock for ManualClock {
+  fn now(&self) -> SystemTime {
+    *self.value.lock().unwrap()
+  }
+}
+
+#[tokio::test]
+async fn storage_contract_prepared_transactions_are_atomic_idempotent_and_permanently_used() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(100)));
+  let store = open_engine(&factory, Duration::from_secs(10), Arc::clone(&clock)).await;
+  let snapshot = store.snapshot().await.unwrap();
+  let prepared = store
+    .prepare_transaction(
+      contract_transaction_id(1),
+      snapshot.revision().clone(),
+      vec![
+        StoreOperation::Put {
+          namespace: namespace("prepared-one"),
+          key: store_key(b"one"),
+          expected: StoreExpectation::Absent,
+          value: value(b"one"),
+        },
+        StoreOperation::Put {
+          namespace: namespace("prepared-two"),
+          key: store_key(b"two"),
+          expected: StoreExpectation::Absent,
+          value: value(b"two"),
+        },
+      ],
+    )
+    .unwrap();
+  let marker_key = used_id_key(prepared.id()).unwrap();
+  assert_eq!(prepared.operations().len(), 3);
+  assert!(prepared.operations().iter().any(|operation| {
+    matches!(
+      operation,
+      StoreOperation::Put {
+        namespace,
+        key,
+        expected: StoreExpectation::Absent,
+        value,
+      } if namespace.as_str() == internal_namespace().unwrap().as_str()
+        && key == &marker_key
+        && value.as_bytes().is_empty()
+    )
+  }));
+
+  let receipt = committed(store.commit(prepared.clone()).await.unwrap());
+  assert_eq!(
+    committed(store.commit(prepared.clone()).await.unwrap()),
+    receipt
+  );
+  assert_eq!(
+    store
+      .snapshot()
+      .await
+      .unwrap()
+      .get(&internal_namespace().unwrap(), &marker_key)
+      .await
+      .unwrap()
+      .unwrap()
+      .as_bytes(),
+    &[],
+  );
+
+  let target = ReceiptIdentity::from_receipt(&receipt);
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(2))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Anchored(_)
+  ));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(3))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Retained
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(50));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(4))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Retained
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(100));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(5))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Retained
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(110));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(6))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Forgotten(_)
+  ));
+  drop(store);
+
+  let raw = factory.open(StoreRequirements::metadata()).await.unwrap();
+  assert!(matches!(
+    raw
+      .reconcile(target.transaction(), target.operation_digest())
+      .await
+      .unwrap(),
+    ReconcileOutcome::Aborted
+  ));
+  assert!(matches!(
+    raw.commit(prepared.0.clone()).await.unwrap(),
+    CommitOutcome::Conflict
+  ));
+  assert!(
+    raw
+      .snapshot()
+      .await
+      .unwrap()
+      .get(&internal_namespace().unwrap(), &marker_key)
+      .await
+      .unwrap()
+      .is_some()
+  );
+}
+
+#[tokio::test]
+async fn storage_contract_opaque_reference_categories_block_cleanup_until_final_removal() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(200)));
+  let store = open_engine(&factory, Duration::from_secs(10), Arc::clone(&clock)).await;
+  let (_, target) = commit_target(&store, 20).await;
+  let owner = ReceiptReferenceToken::from_digest(Digest::from_bytes([1; 32]));
+  let pending = ReceiptReferenceToken::from_digest(Digest::from_bytes([2; 32]));
+  let provider_intent = ReceiptReferenceToken::from_digest(Digest::from_bytes([3; 32]));
+  let migration = ReceiptReferenceToken::from_digest(Digest::from_bytes([4; 32]));
+  let unknown = ReceiptReferenceToken::from_digest(Digest::from_bytes([5; 32]));
+  let tokens = [owner, pending, provider_intent, migration, unknown];
+
+  for (offset, token) in tokens.iter().enumerate() {
+    assert!(matches!(
+      store
+        .add_receipt_reference(
+          &target,
+          token,
+          contract_transaction_id(21 + u16::try_from(offset).unwrap()),
+        )
+        .await
+        .unwrap(),
+      ReceiptReferenceOutcome::Applied(_)
+    ));
+  }
+  let commits_before_cleanup = factory.commit_calls.load(Ordering::SeqCst);
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(30))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Referenced
+  ));
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    commits_before_cleanup
+  );
+
+  for (offset, token) in tokens[..4].iter().enumerate() {
+    assert!(matches!(
+      store
+        .remove_receipt_reference(
+          &target,
+          token,
+          contract_transaction_id(31 + u16::try_from(offset).unwrap()),
+        )
+        .await
+        .unwrap(),
+      ReceiptReferenceOutcome::Applied(_)
+    ));
+    let before = factory.commit_calls.load(Ordering::SeqCst);
+    assert!(matches!(
+      store
+        .cleanup_receipt(
+          &target,
+          contract_transaction_id(40 + u16::try_from(offset).unwrap()),
+        )
+        .await
+        .unwrap(),
+      ReceiptCleanupOutcome::Referenced
+    ));
+    assert_eq!(factory.commit_calls.load(Ordering::SeqCst), before);
+  }
+  assert!(matches!(
+    store
+      .remove_receipt_reference(&target, &tokens[4], contract_transaction_id(50))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Applied(_)
+  ));
+  let snapshot = store.snapshot().await.unwrap();
+  assert!(
+    snapshot
+      .get(
+        &internal_namespace().unwrap(),
+        &reference_head_key(target.transaction()).unwrap(),
+      )
+      .await
+      .unwrap()
+      .is_none()
+  );
+  assert!(
+    snapshot
+      .get(
+        &internal_namespace().unwrap(),
+        &eligibility_anchor_key(target.transaction()).unwrap(),
+      )
+      .await
+      .unwrap()
+      .is_none()
+  );
+  drop(snapshot);
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(51))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Anchored(_)
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(210));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(52))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Forgotten(_)
+  ));
+}
+
+#[tokio::test]
+async fn storage_contract_reference_addition_and_final_disappearance_reset_retention() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(300)));
+  let store = open_engine(&factory, Duration::from_secs(10), Arc::clone(&clock)).await;
+  let (_, target) = commit_target(&store, 60).await;
+  let token = ReceiptReferenceToken::from_digest(Digest::from_bytes([9; 32]));
+
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(61))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Anchored(_)
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(305));
+  assert!(matches!(
+    store
+      .add_receipt_reference(&target, &token, contract_transaction_id(62))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Applied(_)
+  ));
+  assert!(
+    store
+      .snapshot()
+      .await
+      .unwrap()
+      .get(
+        &internal_namespace().unwrap(),
+        &eligibility_anchor_key(target.transaction()).unwrap(),
+      )
+      .await
+      .unwrap()
+      .is_none()
+  );
+  clock.set(UNIX_EPOCH + Duration::from_secs(310));
+  assert!(matches!(
+    store
+      .remove_receipt_reference(&target, &token, contract_transaction_id(63))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Applied(_)
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(320));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(64))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Anchored(_)
+  ));
+  let anchor = store
+    .snapshot()
+    .await
+    .unwrap()
+    .get(
+      &internal_namespace().unwrap(),
+      &eligibility_anchor_key(target.transaction()).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(
+    decode_wall_time(anchor.as_bytes()).unwrap(),
+    UNIX_EPOCH + Duration::from_secs(320)
+  );
+  clock.set(UNIX_EPOCH + Duration::from_secs(329));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(65))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Retained
+  ));
+  clock.set(UNIX_EPOCH + Duration::from_secs(330));
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(66))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Forgotten(_)
+  ));
+}
+
+#[tokio::test]
+async fn storage_contract_reserved_injection_duplicates_corruption_and_overflow_fail_closed() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(400)));
+  let store = open_engine(&factory, Duration::from_secs(10), clock).await;
+  let (_, target) = commit_target(&store, 70).await;
+  let token = ReceiptReferenceToken::from_digest(Digest::from_bytes([10; 32]));
+  let snapshot = store.snapshot().await.unwrap();
+  assert_eq!(
+    store
+      .prepare_transaction(
+        contract_transaction_id(71),
+        snapshot.revision().clone(),
+        vec![StoreOperation::Put {
+          namespace: internal_namespace().unwrap(),
+          key: store_key(b"injected"),
+          expected: StoreExpectation::Absent,
+          value: value(b"injected"),
+        }],
+      )
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::InvalidInput
+  );
+  assert_eq!(
+    store
+      .prepare_transaction(
+        contract_transaction_id(711),
+        snapshot.revision().clone(),
+        vec![StoreOperation::ForgetReceipt {
+          transaction: target.transaction().clone(),
+          expected_operation_digest: target.operation_digest().clone(),
+        }],
+      )
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::InvalidInput
+  );
+  drop(snapshot);
+  assert!(matches!(
+    store
+      .add_receipt_reference(&target, &token, contract_transaction_id(72))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Applied(_)
+  ));
+  let before_duplicate = factory.commit_calls.load(Ordering::SeqCst);
+  assert!(matches!(
+    store
+      .add_receipt_reference(&target, &token, contract_transaction_id(73))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Conflict
+  ));
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_duplicate
+  );
+  let missing = ReceiptReferenceToken::from_digest(Digest::from_bytes([11; 32]));
+  assert!(matches!(
+    store
+      .remove_receipt_reference(&target, &missing, contract_transaction_id(74))
+      .await
+      .unwrap(),
+    ReceiptReferenceOutcome::Conflict
+  ));
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_duplicate
+  );
+
+  let head_key = reference_head_key(target.transaction()).unwrap();
+  {
+    let mut state = factory.state.lock().unwrap();
+    state
+      .entries
+      .remove(&(internal_namespace().unwrap(), head_key.clone()));
+  }
+  assert_eq!(
+    store
+      .remove_receipt_reference(&target, &token, contract_transaction_id(75))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_duplicate
+  );
+  {
+    let mut state = factory.state.lock().unwrap();
+    state.entries.insert(
+      (internal_namespace().unwrap(), head_key),
+      StoreValue::new(Arc::from(u64::MAX.to_be_bytes())),
+    );
+  }
+  let overflow_token = ReceiptReferenceToken::from_digest(Digest::from_bytes([12; 32]));
+  assert_eq!(
+    store
+      .add_receipt_reference(&target, &overflow_token, contract_transaction_id(76))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  assert_eq!(
+    factory.commit_calls.load(Ordering::SeqCst),
+    before_duplicate
+  );
+}
+
+#[tokio::test]
+async fn storage_contract_malformed_reference_count_and_anchor_fail_without_mutation() {
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(450)));
+  let store = open_engine(&factory, Duration::from_secs(10), clock).await;
+  let (_, target) = commit_target(&store, 85).await;
+  let namespace = internal_namespace().unwrap();
+  let head_key = reference_head_key(target.transaction()).unwrap();
+  let anchor_key = eligibility_anchor_key(target.transaction()).unwrap();
+
+  {
+    let mut state = factory.state.lock().unwrap();
+    state.entries.insert(
+      (namespace.clone(), head_key.clone()),
+      StoreValue::new(Arc::from([1_u8, 2, 3].as_slice())),
+    );
+  }
+  let before = factory.commit_calls.load(Ordering::SeqCst);
+  assert_eq!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(86))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  assert_eq!(factory.commit_calls.load(Ordering::SeqCst), before);
+  assert!(
+    factory
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .contains_key(target.transaction())
+  );
+
+  {
+    let mut state = factory.state.lock().unwrap();
+    state.entries.remove(&(namespace.clone(), head_key));
+    let mut malformed_time = [0_u8; 13];
+    malformed_time[9..13].copy_from_slice(&1_000_000_000_u32.to_be_bytes());
+    state.entries.insert(
+      (namespace, anchor_key),
+      StoreValue::new(Arc::from(malformed_time)),
+    );
+  }
+  assert_eq!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(87))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  assert_eq!(factory.commit_calls.load(Ordering::SeqCst), before);
+  assert!(
+    factory
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .contains_key(target.transaction())
+  );
+}
+
+#[test]
+fn storage_contract_wall_time_encoding_is_canonical_pre_epoch_and_rejects_malformed_values() {
+  let before_epoch = UNIX_EPOCH - Duration::new(7, 123_456_789);
+  let encoded = encode_wall_time(before_epoch);
+  assert_eq!(encoded.len(), 13);
+  assert_eq!(decode_wall_time(&encoded).unwrap(), before_epoch);
+  assert_eq!(
+    encode_wall_time(decode_wall_time(&encoded).unwrap()),
+    encoded
+  );
+
+  let mut invalid_nanos = encoded;
+  invalid_nanos[9..13].copy_from_slice(&1_000_000_000_u32.to_be_bytes());
+  assert_eq!(
+    decode_wall_time(&invalid_nanos).unwrap_err().kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  let mut invalid_sign = encoded;
+  invalid_sign[0] = 2;
+  assert_eq!(
+    decode_wall_time(&invalid_sign).unwrap_err().kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+  assert_eq!(
+    decode_wall_time(&encoded[..12]).unwrap_err().kind(),
+    crate::ErrorKind::StorageCorrupt
+  );
+}
+
+#[tokio::test]
+async fn storage_contract_deadline_overflow_retains_without_provider_commit() {
+  let Some(anchor_time) = UNIX_EPOCH.checked_add(Duration::from_secs(i64::MAX as u64)) else {
+    return;
+  };
+  let factory = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(anchor_time));
+  let store = open_engine(&factory, Duration::from_secs(10), clock).await;
+  let (_, target) = commit_target(&store, 80).await;
+  {
+    let mut state = factory.state.lock().unwrap();
+    state.entries.insert(
+      (
+        internal_namespace().unwrap(),
+        eligibility_anchor_key(target.transaction()).unwrap(),
+      ),
+      StoreValue::new(Arc::from(encode_wall_time(anchor_time))),
+    );
+  }
+  let before = factory.commit_calls.load(Ordering::SeqCst);
+  assert!(matches!(
+    store
+      .cleanup_receipt(&target, contract_transaction_id(81))
+      .await
+      .unwrap(),
+    ReceiptCleanupOutcome::Retained
+  ));
+  assert_eq!(factory.commit_calls.load(Ordering::SeqCst), before);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FaultedReceiptOperation {
+  Add,
+  Remove,
+  Anchor,
+  Forget,
+}
+
+#[tokio::test]
+async fn storage_contract_unknown_receipt_mutations_freeze_and_reconcile_exact_operation() {
+  for mode in [UnknownFaultMode::Applied, UnknownFaultMode::NotApplied] {
+    for phase in [
+      FaultedReceiptOperation::Add,
+      FaultedReceiptOperation::Remove,
+      FaultedReceiptOperation::Anchor,
+      FaultedReceiptOperation::Forget,
+    ] {
+      exercise_unknown_receipt_operation(mode, phase).await;
+    }
+  }
+}
+
+async fn exercise_unknown_receipt_operation(
+  mode: UnknownFaultMode, phase: FaultedReceiptOperation,
+) {
+  let reference = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(500)));
+  let seed = open_engine(&reference, Duration::from_secs(10), Arc::clone(&clock)).await;
+  let (_, target) = commit_target(&seed, 90).await;
+  let (_, unrelated) = commit_target(&seed, 91).await;
+  let token = ReceiptReferenceToken::from_digest(Digest::from_bytes([13; 32]));
+  if matches!(phase, FaultedReceiptOperation::Remove) {
+    assert!(matches!(
+      seed
+        .add_receipt_reference(&target, &token, contract_transaction_id(92))
+        .await
+        .unwrap(),
+      ReceiptReferenceOutcome::Applied(_)
+    ));
+  }
+  if matches!(phase, FaultedReceiptOperation::Forget) {
+    assert!(matches!(
+      seed
+        .cleanup_receipt(&target, contract_transaction_id(93))
+        .await
+        .unwrap(),
+      ReceiptCleanupOutcome::Anchored(_)
+    ));
+    clock.set(UNIX_EPOCH + Duration::from_secs(510));
+  }
+  drop(seed);
+
+  let fault_calls = Arc::new(AtomicUsize::new(0));
+  let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
+    reference: Arc::clone(&reference),
+    mode,
+    commit_calls: Arc::clone(&fault_calls),
+  });
+  let wall_clock: Arc<dyn WallClock> = clock;
+  let store = MetadataStore::open_with_clock(&factory, Duration::from_secs(10), wall_clock)
+    .await
+    .unwrap();
+  let unknown = match phase {
+    FaultedReceiptOperation::Add => match store
+      .add_receipt_reference(&target, &token, contract_transaction_id(94))
+      .await
+      .unwrap()
+    {
+      ReceiptReferenceOutcome::Unknown(identity) => identity,
+      outcome => panic!("unexpected add outcome: {outcome:?}"),
+    },
+    FaultedReceiptOperation::Remove => match store
+      .remove_receipt_reference(&target, &token, contract_transaction_id(95))
+      .await
+      .unwrap()
+    {
+      ReceiptReferenceOutcome::Unknown(identity) => identity,
+      outcome => panic!("unexpected remove outcome: {outcome:?}"),
+    },
+    FaultedReceiptOperation::Anchor | FaultedReceiptOperation::Forget => match store
+      .cleanup_receipt(&target, contract_transaction_id(96))
+      .await
+      .unwrap()
+    {
+      ReceiptCleanupOutcome::Unknown(identity) => identity,
+      outcome => panic!("unexpected cleanup outcome: {outcome:?}"),
+    },
+  };
+  assert_eq!(
+    unknown.transaction(),
+    &contract_transaction_id(match phase {
+      FaultedReceiptOperation::Add => 94,
+      FaultedReceiptOperation::Remove => 95,
+      FaultedReceiptOperation::Anchor | FaultedReceiptOperation::Forget => 96,
+    })
+  );
+  assert_eq!(fault_calls.load(Ordering::SeqCst), 1);
+  assert_eq!(
+    store
+      .cleanup_receipt(&unrelated, contract_transaction_id(97))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::NotReady
+  );
+  let reconciled = store.reconcile().await.unwrap();
+  match mode {
+    UnknownFaultMode::Applied => assert!(matches!(reconciled, ReconcileOutcome::Committed(_))),
+    UnknownFaultMode::NotApplied => assert!(matches!(reconciled, ReconcileOutcome::Aborted)),
+    UnknownFaultMode::Pending => unreachable!("pending mode is tested through cancellation"),
+  }
+  assert_eq!(
+    reference
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .contains_key(target.transaction()),
+    !matches!(
+      (mode, phase),
+      (UnknownFaultMode::Applied, FaultedReceiptOperation::Forget)
+    )
+  );
+}
+
+#[tokio::test]
+async fn storage_contract_cancelled_receipt_mutations_stay_frozen_until_exact_reconciliation() {
+  for phase in [
+    FaultedReceiptOperation::Add,
+    FaultedReceiptOperation::Remove,
+    FaultedReceiptOperation::Anchor,
+    FaultedReceiptOperation::Forget,
+  ] {
+    exercise_cancelled_receipt_operation(phase).await;
+  }
+}
+
+async fn exercise_cancelled_receipt_operation(phase: FaultedReceiptOperation) {
+  let reference = Arc::new(ReferenceFactory::new(required_capabilities()));
+  let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(600)));
+  let seed = open_engine(&reference, Duration::from_secs(10), Arc::clone(&clock)).await;
+  let (_, target) = commit_target(&seed, 100).await;
+  let (_, unrelated) = commit_target(&seed, 101).await;
+  let token = ReceiptReferenceToken::from_digest(Digest::from_bytes([14; 32]));
+  if matches!(phase, FaultedReceiptOperation::Remove) {
+    assert!(matches!(
+      seed
+        .add_receipt_reference(&target, &token, contract_transaction_id(102))
+        .await
+        .unwrap(),
+      ReceiptReferenceOutcome::Applied(_)
+    ));
+  }
+  if matches!(phase, FaultedReceiptOperation::Forget) {
+    assert!(matches!(
+      seed
+        .cleanup_receipt(&target, contract_transaction_id(103))
+        .await
+        .unwrap(),
+      ReceiptCleanupOutcome::Anchored(_)
+    ));
+    clock.set(UNIX_EPOCH + Duration::from_secs(610));
+  }
+  drop(seed);
+
+  let fault_calls = Arc::new(AtomicUsize::new(0));
+  let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
+    reference: Arc::clone(&reference),
+    mode: UnknownFaultMode::Pending,
+    commit_calls: Arc::clone(&fault_calls),
+  });
+  let wall_clock: Arc<dyn WallClock> = clock;
+  let store = Arc::new(
+    MetadataStore::open_with_clock(&factory, Duration::from_secs(10), wall_clock)
+      .await
+      .unwrap(),
+  );
+  let task_store = Arc::clone(&store);
+  let task_target = target.clone();
+  let task_token = token.clone();
+  let task = tokio::spawn(async move {
+    match phase {
+      FaultedReceiptOperation::Add => task_store
+        .add_receipt_reference(&task_target, &task_token, contract_transaction_id(104))
+        .await
+        .map(|_| ()),
+      FaultedReceiptOperation::Remove => task_store
+        .remove_receipt_reference(&task_target, &task_token, contract_transaction_id(105))
+        .await
+        .map(|_| ()),
+      FaultedReceiptOperation::Anchor | FaultedReceiptOperation::Forget => task_store
+        .cleanup_receipt(&task_target, contract_transaction_id(106))
+        .await
+        .map(|_| ()),
+    }
+  });
+  while fault_calls.load(Ordering::SeqCst) == 0 {
+    tokio::task::yield_now().await;
+  }
+  task.abort();
+  assert!(task.await.unwrap_err().is_cancelled());
+  assert_eq!(
+    store
+      .cleanup_receipt(&unrelated, contract_transaction_id(107))
+      .await
+      .unwrap_err()
+      .kind(),
+    crate::ErrorKind::NotReady
+  );
+  assert!(matches!(
+    store.reconcile().await.unwrap(),
+    ReconcileOutcome::Aborted
+  ));
+  assert!(
+    reference
+      .state
+      .lock()
+      .unwrap()
+      .receipts
+      .contains_key(target.transaction())
+  );
+}
+
 #[tokio::test]
 async fn storage_contract_reference_provider_covers_raw_storage_semantics() {
   run_storage_contract(|| Arc::new(ReferenceFactory::new(required_capabilities()))).await;
@@ -886,7 +1709,7 @@ async fn storage_contract_unknown_fault_adapter_proves_exact_raw_reconciliation(
   ] {
     let commit_calls = Arc::new(AtomicUsize::new(0));
     let factory: Arc<dyn StorageFactory> = Arc::new(UnknownFaultFactory {
-      reference: ReferenceFactory::new(required_capabilities()),
+      reference: Arc::new(ReferenceFactory::new(required_capabilities())),
       mode,
       commit_calls: Arc::clone(&commit_calls),
     });
@@ -976,6 +1799,48 @@ fn storage_contract_capability_refusal_checks_each_phase_a_requirement() {
       .block_on(ReferenceFactory::new(required_capabilities()).open(StoreRequirements::metadata()))
       .is_ok()
   );
+}
+
+async fn open_engine(
+  factory: &Arc<ReferenceFactory>, retention: Duration, clock: Arc<ManualClock>,
+) -> MetadataStore {
+  let storage_factory: Arc<dyn StorageFactory> = factory.clone();
+  let wall_clock: Arc<dyn WallClock> = clock;
+  MetadataStore::open_with_clock(&storage_factory, retention, wall_clock)
+    .await
+    .unwrap()
+}
+
+async fn commit_target(
+  store: &MetadataStore, transaction: u16,
+) -> (PreparedTransaction, ReceiptIdentity) {
+  let snapshot = store.snapshot().await.unwrap();
+  let prepared = store
+    .prepare_transaction(
+      contract_transaction_id(transaction),
+      snapshot.revision().clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace("receipt-target"),
+        key: store_key(&transaction.to_be_bytes()),
+        expected: StoreExpectation::Absent,
+        value: value(b"target"),
+      }],
+    )
+    .unwrap();
+  let receipt = committed(store.commit(prepared.clone()).await.unwrap());
+  let identity = ReceiptIdentity::from_receipt(&receipt);
+  (prepared, identity)
+}
+
+fn committed(outcome: CommitOutcome) -> CommitReceipt {
+  match outcome {
+    CommitOutcome::Committed(receipt) => receipt,
+    outcome => panic!("unexpected outcome: {outcome:?}"),
+  }
+}
+
+fn contract_transaction_id(index: u16) -> TransactionId {
+  TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }
 
 async fn collect_scan(mut scan: Box<dyn StoreScan + '_>) -> Vec<StoreEntry> {

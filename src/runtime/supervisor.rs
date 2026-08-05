@@ -51,7 +51,7 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) storage_factory: Arc<dyn StorageFactory>,
   pub(crate) metadata: Option<MetadataStore>,
   pub(crate) _keys: Arc<dyn KeyProvider>,
-  pub(crate) _config: NodeConfig,
+  pub(crate) config: NodeConfig,
   pub(crate) entropy: Arc<dyn Entropy>,
   pub(crate) _runtime_seed: Option<[u8; 32]>,
 }
@@ -61,7 +61,9 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   let mut runtime_seed = [0; 32];
   dependencies.entropy.fill(&mut runtime_seed)?;
   dependencies._runtime_seed = Some(runtime_seed);
-  dependencies.metadata = Some(MetadataStore::open(&dependencies.storage_factory).await?);
+  let receipt_retention = dependencies.config.receipt_retention();
+  dependencies.metadata =
+    Some(MetadataStore::open(&dependencies.storage_factory, receipt_retention).await?);
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();
