@@ -222,6 +222,12 @@ impl StoreRequirements {
   pub fn requires_transactional_migration(&self) -> bool {
     self.transactional_migration
   }
+
+  #[cfg(test)]
+  pub(crate) const fn transactional_migration(mut self, required: bool) -> Self {
+    self.transactional_migration = required;
+    self
+  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -483,12 +489,7 @@ impl StoreTransaction {
     }
     validate_distinct_operations(&operations)?;
 
-    let mut owned = Vec::new();
-    owned
-      .try_reserve_exact(operations.len())
-      .map_err(|_| Error::resource_exhausted("storage transaction operations"))?;
-    owned.extend(operations);
-    let operations = Arc::from(owned.into_boxed_slice());
+    let operations: Arc<[StoreOperation]> = operations.into();
     let operation_digest = digest_store_operations(&base_revision, &operations);
     Ok(Self {
       id,
@@ -520,43 +521,33 @@ impl StoreTransaction {
 }
 
 #[allow(dead_code)]
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+enum StoreOperationIdentity<'a> {
+  Key(&'a StoreNamespace, &'a StoreKey),
+  Receipt(&'a TransactionId),
+}
+
+#[allow(dead_code)]
 fn validate_distinct_operations(operations: &[StoreOperation]) -> Result<()> {
-  for (index, operation) in operations.iter().enumerate() {
-    for previous in &operations[..index] {
-      let duplicate = match (operation, previous) {
-        (
-          StoreOperation::Check { namespace, key, .. }
-          | StoreOperation::Put { namespace, key, .. }
-          | StoreOperation::Delete { namespace, key, .. },
-          StoreOperation::Check {
-            namespace: previous_namespace,
-            key: previous_key,
-            ..
-          }
-          | StoreOperation::Put {
-            namespace: previous_namespace,
-            key: previous_key,
-            ..
-          }
-          | StoreOperation::Delete {
-            namespace: previous_namespace,
-            key: previous_key,
-            ..
-          },
-        ) => namespace == previous_namespace && key == previous_key,
-        (
-          StoreOperation::ForgetReceipt { transaction, .. },
-          StoreOperation::ForgetReceipt {
-            transaction: previous_transaction,
-            ..
-          },
-        ) => transaction == previous_transaction,
-        _ => false,
-      };
-      if duplicate {
-        return Err(Error::invalid_input("storage transaction operations"));
+  let mut identities = Vec::new();
+  identities
+    .try_reserve_exact(operations.len())
+    .map_err(|_| Error::resource_exhausted("storage transaction operations"))?;
+  for operation in operations {
+    identities.push(match operation {
+      StoreOperation::Check { namespace, key, .. }
+      | StoreOperation::Put { namespace, key, .. }
+      | StoreOperation::Delete { namespace, key, .. } => {
+        StoreOperationIdentity::Key(namespace, key)
       }
-    }
+      StoreOperation::ForgetReceipt { transaction, .. } => {
+        StoreOperationIdentity::Receipt(transaction)
+      }
+    });
+  }
+  identities.sort_unstable();
+  if identities.windows(2).any(|pair| pair[0] == pair[1]) {
+    return Err(Error::invalid_input("storage transaction operations"));
   }
   Ok(())
 }
@@ -811,6 +802,86 @@ mod tests {
     let debug = format!("{transaction:?}");
     assert!(!debug.contains("secret-key"));
     assert!(!debug.contains("secret-value"));
+  }
+
+  #[test]
+  fn g1_core_store_transaction_rejects_duplicate_identities_across_variants() {
+    let namespace =
+      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/duplicates").unwrap())
+        .unwrap();
+    let key = StoreKey::new(Arc::from(b"same-key".as_slice()));
+    let revision = StoreRevision::new(Arc::from([1])).unwrap();
+    let operations = [
+      StoreOperation::Check {
+        namespace: namespace.clone(),
+        key: key.clone(),
+        expected: StoreExpectation::Absent,
+      },
+      StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: key.clone(),
+        expected: StoreExpectation::Absent,
+        value: StoreValue::new(Arc::from(b"value".as_slice())),
+      },
+      StoreOperation::Delete {
+        namespace,
+        key,
+        expected: Digest::from_bytes([0; 32]),
+      },
+    ];
+    for first in 0..operations.len() {
+      for second in first + 1..operations.len() {
+        assert!(
+          StoreTransaction::new(
+            TransactionId::parse(&format!("txn_{first:010}{second:011}")).unwrap(),
+            revision.clone(),
+            vec![operations[first].clone(), operations[second].clone()],
+          )
+          .is_err()
+        );
+      }
+    }
+
+    let receipt = TransactionId::parse("txn_111111111111111111111").unwrap();
+    assert!(
+      StoreTransaction::new(
+        TransactionId::parse("txn_222222222222222222222").unwrap(),
+        revision,
+        vec![
+          StoreOperation::ForgetReceipt {
+            transaction: receipt.clone(),
+            expected_operation_digest: Digest::from_bytes([1; 32]),
+          },
+          StoreOperation::ForgetReceipt {
+            transaction: receipt,
+            expected_operation_digest: Digest::from_bytes([2; 32]),
+          },
+        ],
+      )
+      .is_err()
+    );
+  }
+
+  #[test]
+  fn g1_core_store_transaction_accepts_large_unique_operation_set() {
+    const OPERATION_COUNT: usize = 16_384;
+    let namespace =
+      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/large").unwrap()).unwrap();
+    let operations = (0..OPERATION_COUNT)
+      .map(|index| StoreOperation::Check {
+        namespace: namespace.clone(),
+        key: StoreKey::new(Arc::from(index.to_be_bytes())),
+        expected: StoreExpectation::Absent,
+      })
+      .collect();
+    let transaction = StoreTransaction::new(
+      TransactionId::parse("txn_333333333333333333333").unwrap(),
+      StoreRevision::new(Arc::from([1])).unwrap(),
+      operations,
+    )
+    .unwrap();
+
+    assert_eq!(transaction.operations().len(), OPERATION_COUNT);
   }
 
   fn transaction_fixture(revision: u8, value: &[u8]) -> StoreTransaction {

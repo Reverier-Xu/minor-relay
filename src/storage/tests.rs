@@ -27,6 +27,7 @@ enum CommitScript {
 enum ReconcileScript {
   Outcome(ReconcileOutcome),
   Error,
+  Pending,
 }
 
 #[derive(Debug)]
@@ -127,6 +128,7 @@ impl Storage for ScriptStorage {
           ProviderErrorKind::Io,
           ProviderErrorContext::StorageReconcile,
         )),
+        ReconcileScript::Pending => future::pending().await,
       }
     })
   }
@@ -206,6 +208,28 @@ async fn storage_contract_engine_malformed_commit_outcomes_retain_freeze() {
 
   let error = store.commit(transaction(0)).await.unwrap_err();
   assert_eq!(error.kind(), ErrorKind::StorageCorrupt);
+  assert_eq!(
+    store.commit(transaction(2)).await.unwrap_err().kind(),
+    ErrorKind::NotReady,
+  );
+  assert_eq!(state.commit_calls.load(Ordering::SeqCst), 1);
+
+  let malformed_digest_receipt = CommitReceipt::new(
+    submitted.id().clone(),
+    Digest::from_bytes([8; 32]),
+    revision(2),
+  );
+  let (store, state) = scripted(
+    vec![CommitScript::Outcome(CommitOutcome::Committed(
+      malformed_digest_receipt,
+    ))],
+    vec![],
+  )
+  .await;
+  assert_eq!(
+    store.commit(transaction(0)).await.unwrap_err().kind(),
+    ErrorKind::StorageCorrupt,
+  );
   assert_eq!(
     store.commit(transaction(2)).await.unwrap_err().kind(),
     ErrorKind::NotReady,
@@ -308,6 +332,58 @@ async fn storage_contract_engine_cancelled_commit_remains_frozen_and_reconciles_
 }
 
 #[tokio::test]
+async fn storage_contract_engine_cancelled_reconcile_preserves_frozen_identity() {
+  let submitted = transaction(0);
+  let expected_id = submitted.id().clone();
+  let expected_digest = submitted.operation_digest().clone();
+  let unknown = CommitOutcome::Unknown {
+    transaction: expected_id.clone(),
+    operation_digest: expected_digest.clone(),
+  };
+  let receipt = CommitReceipt::new(expected_id.clone(), expected_digest.clone(), revision(2));
+  let (store, state) = scripted(
+    vec![
+      CommitScript::Outcome(unknown),
+      CommitScript::Outcome(CommitOutcome::Aborted),
+    ],
+    vec![
+      ReconcileScript::Pending,
+      ReconcileScript::Outcome(ReconcileOutcome::Committed(receipt)),
+    ],
+  )
+  .await;
+  let store = Arc::new(store);
+  store.commit(submitted).await.unwrap();
+
+  let task_store = Arc::clone(&store);
+  let task = tokio::spawn(async move { task_store.reconcile().await });
+  while state.reconcile_calls.load(Ordering::SeqCst) == 0 {
+    tokio::task::yield_now().await;
+  }
+  task.abort();
+  assert!(task.await.unwrap_err().is_cancelled());
+  assert_eq!(
+    store.commit(transaction(1)).await.unwrap_err().kind(),
+    ErrorKind::NotReady,
+  );
+  assert!(matches!(
+    store.reconcile().await.unwrap(),
+    ReconcileOutcome::Committed(_)
+  ));
+  assert_eq!(
+    state.reconcile_arguments.lock().unwrap().as_slice(),
+    &[
+      (expected_id.clone(), expected_digest.clone()),
+      (expected_id, expected_digest),
+    ],
+  );
+  assert!(matches!(
+    store.commit(transaction(2)).await.unwrap(),
+    CommitOutcome::Aborted
+  ));
+}
+
+#[tokio::test]
 async fn storage_contract_engine_reconcile_retains_or_clears_freeze_exactly() {
   let submitted = transaction(0);
   let unknown = CommitOutcome::Unknown {
@@ -365,6 +441,34 @@ async fn storage_contract_engine_malformed_reconcile_receipt_retains_freeze() {
     vec![CommitScript::Outcome(unknown)],
     vec![ReconcileScript::Outcome(ReconcileOutcome::Committed(
       malformed,
+    ))],
+  )
+  .await;
+  store.commit(submitted).await.unwrap();
+  assert_eq!(
+    store.reconcile().await.unwrap_err().kind(),
+    ErrorKind::StorageCorrupt,
+  );
+  assert_eq!(
+    store.commit(transaction(1)).await.unwrap_err().kind(),
+    ErrorKind::NotReady,
+  );
+  assert_eq!(state.commit_calls.load(Ordering::SeqCst), 1);
+
+  let submitted = transaction(0);
+  let unknown = CommitOutcome::Unknown {
+    transaction: submitted.id().clone(),
+    operation_digest: submitted.operation_digest().clone(),
+  };
+  let malformed_digest = CommitReceipt::new(
+    submitted.id().clone(),
+    Digest::from_bytes([6; 32]),
+    revision(2),
+  );
+  let (store, state) = scripted(
+    vec![CommitScript::Outcome(unknown)],
+    vec![ReconcileScript::Outcome(ReconcileOutcome::Committed(
+      malformed_digest,
     ))],
   )
   .await;
