@@ -259,7 +259,7 @@ first = 6
 verification_id = "VERIFY-G01-05"
 kind = "closure"
 cases = [
-  { title = "Close the public foundation and provider facade", acceptance = "An external-crate test uses only manifest reexports to construct and shut down a node, implements dummy KeyProvider, StorageFactory, Storage, StoreSnapshot, and StoreScan traits, and constructs or inspects every key/storage boundary value in both directions. Private protocol, runtime, backend, and simulator modules remain inaccessible.", rebaseline = "ADR-0007", threats = [
+  { title = "Close the public foundation and provider facade", acceptance = "G1 freezes the complete externally implementable KeyProvider, StorageFactory, Storage, StoreSnapshot, and StoreScan SPI shape, validation, canonical transaction/operation digest helper, and boundary constructors/accessors. An external-crate test uses only manifest reexports to implement those traits, construct and inspect every key/storage boundary value in both directions, and construct and shut down a node. Executing semantic contract suites, provider calls, the transaction engine and reconciliation cleanup, and JSON/redb and real-backend semantics remain owned by G2. Private protocol, runtime, backend, and simulator modules remain inaccessible.", rebaseline = "ADR-0007", threats = [
   ] },
   { title = "Close MSRV stable dependency and lint gates", acceptance = "Rust 1.97.1 and current stable pass locked Q with zero warnings, cargo-deny accepts the reviewed graph, production unwrap and expect are denied, and CI rejects unlocked or policy-violating dependencies.", rebaseline = "ADR-0007", threats = [
     "THR-025",
