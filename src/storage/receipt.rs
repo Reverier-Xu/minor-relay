@@ -72,6 +72,13 @@ impl ReceiptIdentity {
     }
   }
 
+  pub(super) const fn from_parts(transaction: TransactionId, operation_digest: Digest) -> Self {
+    Self {
+      transaction,
+      operation_digest,
+    }
+  }
+
   pub(super) fn transaction(&self) -> &TransactionId {
     &self.transaction
   }
@@ -129,7 +136,7 @@ pub(crate) enum ReceiptReferenceChange {
   },
 }
 
-struct GroupedReceiptChange {
+pub(super) struct GroupedReceiptChange {
   target: Option<ReceiptIdentity>,
   remove: bool,
   tokens: Vec<ReceiptReferenceToken>,
@@ -458,7 +465,7 @@ enum LiveMarker {
   Forgotten,
 }
 
-fn group_receipt_changes(
+pub(super) fn group_receipt_changes(
   self_id: &TransactionId, changes: Vec<ReceiptReferenceChange>,
 ) -> crate::Result<Vec<GroupedReceiptChange>> {
   let mut groups: Vec<GroupedReceiptChange> = Vec::new();
@@ -509,7 +516,7 @@ fn group_receipt_changes(
   Ok(groups)
 }
 
-async fn build_receipt_change_operations(
+pub(super) async fn build_receipt_change_operations(
   snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, self_id: &TransactionId,
   group: &GroupedReceiptChange,
 ) -> crate::Result<Vec<StoreOperation>> {
@@ -726,7 +733,7 @@ fn marker_value(bytes: &'static [u8]) -> StoreValue {
   StoreValue::new(Arc::from(bytes))
 }
 
-fn operation_uses_reserved_namespace(operation: &StoreOperation) -> bool {
+pub(super) fn operation_uses_reserved_namespace(operation: &StoreOperation) -> bool {
   match operation {
     StoreOperation::Check { namespace, .. }
     | StoreOperation::Put { namespace, .. }
@@ -841,7 +848,7 @@ pub(super) fn decode_wall_time(encoded: &[u8]) -> crate::Result<SystemTime> {
   }
 }
 
-fn storage_corrupt() -> Error {
+pub(super) fn storage_corrupt() -> Error {
   Error::provider(
     ProviderErrorKind::StorageCorrupt,
     ProviderErrorContext::StorageSnapshot,
