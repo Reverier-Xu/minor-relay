@@ -315,7 +315,7 @@ pub(crate) mod pending;
 pub(crate) mod receipt;
 
 #[cfg(test)]
-mod contract;
+pub(crate) mod contract;
 
 #[cfg(test)]
 mod tests;

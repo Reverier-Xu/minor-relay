@@ -29,22 +29,22 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct ReferenceState {
+pub(crate) struct ReferenceState {
   generation: u64,
   open: bool,
-  entries: BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
-  receipts: HashMap<TransactionId, CommitReceipt>,
+  pub(crate) entries: BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
+  pub(crate) receipts: HashMap<TransactionId, CommitReceipt>,
 }
 
 #[derive(Debug)]
-struct ReferenceFactory {
+pub(crate) struct ReferenceFactory {
   capabilities: StoreCapabilities,
-  state: Arc<Mutex<ReferenceState>>,
-  commit_calls: Arc<AtomicUsize>,
+  pub(crate) state: Arc<Mutex<ReferenceState>>,
+  pub(crate) commit_calls: Arc<AtomicUsize>,
 }
 
 impl ReferenceFactory {
-  fn new(capabilities: StoreCapabilities) -> Self {
+  pub(crate) fn new(capabilities: StoreCapabilities) -> Self {
     Self {
       capabilities,
       state: Arc::new(Mutex::new(ReferenceState {
@@ -2401,7 +2401,7 @@ async fn collect_scan(mut scan: Box<dyn StoreScan + '_>) -> Vec<StoreEntry> {
   entries
 }
 
-fn required_capabilities() -> StoreCapabilities {
+pub(crate) fn required_capabilities() -> StoreCapabilities {
   StoreCapabilities::new(DurabilityLevel::OsCrashDurable)
     .conditional_batch(true)
     .ordered_scan(true)
