@@ -6,9 +6,11 @@ use sha2::{Digest as ShaDigest, Sha256};
 use super::signature::{ADMISSION_GRANT_V1_DOMAIN, CLUSTER_GENESIS_V1_DOMAIN, verify_strict};
 use crate::{
   ClusterId, Digest, Error, KeyHandle, KeyOperationId, NodeId, OperationId, PublicKey,
-  QualifiedTag, Result, Signature, StoreKey, StoreNamespace,
+  QualifiedTag, Result, Signature, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
+  StoreRevision, StoreValue, TransactionId,
   api::Entropy,
   protocol::{CborLimits, decode_canonical, encode_canonical},
+  storage::receipt::{ReceiptIdentity, ReceiptReferenceToken, recover_self_referenced_transaction},
 };
 
 const RECORD_VERSION: u64 = 1;
@@ -288,6 +290,11 @@ struct KeyCreationIntentWire {
   purpose: String,
   #[n(5)]
   algorithm: String,
+  #[n(6)]
+  transaction: String,
+  #[n(7)]
+  #[cbor(with = "minicbor::bytes")]
+  base_revision: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -295,11 +302,14 @@ pub(crate) struct KeyCreationIntentV1 {
   operation: KeyOperationId,
   intended_node: NodeId,
   purpose: String,
+  transaction: TransactionId,
+  base_revision: StoreRevision,
 }
 
 impl KeyCreationIntentV1 {
   pub(crate) fn new(
-    operation: KeyOperationId, intended_node: NodeId, purpose: String,
+    operation: KeyOperationId, intended_node: NodeId, purpose: String, transaction: TransactionId,
+    base_revision: StoreRevision,
   ) -> Result<Self> {
     if purpose.is_empty()
       || purpose.len() > MAX_PURPOSE_LEN
@@ -311,6 +321,8 @@ impl KeyCreationIntentV1 {
       operation,
       intended_node,
       purpose,
+      transaction,
+      base_revision,
     })
   }
 
@@ -326,6 +338,36 @@ impl KeyCreationIntentV1 {
     &self.purpose
   }
 
+  pub(crate) const fn transaction(&self) -> &TransactionId {
+    &self.transaction
+  }
+
+  pub(crate) const fn base_revision(&self) -> &StoreRevision {
+    &self.base_revision
+  }
+
+  /// Reconstructs the exact storage receipt identity committed with this
+  /// intent from the stored intent value.
+  ///
+  /// The original commit paired the intent `Put` with an `AddSelf` receipt
+  /// reference carrying the intent record token, so recovery needs only the
+  /// stored value and the transaction coordinates recorded in the intent.
+  pub(crate) fn recovery_identity(&self, stored_value: &StoreValue) -> Result<ReceiptIdentity> {
+    let (namespace, key) = key_creation_intent_key(&self.operation)?;
+    let token = ReceiptReferenceToken::for_record(&namespace, &key);
+    recover_self_referenced_transaction(
+      &self.transaction,
+      &self.base_revision,
+      vec![StoreOperation::Put {
+        namespace,
+        key,
+        expected: StoreExpectation::Absent,
+        value: stored_value.clone(),
+      }],
+      &[token],
+    )
+  }
+
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
     encode_canonical(
       &KeyCreationIntentWire {
@@ -335,6 +377,8 @@ impl KeyCreationIntentV1 {
         intended_node: self.intended_node.as_str().to_owned(),
         purpose: self.purpose.clone(),
         algorithm: ED25519_ALGORITHM.to_owned(),
+        transaction: self.transaction.as_str().to_owned(),
+        base_revision: self.base_revision.as_bytes().to_vec(),
       },
       RECORD_LIMITS,
     )
@@ -349,6 +393,8 @@ impl KeyCreationIntentV1 {
       KeyOperationId::parse(&wire.operation)?,
       NodeId::parse(&wire.intended_node)?,
       wire.purpose,
+      TransactionId::parse(&wire.transaction)?,
+      StoreRevision::new(Arc::from(wire.base_revision))?,
     )
   }
 }
@@ -886,6 +932,8 @@ mod tests {
   const CREATOR_NODE: &str = "node_300000000000000000000";
   const CLUSTER: &str = "cluster_400000000000000000000";
   const OPERATION: &str = "keyop_500000000000000000000";
+  const TRANSACTION: &str = "txn_600000000000000000000";
+  const BASE_REVISION: &[u8] = &[0x07];
   const PURPOSE: &str = "node-identity";
   const SIGNING_SEED: [u8; 32] = [0x42; 32];
   const SUBJECT_KEY: [u8; 32] = [0xA1; 32];
@@ -903,6 +951,14 @@ mod tests {
 
   fn operation() -> KeyOperationId {
     KeyOperationId::parse(OPERATION).unwrap()
+  }
+
+  fn transaction() -> TransactionId {
+    TransactionId::parse(TRANSACTION).unwrap()
+  }
+
+  fn base_revision() -> StoreRevision {
+    StoreRevision::new(Arc::from(BASE_REVISION)).unwrap()
   }
 
   fn handle() -> KeyHandle {
@@ -935,7 +991,14 @@ mod tests {
   }
 
   fn key_creation_intent() -> KeyCreationIntentV1 {
-    KeyCreationIntentV1::new(operation(), node(SUBJECT_NODE), PURPOSE.to_owned()).unwrap()
+    KeyCreationIntentV1::new(
+      operation(),
+      node(SUBJECT_NODE),
+      PURPOSE.to_owned(),
+      transaction(),
+      base_revision(),
+    )
+    .unwrap()
   }
 
   fn identity_binding() -> IdentityBindingV1 {
@@ -1014,7 +1077,7 @@ mod tests {
   }
 
   const LOCAL_IDENTITY_GOLDEN: &str = "87782a72656c61792e776f6f6f6f2e746563682f736368656d61732f6c6f63616c2d6964656e746974792d763101781a6e6f64655f3130303030303030303030303030303030303030305820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1781f72656c61792e776f6f6f6f2e746563682f63727970746f2f65643235353139781b6b65796f705f353030303030303030303030303030303030303030506f70617175652d68616e646c652d3031";
-  const KEY_CREATION_INTENT_GOLDEN: &str = "86782f72656c61792e776f6f6f6f2e746563682f736368656d61732f6b65792d6372656174696f6e2d696e74656e742d763101781b6b65796f705f353030303030303030303030303030303030303030781a6e6f64655f3130303030303030303030303030303030303030306d6e6f64652d6964656e74697479781f72656c61792e776f6f6f6f2e746563682f63727970746f2f65643235353139";
+  const KEY_CREATION_INTENT_GOLDEN: &str = "88782f72656c61792e776f6f6f6f2e746563682f736368656d61732f6b65792d6372656174696f6e2d696e74656e742d763101781b6b65796f705f353030303030303030303030303030303030303030781a6e6f64655f3130303030303030303030303030303030303030306d6e6f64652d6964656e74697479781f72656c61792e776f6f6f6f2e746563682f63727970746f2f65643235353139781974786e5f3630303030303030303030303030303030303030304107";
   const IDENTITY_BINDING_GOLDEN: &str = "85782c72656c61792e776f6f6f6f2e746563682f736368656d61732f6964656e746974792d62696e64696e672d763101781a6e6f64655f3130303030303030303030303030303030303030305820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1781f72656c61792e776f6f6f6f2e746563682f63727970746f2f65643235353139";
   const CLUSTER_GENESIS_GOLDEN: &str = "86782b72656c61792e776f6f6f6f2e746563682f736368656d61732f636c75737465722d67656e657369732d763101781d636c75737465725f343030303030303030303030303030303030303030781a6e6f64655f33303030303030303030303030303030303030303058202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12584013e7b8206f1b16110b29bd10d8dd1c6aa7e3237bbc8981f446ff5655485b293be590907e7857012e7fc455b7d5526da59255a7430abc068d362eb8bd8ed5e703";
   const CLUSTER_GENESIS_BODY_GOLDEN: &str = "85782b72656c61792e776f6f6f6f2e746563682f736368656d61732f636c75737465722d67656e657369732d763101781d636c75737465725f343030303030303030303030303030303030303030781a6e6f64655f33303030303030303030303030303030303030303058202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12";
@@ -1612,29 +1675,147 @@ mod tests {
 
   #[test]
   fn identity_records_key_creation_intent_purpose_is_bounded_printable_ascii() {
-    assert!(KeyCreationIntentV1::new(operation(), node(SUBJECT_NODE), String::new()).is_err());
-    assert!(KeyCreationIntentV1::new(operation(), node(SUBJECT_NODE), "x".repeat(129)).is_err());
-    assert!(
-      KeyCreationIntentV1::new(operation(), node(SUBJECT_NODE), "bad\tpurpose".to_owned()).is_err()
-    );
-    assert!(
+    let valid = || {
       KeyCreationIntentV1::new(
         operation(),
         node(SUBJECT_NODE),
-        "bad\u{7f}purpose".to_owned()
+        PURPOSE.to_owned(),
+        transaction(),
+        base_revision(),
       )
-      .is_err()
-    );
-    assert!(
-      KeyCreationIntentV1::new(operation(), node(SUBJECT_NODE), "node identity".to_owned()).is_ok()
-    );
+    };
+    assert!(valid().is_ok());
+    let with_purpose = |purpose: String| {
+      KeyCreationIntentV1::new(
+        operation(),
+        node(SUBJECT_NODE),
+        purpose,
+        transaction(),
+        base_revision(),
+      )
+    };
+    assert!(with_purpose(String::new()).is_err());
+    assert!(with_purpose("x".repeat(129)).is_err());
+    assert!(with_purpose("bad\tpurpose".to_owned()).is_err());
+    assert!(with_purpose("bad\u{7f}purpose".to_owned()).is_err());
+    assert!(with_purpose("node identity".to_owned()).is_ok());
 
-    let long_purpose =
-      KeyCreationIntentV1::new(operation(), node(SUBJECT_NODE), "p".repeat(128)).unwrap();
+    let long_purpose = with_purpose("p".repeat(128)).unwrap();
     assert_eq!(
       KeyCreationIntentV1::decode(&long_purpose.encode().unwrap()).unwrap(),
       long_purpose
     );
+  }
+
+  #[test]
+  fn identity_records_key_creation_intent_recovers_exact_storage_identity() {
+    use crate::{
+      StoreTransaction,
+      storage::receipt::{
+        ACTIVE_MARKER_VALUE, encode_reference_count, internal_namespace, reference_edge_key,
+        reference_head_key, used_id_key,
+      },
+    };
+
+    let intent = key_creation_intent();
+    let stored_value = StoreValue::new(Arc::from(intent.encode().unwrap()));
+    let recovered = intent.recovery_identity(&stored_value).unwrap();
+
+    // Directly prepare the paired storage transaction: the caller intent Put,
+    // the AddSelf receipt head and edge, and the permanent used-ID marker.
+    let (namespace, key) = key_creation_intent_key(intent.operation()).unwrap();
+    let token = ReceiptReferenceToken::for_record(&namespace, &key);
+    let internal = internal_namespace().unwrap();
+    let direct = StoreTransaction::new(
+      intent.transaction().clone(),
+      intent.base_revision().clone(),
+      vec![
+        StoreOperation::Put {
+          namespace,
+          key,
+          expected: StoreExpectation::Absent,
+          value: stored_value.clone(),
+        },
+        StoreOperation::Put {
+          namespace: internal.clone(),
+          key: reference_head_key(intent.transaction()).unwrap(),
+          expected: StoreExpectation::Absent,
+          value: encode_reference_count(1),
+        },
+        StoreOperation::Put {
+          namespace: internal.clone(),
+          key: reference_edge_key(intent.transaction(), &token).unwrap(),
+          expected: StoreExpectation::Absent,
+          value: StoreValue::new(Arc::from([])),
+        },
+        StoreOperation::Put {
+          namespace: internal,
+          key: used_id_key(intent.transaction()).unwrap(),
+          expected: StoreExpectation::Absent,
+          value: StoreValue::new(Arc::from(ACTIVE_MARKER_VALUE)),
+        },
+      ],
+    )
+    .unwrap();
+    assert_eq!(recovered.transaction(), direct.id());
+    assert_eq!(recovered.operation_digest(), direct.operation_digest());
+
+    // Mutating any single intent field changes the recovered identity.
+    for mutated in [
+      KeyCreationIntentV1::new(
+        KeyOperationId::parse("keyop_600000000000000000000").unwrap(),
+        node(SUBJECT_NODE),
+        PURPOSE.to_owned(),
+        transaction(),
+        base_revision(),
+      )
+      .unwrap(),
+      KeyCreationIntentV1::new(
+        operation(),
+        node(ISSUER_NODE),
+        PURPOSE.to_owned(),
+        transaction(),
+        base_revision(),
+      )
+      .unwrap(),
+      KeyCreationIntentV1::new(
+        operation(),
+        node(SUBJECT_NODE),
+        "cluster-identity".to_owned(),
+        transaction(),
+        base_revision(),
+      )
+      .unwrap(),
+      KeyCreationIntentV1::new(
+        operation(),
+        node(SUBJECT_NODE),
+        PURPOSE.to_owned(),
+        TransactionId::parse("txn_700000000000000000000").unwrap(),
+        base_revision(),
+      )
+      .unwrap(),
+      KeyCreationIntentV1::new(
+        operation(),
+        node(SUBJECT_NODE),
+        PURPOSE.to_owned(),
+        transaction(),
+        StoreRevision::new(Arc::from([0x08])).unwrap(),
+      )
+      .unwrap(),
+    ] {
+      let mutated_value = StoreValue::new(Arc::from(mutated.encode().unwrap()));
+      assert_ne!(
+        mutated.recovery_identity(&mutated_value).unwrap(),
+        recovered
+      );
+    }
+
+    // Mutating the stored value itself also changes the recovered identity.
+    let mut corrupted = intent.encode().unwrap();
+    let last = corrupted.len() - 1;
+    corrupted[last] ^= 0x01;
+    let corrupted = StoreValue::new(Arc::from(corrupted));
+    assert_ne!(intent.recovery_identity(&corrupted).unwrap(), recovered);
   }
 
   #[derive(Debug)]

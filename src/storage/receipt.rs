@@ -16,7 +16,7 @@ use crate::{
 
 const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-internal-v1";
 const USED_ID_TAG: &[u8] = b"\x01used-id\0";
-pub(super) const ACTIVE_MARKER_VALUE: &[u8] = b"";
+pub(crate) const ACTIVE_MARKER_VALUE: &[u8] = b"";
 pub(super) const FORGOTTEN_MARKER_VALUE: &[u8] = b"\x01forgotten\0";
 const REFERENCE_HEAD_TAG: &[u8] = b"\x02reference-head\0";
 const REFERENCE_EDGE_TAG: &[u8] = b"\x03reference-edge\0";
@@ -79,11 +79,11 @@ impl ReceiptIdentity {
     }
   }
 
-  pub(super) fn transaction(&self) -> &TransactionId {
+  pub(crate) fn transaction(&self) -> &TransactionId {
     &self.transaction
   }
 
-  pub(super) fn operation_digest(&self) -> &Digest {
+  pub(crate) fn operation_digest(&self) -> &Digest {
     &self.operation_digest
   }
 }
@@ -430,6 +430,54 @@ impl MetadataStore {
   }
 }
 
+/// Deterministically rebuilds the identity of a transaction that paired the
+/// given caller operations with an `AddSelf` receipt head and edge set plus
+/// the permanent active used-ID marker.
+///
+/// Recovery rebuilds the exact operation list the original commit used, so no
+/// storage snapshot is required. Empty token sets and caller operations that
+/// touch the reserved receipt-internal namespace are rejected.
+pub(crate) fn recover_self_referenced_transaction(
+  id: &TransactionId, base_revision: &StoreRevision, caller_operations: Vec<StoreOperation>,
+  tokens: &[ReceiptReferenceToken],
+) -> crate::Result<ReceiptIdentity> {
+  if tokens.is_empty() {
+    return Err(Error::invalid_input("receipt reference change tokens"));
+  }
+  if caller_operations
+    .iter()
+    .any(operation_uses_reserved_namespace)
+  {
+    return Err(Error::invalid_input("metadata storage reserved namespace"));
+  }
+  let namespace = internal_namespace()?;
+  let additional = u64::try_from(tokens.len())
+    .map_err(|_| Error::resource_exhausted("receipt reference count"))?;
+  let mut operations = caller_operations;
+  operations
+    .try_reserve_exact(1 + tokens.len())
+    .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
+  operations.push(StoreOperation::Put {
+    namespace: namespace.clone(),
+    key: reference_head_key(id)?,
+    expected: StoreExpectation::Absent,
+    value: encode_reference_count(additional),
+  });
+  for token in tokens {
+    operations.push(StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: reference_edge_key(id, token)?,
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from([])),
+    });
+  }
+  let prepared = prepare_internal_transaction(id.clone(), base_revision.clone(), operations)?;
+  Ok(ReceiptIdentity::from_parts(
+    id.clone(),
+    prepared.operation_digest().clone(),
+  ))
+}
+
 pub(super) fn prepare_internal_transaction(
   id: TransactionId, base_revision: StoreRevision, mut operations: Vec<StoreOperation>,
 ) -> crate::Result<PreparedTransaction> {
@@ -742,15 +790,15 @@ pub(super) fn operation_uses_reserved_namespace(operation: &StoreOperation) -> b
   }
 }
 
-pub(super) fn internal_namespace() -> crate::Result<StoreNamespace> {
+pub(crate) fn internal_namespace() -> crate::Result<StoreNamespace> {
   StoreNamespace::new(crate::QualifiedTag::parse(INTERNAL_NAMESPACE)?)
 }
 
-pub(super) fn used_id_key(transaction: &TransactionId) -> crate::Result<StoreKey> {
+pub(crate) fn used_id_key(transaction: &TransactionId) -> crate::Result<StoreKey> {
   tagged_transaction_key(USED_ID_TAG, transaction)
 }
 
-pub(super) fn reference_head_key(transaction: &TransactionId) -> crate::Result<StoreKey> {
+pub(crate) fn reference_head_key(transaction: &TransactionId) -> crate::Result<StoreKey> {
   tagged_transaction_key(REFERENCE_HEAD_TAG, transaction)
 }
 
@@ -794,7 +842,7 @@ fn reference_edge_prefix(transaction: &TransactionId) -> crate::Result<Vec<u8>> 
   Ok(prefix)
 }
 
-pub(super) fn reference_edge_key(
+pub(crate) fn reference_edge_key(
   transaction: &TransactionId, token: &ReceiptReferenceToken,
 ) -> crate::Result<StoreKey> {
   let mut key = reference_edge_prefix(transaction)?;
@@ -805,7 +853,7 @@ pub(super) fn reference_edge_key(
   Ok(StoreKey::new(Arc::from(key)))
 }
 
-fn encode_reference_count(count: u64) -> StoreValue {
+pub(crate) fn encode_reference_count(count: u64) -> StoreValue {
   StoreValue::new(Arc::from(count.to_be_bytes()))
 }
 
