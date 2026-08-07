@@ -53,6 +53,8 @@ pub(crate) async fn create_cluster(
       "cluster genesis pending cleanup",
     )
     .await?;
+  } else {
+    store.reconcile_if_frozen().await?;
   }
   if let Some(existing) = existing_cluster(context).await? {
     return Ok(existing);
@@ -170,7 +172,16 @@ pub(crate) async fn create_cluster(
       ReconcileOutcome::Unknown => Err(reconcile_unknown()),
     },
     CommitOutcome::Aborted | CommitOutcome::Conflict => match existing_cluster(context).await? {
-      Some(existing) if existing == genesis => Ok(existing),
+      Some(existing) if existing == genesis => {
+        cleanup_pending_exact(
+          store,
+          entropy,
+          CLUSTER_GENESIS_PURPOSE,
+          "cluster genesis pending cleanup",
+        )
+        .await?;
+        Ok(existing)
+      }
       _ => Err(Error::conflict("cluster genesis commit")),
     },
   }
@@ -249,7 +260,7 @@ mod tests {
 
   use super::{create_cluster, existing_cluster};
   use crate::{
-    ErrorKind, StoreOperation,
+    ErrorKind, ReconcileOutcome, StoreOperation,
     identity::{
       lifecycle::LocalIdentityContext,
       records::{
@@ -480,6 +491,110 @@ mod tests {
       assert_eq!(error.kind(), ErrorKind::AuthenticationFailed);
       assert_eq!(commit_calls(&reference), commits_before);
       assert!(existing_cluster(&context).await.unwrap().is_none());
+      assert_never_deleted(&keys);
+    }
+  }
+
+  #[tokio::test]
+  async fn identity_records_genesis_frozen_store_recovers_after_reconcile_unknown() {
+    let (reference, _factory) = fresh_reference();
+    let faulting = FaultingFactory::new(
+      &reference,
+      vec![
+        CommitFault::Pass,
+        CommitFault::Pass,
+        CommitFault::Pass,
+        CommitFault::UnknownApplied,
+      ],
+    );
+    faulting.push_reconcile_fault(ReconcileOutcome::Unknown);
+    let keys = ScriptedKeys::full();
+    let entropy = Arc::new(SequenceEntropy::default());
+    let context = open_context(&faulting.as_factory(), &keys, &entropy)
+      .await
+      .unwrap();
+
+    let error = create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+      .await
+      .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::CommitUnknown);
+
+    // The provider healed; the same context must recover instead of
+    // dead-ending on the frozen store.
+    let genesis = create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+      .await
+      .unwrap();
+    genesis.verify().unwrap();
+    assert!(pending_keys(&reference).is_empty());
+    assert_eq!(receipt_head_counts(&reference), vec![1, 3]);
+    assert_eq!(existing_cluster(&context).await.unwrap().unwrap(), genesis);
+    assert_never_deleted(&keys);
+  }
+
+  #[tokio::test]
+  async fn identity_records_genesis_not_applied_unknown_unfreezes_for_retry() {
+    let (reference, _factory) = fresh_reference();
+    let faulting = FaultingFactory::new(
+      &reference,
+      vec![
+        CommitFault::Pass,
+        CommitFault::Pass,
+        CommitFault::Pass,
+        CommitFault::UnknownNotApplied,
+      ],
+    );
+    faulting.push_reconcile_fault(ReconcileOutcome::Unknown);
+    let keys = ScriptedKeys::full();
+    let entropy = Arc::new(SequenceEntropy::default());
+    let context = open_context(&faulting.as_factory(), &keys, &entropy)
+      .await
+      .unwrap();
+
+    let error = create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+      .await
+      .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::CommitUnknown);
+
+    // The aborted unknown left no journal; the frozen store reconciles to
+    // ready and a fresh transaction commits exactly one genesis.
+    let genesis = create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+      .await
+      .unwrap();
+    genesis.verify().unwrap();
+    assert!(pending_keys(&reference).is_empty());
+    assert_eq!(receipt_head_counts(&reference), vec![1, 3]);
+    assert_never_deleted(&keys);
+  }
+
+  #[tokio::test]
+  async fn identity_records_genesis_equivocated_outcomes_clean_pending_and_return_existing() {
+    for fault in [CommitFault::Aborted, CommitFault::Conflict] {
+      let (reference, _factory) = fresh_reference();
+      let faulting = FaultingFactory::new(
+        &reference,
+        vec![
+          CommitFault::Pass,
+          CommitFault::Pass,
+          CommitFault::Pass,
+          fault,
+        ],
+      );
+      let keys = ScriptedKeys::full();
+      let entropy = Arc::new(SequenceEntropy::default());
+      let context = open_context(&faulting.as_factory(), &keys, &entropy)
+        .await
+        .unwrap();
+
+      // The provider applied the commit but reported a false definitive
+      // outcome; the exact existing state is returned and the pending
+      // journal is still cleaned.
+      let genesis = create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+        .await
+        .unwrap();
+      genesis.verify().unwrap();
+      assert!(pending_keys(&reference).is_empty());
+      assert_eq!(receipt_head_counts(&reference), vec![1, 3]);
+      assert_eq!(existing_cluster(&context).await.unwrap().unwrap(), genesis);
       assert_never_deleted(&keys);
     }
   }
