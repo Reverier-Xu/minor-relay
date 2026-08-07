@@ -8,7 +8,7 @@ unsound      = "all"
 yanked       = "deny"
 
 [licenses]
-allow                = ["Apache-2.0", "BlueOak-1.0.0", "MIT", "Unicode-3.0"]
+allow                = ["Apache-2.0", "BSD-3-Clause", "BlueOak-1.0.0", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.8
 include-dev          = true
 
@@ -29,6 +29,7 @@ multiple-versions = "deny"
 multiple-versions-include-dev = true
 skip = [
   { crate = "getrandom@0.3.4", reason = "owner=T-G01-05: proptest uses getrandom 0.3 while production uses getrandom 0.4" },
+  { crate = "rand_core@0.9.5", reason = "owner=T-G02-02: proptest uses rand_core 0.9 while ed25519-dalek 3 uses rand_core 0.10" },
   { crate = "r-efi@5.3.0", reason = "owner=T-G01-05: target-only dependency of the reviewed getrandom 0.3 dev duplicate" },
   { crate = "syn@2.0.119", reason = "owner=T-G01-05: minicbor-derive uses syn 2 while tokio-macros uses syn 3" },
 ]

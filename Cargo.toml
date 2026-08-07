@@ -10,10 +10,15 @@ rust-version = "1.97.1"
 version      = "0.1.0"
 
 [dependencies]
+ed25519-dalek = { version = "3.0", default-features = false, features = [
+  "fast",
+  "rand_core",
+  "zeroize",
+] }
 getrandom = "0.4"
-minicbor  = { version = "2.3", features = ["derive", "std"] }
-sha2      = "0.11"
-tokio     = { version = "1.53", features = ["rt", "sync", "time"] }
+minicbor = { version = "2.3", features = ["derive", "std"] }
+sha2 = "0.11"
+tokio = { version = "1.53", features = ["rt", "sync", "time"] }
 
 [build-dependencies]
 sha2 = "0.11"

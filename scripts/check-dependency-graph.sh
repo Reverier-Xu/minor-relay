@@ -13,8 +13,8 @@ if (($# != 0)); then
 fi
 
 MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == 21dc50072009af751390591a7926a671de65121b30b22934b81809856bcd07d4 ]] || {
-  printf 'workspace manifests or lockfile differ from the reviewed G1 baseline\n' >&2
+[[ $MANIFEST_DIGEST == cd33cae6ae37f3169bdc6604c2c4aa73438fd7708c1b1050565ec0d7b15e5547 ]] || {
+  printf 'workspace manifests or lockfile differ from the reviewed G2 identity baseline\n' >&2
   exit 1
 }
 
@@ -27,10 +27,15 @@ block-buffer@0.12.1 source=registry+https://github.com/rust-lang/crates.io-index
 cfg-if@1.0.4 source=registry+https://github.com/rust-lang/crates.io-index features=
 const-oid@0.10.2 source=registry+https://github.com/rust-lang/crates.io-index features=
 cpufeatures@0.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=
-crypto-common@0.2.2 source=registry+https://github.com/rust-lang/crates.io-index features=
-digest@0.11.3 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,block-api,default,oid
+crypto-common@0.2.2 source=registry+https://github.com/rust-lang/crates.io-index features=rand_core
+curve25519-dalek-derive@0.1.1 source=registry+https://github.com/rust-lang/crates.io-index features=
+curve25519-dalek@5.0.0 source=registry+https://github.com/rust-lang/crates.io-index features=digest,precomputed-tables,rand_core,zeroize
+digest@0.11.3 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,block-api,default,oid,rand_core
+ed25519-dalek@3.0.0 source=registry+https://github.com/rust-lang/crates.io-index features=fast,rand_core,signature,zeroize
+ed25519@3.0.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 errno@0.3.14 source=registry+https://github.com/rust-lang/crates.io-index features=std
 fastrand@2.5.0 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,std
+fiat-crypto@0.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 fnv@1.0.7 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 getrandom@0.3.4 source=registry+https://github.com/rust-lang/crates.io-index features=std
 getrandom@0.4.3 source=registry+https://github.com/rust-lang/crates.io-index features=
@@ -53,12 +58,17 @@ r-efi@5.3.0 source=registry+https://github.com/rust-lang/crates.io-index feature
 r-efi@6.0.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 rand@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,os_rng,std
 rand_chacha@0.9.0 source=registry+https://github.com/rust-lang/crates.io-index features=std
+rand_core@0.10.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 rand_core@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index features=os_rng,std
 rand_xorshift@0.4.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 regex-syntax@0.8.11 source=registry+https://github.com/rust-lang/crates.io-index features=default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
+rustc_version@0.4.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 rustix@1.1.4 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,fs,std
 rusty-fork@0.3.1 source=registry+https://github.com/rust-lang/crates.io-index features=timeout,wait-timeout
+semver@1.0.28 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 sha2@0.11.0 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,oid
+signature@3.0.0 source=registry+https://github.com/rust-lang/crates.io-index features=rand_core
+subtle@2.6.1 source=registry+https://github.com/rust-lang/crates.io-index features=const-generics
 syn@2.0.119 source=registry+https://github.com/rust-lang/crates.io-index features=clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit
 syn@3.0.3 source=registry+https://github.com/rust-lang/crates.io-index features=clone-impls,default,derive,full,parsing,printing,proc-macro
 tempfile@3.27.0 source=registry+https://github.com/rust-lang/crates.io-index features=default,getrandom
@@ -74,6 +84,7 @@ windows-sys@0.61.2 source=registry+https://github.com/rust-lang/crates.io-index 
 wit-bindgen@0.57.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 zerocopy-derive@0.8.55 source=registry+https://github.com/rust-lang/crates.io-index features=
 zerocopy@0.8.55 source=registry+https://github.com/rust-lang/crates.io-index features=simd
+zeroize@1.9.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 EOF
 )
 
@@ -92,6 +103,6 @@ ACTUAL=$(cargo metadata --locked --all-features --format-version 1 | jq -r '
 ' | sort)
 
 if ! diff -u <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$ACTUAL"); then
-  printf 'resolved dependency identities or features differ from the reviewed G1 baseline\n' >&2
+  printf 'resolved dependency identities or features differ from the reviewed G2 identity baseline\n' >&2
   exit 1
 fi
