@@ -297,7 +297,7 @@ impl MetadataStore {
 }
 
 #[allow(dead_code)]
-mod receipt;
+pub(crate) mod receipt;
 
 #[cfg(test)]
 mod contract;

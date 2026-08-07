@@ -1,14 +1,17 @@
 use std::{
+  collections::BTreeSet,
   fmt,
   sync::Arc,
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use sha2::{Digest as ShaDigest, Sha256};
+
 use super::MetadataStore;
 use crate::{
   CommitOutcome, CommitReceipt, Digest, Error, ProviderErrorContext, ProviderErrorKind,
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRevision, StoreTransaction,
-  StoreValue, TransactionId,
+  StoreValue, TransactionId, provider::StoreSnapshot,
 };
 
 const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-internal-v1";
@@ -19,6 +22,7 @@ const REFERENCE_HEAD_TAG: &[u8] = b"\x02reference-head\0";
 const REFERENCE_EDGE_TAG: &[u8] = b"\x03reference-edge\0";
 const ELIGIBILITY_ANCHOR_TAG: &[u8] = b"\x04eligibility-anchor\0";
 const EDGE_DELIMITER: u8 = 0;
+const RECORD_REFERENCE_DOMAIN: &[u8] = b"relay.woooo.tech/receipt-reference/metadata-record/v1\0";
 const REFERENCE_TOKEN_WIDTH: usize = 32;
 const WALL_TIME_WIDTH: usize = 13;
 const NANOS_PER_SECOND: u32 = 1_000_000_000;
@@ -55,7 +59,7 @@ impl PreparedTransaction {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ReceiptIdentity {
+pub(crate) struct ReceiptIdentity {
   transaction: TransactionId,
   operation_digest: Digest,
 }
@@ -78,13 +82,57 @@ impl ReceiptIdentity {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ReceiptReferenceToken(Digest);
+pub(crate) struct ReceiptReferenceToken(Digest);
 
 impl ReceiptReferenceToken {
+  /// Derives the opaque receipt-reference token for an owner record.
+  ///
+  /// The token commits only to the exact record namespace and key bytes under
+  /// a dedicated domain with unambiguous length separation. Record values and
+  /// provider handles are never hashed or exposed.
+  pub(crate) fn for_record(namespace: &StoreNamespace, key: &StoreKey) -> Self {
+    let namespace = namespace.as_str().as_bytes();
+    let key = key.as_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(RECORD_REFERENCE_DOMAIN);
+    hasher.update((namespace.len() as u64).to_be_bytes());
+    hasher.update(namespace);
+    hasher.update((key.len() as u64).to_be_bytes());
+    hasher.update(key);
+    Self(Digest::from_bytes(hasher.finalize().into()))
+  }
+
   #[cfg(test)]
   pub(super) const fn from_digest(digest: Digest) -> Self {
     Self(digest)
   }
+}
+
+/// A grouped receipt-reference change applied atomically with a prepared
+/// metadata transaction.
+///
+/// Each change carries every token for one target so the prepared transaction
+/// emits at most one final head operation and one anchor operation per target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReceiptReferenceChange {
+  /// Adds tokens to the fresh transaction's own receipt.
+  AddSelf(Vec<ReceiptReferenceToken>),
+  /// Adds tokens to a prior active receipt target.
+  Add {
+    target: ReceiptIdentity,
+    tokens: Vec<ReceiptReferenceToken>,
+  },
+  /// Removes tokens from a prior active receipt target.
+  Remove {
+    target: ReceiptIdentity,
+    tokens: Vec<ReceiptReferenceToken>,
+  },
+}
+
+struct GroupedReceiptChange {
+  target: Option<ReceiptIdentity>,
+  remove: bool,
+  tokens: Vec<ReceiptReferenceToken>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,6 +165,37 @@ impl MetadataStore {
       return Err(Error::invalid_input("metadata storage reserved namespace"));
     }
     prepare_internal_transaction(id, base_revision, caller_operations)
+  }
+
+  /// Prepares one transaction combining caller operations with grouped
+  /// receipt-reference changes against an existing immutable snapshot.
+  ///
+  /// The caller controls the base revision through the snapshot, so a family
+  /// can read record state and prepare the referencing transaction from the
+  /// same revision without a time-of-check gap. Final head, edge, and anchor
+  /// operations are built in the same transaction as the caller operations
+  /// and the permanent used-ID marker.
+  pub(crate) async fn prepare_transaction_with_receipt_changes(
+    &self, snapshot: &dyn StoreSnapshot, id: TransactionId, caller_operations: Vec<StoreOperation>,
+    changes: Vec<ReceiptReferenceChange>,
+  ) -> crate::Result<PreparedTransaction> {
+    if caller_operations
+      .iter()
+      .any(operation_uses_reserved_namespace)
+    {
+      return Err(Error::invalid_input("metadata storage reserved namespace"));
+    }
+    let namespace = internal_namespace()?;
+    let groups = group_receipt_changes(&id, changes)?;
+    let mut operations = caller_operations;
+    for group in &groups {
+      let built = build_receipt_change_operations(snapshot, &namespace, &id, group).await?;
+      operations
+        .try_reserve_exact(built.len())
+        .map_err(|_| Error::resource_exhausted("metadata storage transaction"))?;
+      operations.extend(built);
+    }
+    prepare_internal_transaction(id, snapshot.revision().clone(), operations)
   }
 
   pub(super) async fn add_receipt_reference(
@@ -379,9 +458,221 @@ enum LiveMarker {
   Forgotten,
 }
 
+fn group_receipt_changes(
+  self_id: &TransactionId, changes: Vec<ReceiptReferenceChange>,
+) -> crate::Result<Vec<GroupedReceiptChange>> {
+  let mut groups: Vec<GroupedReceiptChange> = Vec::new();
+  groups
+    .try_reserve_exact(changes.len())
+    .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
+  let mut tokens_seen: BTreeSet<Digest> = BTreeSet::new();
+  for change in changes {
+    let (target, remove, tokens) = match change {
+      ReceiptReferenceChange::AddSelf(tokens) => (None, false, tokens),
+      ReceiptReferenceChange::Add { target, tokens } => (Some(target), false, tokens),
+      ReceiptReferenceChange::Remove { target, tokens } => (Some(target), true, tokens),
+    };
+    if tokens.is_empty() {
+      return Err(Error::invalid_input("receipt reference change tokens"));
+    }
+    for token in &tokens {
+      if !tokens_seen.insert(token.0.clone()) {
+        return Err(Error::invalid_input("receipt reference change token"));
+      }
+    }
+    let target = match target {
+      Some(target) if target.transaction() == self_id => None,
+      target => target,
+    };
+    if target.is_none() && remove {
+      return Err(Error::invalid_input("receipt reference change target"));
+    }
+    let target_id = target
+      .as_ref()
+      .map_or(self_id, ReceiptIdentity::transaction);
+    let duplicate = groups.iter().any(|group: &GroupedReceiptChange| {
+      group
+        .target
+        .as_ref()
+        .map_or(self_id, ReceiptIdentity::transaction)
+        == target_id
+    });
+    if duplicate {
+      return Err(Error::invalid_input("receipt reference change target"));
+    }
+    groups.push(GroupedReceiptChange {
+      target,
+      remove,
+      tokens,
+    });
+  }
+  Ok(groups)
+}
+
+async fn build_receipt_change_operations(
+  snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, self_id: &TransactionId,
+  group: &GroupedReceiptChange,
+) -> crate::Result<Vec<StoreOperation>> {
+  let additional = u64::try_from(group.tokens.len())
+    .map_err(|_| Error::resource_exhausted("receipt reference count"))?;
+  let Some(target) = &group.target else {
+    return build_self_reference_operations(
+      snapshot,
+      namespace,
+      self_id,
+      &group.tokens,
+      additional,
+    )
+    .await;
+  };
+  match verify_live_marker(snapshot, namespace, target.transaction()).await? {
+    LiveMarker::Active(_) => {}
+    LiveMarker::Forgotten => return Err(Error::conflict("receipt reference target")),
+  }
+
+  let head_key = reference_head_key(target.transaction())?;
+  let anchor_key = eligibility_anchor_key(target.transaction())?;
+  let head = snapshot.get(namespace, &head_key).await?;
+  let anchor = snapshot.get(namespace, &anchor_key).await?;
+  let mut edges = Vec::new();
+  edges
+    .try_reserve_exact(group.tokens.len())
+    .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
+  for token in &group.tokens {
+    edges.push(
+      snapshot
+        .get(namespace, &reference_edge_key(target.transaction(), token)?)
+        .await?,
+    );
+  }
+  let count = audit_reference_index(
+    snapshot,
+    namespace,
+    target.transaction(),
+    head.as_ref(),
+    anchor.as_ref(),
+  )
+  .await?;
+
+  let mut operations = Vec::new();
+  if group.remove {
+    for edge in &edges {
+      if edge.is_none() {
+        return Err(Error::conflict("receipt reference token"));
+      }
+    }
+    let head = head.ok_or_else(storage_corrupt)?;
+    let remaining = count.checked_sub(additional).ok_or_else(storage_corrupt)?;
+    operations
+      .try_reserve_exact(group.tokens.len() + 1)
+      .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
+    for (token, edge) in group.tokens.iter().zip(&edges) {
+      let Some(edge) = edge else {
+        return Err(Error::conflict("receipt reference token"));
+      };
+      operations.push(StoreOperation::Delete {
+        namespace: namespace.clone(),
+        key: reference_edge_key(target.transaction(), token)?,
+        expected: edge.digest().clone(),
+      });
+    }
+    if remaining == 0 {
+      operations.push(StoreOperation::Delete {
+        namespace: namespace.clone(),
+        key: head_key,
+        expected: head.digest().clone(),
+      });
+    } else {
+      operations.push(StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: head_key,
+        expected: StoreExpectation::Exact(head.digest().clone()),
+        value: encode_reference_count(remaining),
+      });
+    }
+    return Ok(operations);
+  }
+
+  let next = count
+    .checked_add(additional)
+    .ok_or_else(|| Error::resource_exhausted("receipt reference count"))?;
+  operations
+    .try_reserve_exact(1 + group.tokens.len() + usize::from(anchor.is_some()))
+    .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
+  let head_expectation = match &head {
+    Some(value) => StoreExpectation::Exact(value.digest().clone()),
+    None => StoreExpectation::Absent,
+  };
+  operations.push(StoreOperation::Put {
+    namespace: namespace.clone(),
+    key: head_key,
+    expected: head_expectation,
+    value: encode_reference_count(next),
+  });
+  for (token, edge) in group.tokens.iter().zip(&edges) {
+    if edge.is_some() {
+      return Err(Error::conflict("receipt reference token"));
+    }
+    operations.push(StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: reference_edge_key(target.transaction(), token)?,
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from([])),
+    });
+  }
+  if let Some(anchor) = anchor {
+    decode_wall_time(anchor.as_bytes())?;
+    operations.push(StoreOperation::Delete {
+      namespace: namespace.clone(),
+      key: anchor_key,
+      expected: anchor.digest().clone(),
+    });
+  }
+  Ok(operations)
+}
+
+async fn build_self_reference_operations(
+  snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, self_id: &TransactionId,
+  tokens: &[ReceiptReferenceToken], additional: u64,
+) -> crate::Result<Vec<StoreOperation>> {
+  if snapshot
+    .get(namespace, &used_id_key(self_id)?)
+    .await?
+    .is_some()
+  {
+    return Err(Error::conflict("receipt reference target"));
+  }
+  let head = snapshot
+    .get(namespace, &reference_head_key(self_id)?)
+    .await?;
+  audit_reference_index(snapshot, namespace, self_id, head.as_ref(), None).await?;
+  if head.is_some() {
+    return Err(Error::conflict("receipt reference target"));
+  }
+
+  let mut operations = Vec::new();
+  operations
+    .try_reserve_exact(1 + tokens.len())
+    .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
+  operations.push(StoreOperation::Put {
+    namespace: namespace.clone(),
+    key: reference_head_key(self_id)?,
+    expected: StoreExpectation::Absent,
+    value: encode_reference_count(additional),
+  });
+  for token in tokens {
+    operations.push(StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: reference_edge_key(self_id, token)?,
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from([])),
+    });
+  }
+  Ok(operations)
+}
+
 async fn verify_live_marker(
-  snapshot: &dyn crate::provider::StoreSnapshot, namespace: &StoreNamespace,
-  transaction: &TransactionId,
+  snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, transaction: &TransactionId,
 ) -> crate::Result<LiveMarker> {
   let marker = snapshot.get(namespace, &used_id_key(transaction)?).await?;
   match marker {
@@ -392,8 +683,8 @@ async fn verify_live_marker(
 }
 
 async fn audit_reference_index(
-  snapshot: &dyn crate::provider::StoreSnapshot, namespace: &StoreNamespace,
-  transaction: &TransactionId, head: Option<&StoreValue>, anchor: Option<&StoreValue>,
+  snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, transaction: &TransactionId,
+  head: Option<&StoreValue>, anchor: Option<&StoreValue>,
 ) -> crate::Result<u64> {
   let prefix = reference_edge_prefix(transaction)?;
   let mut scan = snapshot.scan(namespace, &prefix).await?;

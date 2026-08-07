@@ -1,6 +1,6 @@
 mod id;
 #[allow(dead_code)]
-mod records;
+pub(crate) mod records;
 #[allow(dead_code)]
 mod signature;
 mod value;
