@@ -87,7 +87,13 @@ pub(crate) async fn open_local_identity(
       .await?;
   if recovered.is_some() {
     reconcile_recovered_journal(&store).await?;
-    cleanup_pending_exact(&store, entropy).await?;
+    cleanup_pending_exact(
+      &store,
+      entropy,
+      LOCAL_IDENTITY_PURPOSE,
+      "local identity pending cleanup",
+    )
+    .await?;
   }
   require_key_capabilities(keys)?;
 
@@ -108,7 +114,7 @@ pub(crate) async fn open_local_identity(
 ///
 /// The journaled pending record proves the target transaction committed
 /// atomically, so only `Committed` is acceptable.
-async fn reconcile_recovered_journal(store: &MetadataStore) -> Result<()> {
+pub(crate) async fn reconcile_recovered_journal(store: &MetadataStore) -> Result<()> {
   match store.reconcile().await? {
     ReconcileOutcome::Committed(_) => Ok(()),
     ReconcileOutcome::Aborted | ReconcileOutcome::DigestConflict => Err(reconcile_corrupt()),
@@ -116,31 +122,30 @@ async fn reconcile_recovered_journal(store: &MetadataStore) -> Result<()> {
   }
 }
 
-/// Deletes the pending journal record exactly once, tolerating one proven
+/// Deletes a pending journal record exactly once, tolerating one proven
 /// abort with a fresh transaction ID.
-async fn cleanup_pending_exact(store: &MetadataStore, entropy: &dyn Entropy) -> Result<()> {
+pub(crate) async fn cleanup_pending_exact(
+  store: &MetadataStore, entropy: &dyn Entropy, purpose: &str, context: &'static str,
+) -> Result<()> {
   let mut attempts = 0_u8;
   loop {
     attempts += 1;
     let operation = TransactionId::generate(entropy)?;
-    match store
-      .cleanup_pending(LOCAL_IDENTITY_PURPOSE, operation)
-      .await?
-    {
+    match store.cleanup_pending(purpose, operation).await? {
       PendingCleanupOutcome::Applied(_) | PendingCleanupOutcome::Absent => return Ok(()),
       PendingCleanupOutcome::Conflict => {
-        return Err(Error::conflict("local identity pending cleanup"));
+        return Err(Error::conflict(context));
       }
       PendingCleanupOutcome::Aborted => {
         if attempts >= 2 {
-          return Err(Error::conflict("local identity pending cleanup"));
+          return Err(Error::conflict(context));
         }
       }
       PendingCleanupOutcome::Unknown(_) => match store.reconcile().await? {
         ReconcileOutcome::Committed(_) => return Ok(()),
         ReconcileOutcome::Aborted => {
           if attempts >= 2 {
-            return Err(Error::conflict("local identity pending cleanup"));
+            return Err(Error::conflict(context));
           }
         }
         ReconcileOutcome::DigestConflict => return Err(reconcile_corrupt()),
@@ -168,7 +173,7 @@ fn require_key_capabilities(keys: &Arc<dyn KeyProvider>) -> Result<()> {
 ///
 /// Any prefix-extended key, duplicate entry, or malformed value fails closed
 /// as storage corruption.
-async fn discover_local_identity(
+pub(crate) async fn discover_local_identity(
   snapshot: &dyn StoreSnapshot,
 ) -> Result<Option<(StoreValue, LocalIdentityV1)>> {
   let (namespace, key) = local_identity_key()?;
@@ -400,7 +405,13 @@ async fn finalize_identity(
       ReconcileOutcome::Unknown => return Err(reconcile_unknown()),
     },
   }
-  cleanup_pending_exact(&store, entropy).await?;
+  cleanup_pending_exact(
+    &store,
+    entropy,
+    LOCAL_IDENTITY_PURPOSE,
+    "local identity pending cleanup",
+  )
+  .await?;
   Ok(LocalIdentityContext { store, identity })
 }
 
@@ -416,21 +427,21 @@ async fn accept_exact_final_state(store: &MetadataStore, expected: &LocalIdentit
   }
 }
 
-fn discovery_corrupt() -> Error {
+pub(crate) fn discovery_corrupt() -> Error {
   Error::provider(
     ProviderErrorKind::StorageCorrupt,
     ProviderErrorContext::StorageSnapshot,
   )
 }
 
-fn reconcile_corrupt() -> Error {
+pub(crate) fn reconcile_corrupt() -> Error {
   Error::provider(
     ProviderErrorKind::StorageCorrupt,
     ProviderErrorContext::StorageReconcile,
   )
 }
 
-fn reconcile_unknown() -> Error {
+pub(crate) fn reconcile_unknown() -> Error {
   Error::provider(
     ProviderErrorKind::CommitUnknown,
     ProviderErrorContext::StorageReconcile,

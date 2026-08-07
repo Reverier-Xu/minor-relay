@@ -98,6 +98,22 @@ pub(crate) fn key_creation_intent_namespace() -> Result<StoreNamespace> {
   metadata_namespace(KEY_CREATION_INTENT_NAMESPACE)
 }
 
+pub(crate) fn identity_binding_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(IDENTITY_BINDING_NAMESPACE)
+}
+
+pub(crate) fn cluster_genesis_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(CLUSTER_GENESIS_NAMESPACE)
+}
+
+pub(crate) fn credential_use_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(CREDENTIAL_USE_NAMESPACE)
+}
+
+pub(crate) fn admission_grant_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(ADMISSION_GRANT_NAMESPACE)
+}
+
 pub(crate) fn key_creation_intent_key(
   operation: &KeyOperationId,
 ) -> Result<(StoreNamespace, StoreKey)> {
@@ -530,18 +546,24 @@ impl ClusterGenesisV1 {
     &self.creator_key
   }
 
-  fn body_wire(&self) -> ClusterGenesisBodyWire {
-    ClusterGenesisBodyWire {
-      schema: CLUSTER_GENESIS_SCHEMA.to_owned(),
-      record_version: RECORD_VERSION,
-      cluster_id: self.cluster.as_str().to_owned(),
-      creator_id: self.creator.as_str().to_owned(),
-      creator_key: self.creator_key.as_bytes().to_vec(),
-    }
+  /// Encodes the canonical body that the creator signs.
+  pub(crate) fn encode_signed_body(
+    cluster: &ClusterId, creator: &NodeId, creator_key: &PublicKey,
+  ) -> Result<Vec<u8>> {
+    encode_canonical(
+      &ClusterGenesisBodyWire {
+        schema: CLUSTER_GENESIS_SCHEMA.to_owned(),
+        record_version: RECORD_VERSION,
+        cluster_id: cluster.as_str().to_owned(),
+        creator_id: creator.as_str().to_owned(),
+        creator_key: creator_key.as_bytes().to_vec(),
+      },
+      RECORD_LIMITS,
+    )
   }
 
   pub(crate) fn signed_body(&self) -> Result<Vec<u8>> {
-    encode_canonical(&self.body_wire(), RECORD_LIMITS)
+    Self::encode_signed_body(&self.cluster, &self.creator, &self.creator_key)
   }
 
   pub(crate) fn verify(&self) -> Result<()> {
@@ -856,21 +878,35 @@ impl AdmissionGrantV1 {
     &self.generation
   }
 
-  fn body_wire(&self) -> AdmissionGrantBodyWire {
-    AdmissionGrantBodyWire {
-      schema: ADMISSION_GRANT_SCHEMA.to_owned(),
-      record_version: RECORD_VERSION,
-      cluster_id: self.cluster.as_str().to_owned(),
-      admission_id: self.admission.as_bytes().to_vec(),
-      subject_id: self.subject.as_str().to_owned(),
-      subject_key: self.subject_key.as_bytes().to_vec(),
-      issuer_id: self.issuer.as_str().to_owned(),
-      generation_id: self.generation.as_bytes().to_vec(),
-    }
+  /// Encodes the canonical body that the issuer signs.
+  pub(crate) fn encode_signed_body(
+    cluster: &ClusterId, admission: &AdmissionId, subject: &NodeId, subject_key: &PublicKey,
+    issuer: &NodeId, generation: &GenerationId,
+  ) -> Result<Vec<u8>> {
+    encode_canonical(
+      &AdmissionGrantBodyWire {
+        schema: ADMISSION_GRANT_SCHEMA.to_owned(),
+        record_version: RECORD_VERSION,
+        cluster_id: cluster.as_str().to_owned(),
+        admission_id: admission.as_bytes().to_vec(),
+        subject_id: subject.as_str().to_owned(),
+        subject_key: subject_key.as_bytes().to_vec(),
+        issuer_id: issuer.as_str().to_owned(),
+        generation_id: generation.as_bytes().to_vec(),
+      },
+      RECORD_LIMITS,
+    )
   }
 
   pub(crate) fn signed_body(&self) -> Result<Vec<u8>> {
-    encode_canonical(&self.body_wire(), RECORD_LIMITS)
+    Self::encode_signed_body(
+      &self.cluster,
+      &self.admission,
+      &self.subject,
+      &self.subject_key,
+      &self.issuer,
+      &self.generation,
+    )
   }
 
   pub(crate) fn verify(&self, issuer_key: &PublicKey) -> Result<()> {
