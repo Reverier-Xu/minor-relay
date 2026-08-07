@@ -301,6 +301,27 @@ impl MetadataStore {
     Ok(())
   }
 
+  /// Freezes a ready store on a pending identity recovered from a durable
+  /// journal by the caller.
+  ///
+  /// The journal record was committed atomically with the target
+  /// transaction, so reconciliation must prove `Committed`.
+  pub(crate) fn freeze_journaled(&self, identity: &receipt::ReceiptIdentity) -> Result<()> {
+    let mut state = self.lock_state()?;
+    if !matches!(*state, CommitState::Ready) {
+      return Err(Error::not_ready("metadata storage journal recovery"));
+    }
+    *state = CommitState::Frozen {
+      pending: PendingCommit {
+        transaction: identity.transaction().clone(),
+        digest: identity.operation_digest().clone(),
+        journal_proven: true,
+      },
+      provider_call_active: false,
+    };
+    Ok(())
+  }
+
   fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, CommitState>> {
     self
       .state

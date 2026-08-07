@@ -318,7 +318,7 @@ impl ExpectationWire {
 /// The planned operations are the exact caller and receipt-change operations
 /// of the target transaction; the pending-record put and the permanent
 /// used-ID marker are appended during recovery, never stored.
-pub(super) struct PendingTransactionV1 {
+pub(crate) struct PendingTransactionV1 {
   purpose: String,
   transaction: TransactionId,
   base_revision: StoreRevision,
@@ -586,6 +586,26 @@ impl MetadataStore {
     Ok((store, Some(identity)))
   }
 
+  /// Recovers a pending journal for `purpose` on an already open store.
+  ///
+  /// Without a pending record the store stays ready on the old state. With
+  /// a pending record the store freezes on the exact identity reconstructed
+  /// from the journal and reconciliation must prove the journaled
+  /// transaction committed.
+  pub(crate) async fn recover_pending(&self, purpose: &str) -> Result<Option<ReceiptIdentity>> {
+    validate_purpose(purpose)?;
+    let discovered = {
+      let snapshot = self.snapshot().await?;
+      discover_pending(snapshot.as_ref(), purpose).await?
+    };
+    let Some((stored, record)) = discovered else {
+      return Ok(None);
+    };
+    let identity = record.recover_identity(&stored)?;
+    self.freeze_journaled(&identity)?;
+    Ok(Some(identity))
+  }
+
   /// Deletes the pending record for `purpose` and removes only its
   /// receipt-reference token from the target receipt in one transaction.
   ///
@@ -650,7 +670,7 @@ impl MetadataStore {
 ///
 /// Any prefix-extended key, duplicate entry, malformed value, or purpose
 /// mismatch fails closed as storage corruption.
-pub(super) async fn discover_pending(
+pub(crate) async fn discover_pending(
   snapshot: &dyn StoreSnapshot, purpose: &str,
 ) -> Result<Option<(StoreValue, PendingTransactionV1)>> {
   validate_purpose(purpose)?;

@@ -108,6 +108,13 @@ impl Error {
     }
   }
 
+  pub(crate) const fn not_trusted(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::NotTrusted,
+      context,
+    }
+  }
+
   pub(crate) const fn authentication_failed(context: &'static str) -> Self {
     Self {
       kind: ErrorKind::AuthenticationFailed,

@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+pub(crate) mod admission;
+#[allow(dead_code)]
+pub(crate) mod genesis;
 mod id;
 #[allow(dead_code)]
 pub(crate) mod lifecycle;
@@ -5,6 +9,8 @@ pub(crate) mod lifecycle;
 pub(crate) mod records;
 #[allow(dead_code)]
 mod signature;
+#[cfg(test)]
+pub(crate) mod testing;
 mod value;
 
 pub(crate) use id::random_base62_suffix;
