@@ -38,7 +38,8 @@ impl NodeBuilder {
     let client = spawn_runtime(RuntimeDependencies {
       storage_factory: self.storage,
       metadata: None,
-      _keys: self.keys,
+      keys: self.keys,
+      identity: None,
       config: self.config,
       entropy: self.entropy,
       _runtime_seed: None,

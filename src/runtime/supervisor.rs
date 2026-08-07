@@ -9,6 +9,7 @@ use tokio::{
 use crate::{
   Error, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
   api::Entropy,
+  identity::{lifecycle::open_local_identity, records::LocalIdentityV1},
   provider::{KeyProvider, StorageFactory},
   runtime::{Control, LifecycleSnapshot, RuntimeClient},
   storage::MetadataStore,
@@ -50,7 +51,8 @@ impl Drop for LifecyclePublisher {
 pub(crate) struct RuntimeDependencies {
   pub(crate) storage_factory: Arc<dyn StorageFactory>,
   pub(crate) metadata: Option<MetadataStore>,
-  pub(crate) _keys: Arc<dyn KeyProvider>,
+  pub(crate) keys: Arc<dyn KeyProvider>,
+  pub(crate) identity: Option<LocalIdentityV1>,
   pub(crate) config: NodeConfig,
   pub(crate) entropy: Arc<dyn Entropy>,
   pub(crate) _runtime_seed: Option<[u8; 32]>,
@@ -62,10 +64,16 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   dependencies.entropy.fill(&mut runtime_seed)?;
   dependencies._runtime_seed = Some(runtime_seed);
   let receipt_retention = dependencies.config.receipt_retention();
-  // T-G02-01 has no persisted operation intents; later families must select
-  // recovered open here.
-  dependencies.metadata =
-    Some(MetadataStore::open(&dependencies.storage_factory, receipt_retention).await?);
+  let context = open_local_identity(
+    &dependencies.storage_factory,
+    &dependencies.keys,
+    dependencies.entropy.as_ref(),
+    receipt_retention,
+  )
+  .await?;
+  let (store, identity) = context.into_parts();
+  dependencies.metadata = Some(store);
+  dependencies.identity = Some(identity);
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();
