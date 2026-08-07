@@ -14,6 +14,7 @@ use crate::{
 struct PendingCommit {
   transaction: TransactionId,
   digest: Digest,
+  journal_proven: bool,
 }
 
 #[derive(Debug)]
@@ -103,6 +104,7 @@ impl MetadataStore {
         pending: PendingCommit {
           transaction,
           digest,
+          journal_proven: false,
         },
         provider_call_active: false,
       },
@@ -139,6 +141,7 @@ impl MetadataStore {
     let pending = PendingCommit {
       transaction: transaction.id().clone(),
       digest: transaction.operation_digest().clone(),
+      journal_proven: false,
     };
     let call = self.begin_commit(pending.clone())?;
     let result = self.provider.commit(transaction).await;
@@ -197,6 +200,16 @@ impl MetadataStore {
         Ok(ReconcileOutcome::Committed(receipt))
       }
       Ok(ReconcileOutcome::Aborted) => {
+        if pending.journal_proven {
+          // A recovered pending record proves the journaled transaction
+          // committed atomically, so an aborted reconciliation contradicts
+          // the durable journal and must fail closed.
+          self.finish_frozen(call)?;
+          return Err(Error::provider(
+            ProviderErrorKind::StorageCorrupt,
+            ProviderErrorContext::StorageReconcile,
+          ));
+        }
         self.finish_ready(call)?;
         Ok(ReconcileOutcome::Aborted)
       }
@@ -296,6 +309,8 @@ impl MetadataStore {
   }
 }
 
+#[allow(dead_code)]
+pub(crate) mod pending;
 #[allow(dead_code)]
 pub(crate) mod receipt;
 
