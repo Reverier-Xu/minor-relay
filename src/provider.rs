@@ -58,6 +58,12 @@ impl KeyOperationId {
     Ok(Self(value.to_owned()))
   }
 
+  #[allow(dead_code)]
+  pub(crate) fn generate(entropy: &dyn crate::api::Entropy) -> Result<Self> {
+    let suffix = crate::identity::random_base62_suffix(entropy)?;
+    Ok(Self(format!("{KEY_OPERATION_PREFIX}{suffix}")))
+  }
+
   pub fn as_str(&self) -> &str {
     &self.0
   }
