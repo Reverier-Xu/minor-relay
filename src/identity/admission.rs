@@ -82,6 +82,7 @@ pub(crate) async fn commit_admission(
       AdmissionState::Aborted => Err(discovery_corrupt()),
     };
   }
+  store.reconcile_if_frozen().await?;
 
   let identity = context.identity();
   let snapshot = store.snapshot().await?;
@@ -128,6 +129,7 @@ pub(crate) async fn commit_admission(
     return match admission_state(context, proposal).await {
       Ok(AdmissionState::Consumed(_, existing)) => Ok(*existing),
       Ok(AdmissionState::Aborted) => Err(discovery_corrupt()),
+      Err(error) if error.kind() == crate::ErrorKind::StorageCorrupt => Err(error),
       Err(_) => Err(Error::conflict("admission record")),
     };
   }
@@ -235,7 +237,10 @@ pub(crate) async fn commit_admission(
     },
     CommitOutcome::Aborted | CommitOutcome::Conflict => {
       match admission_state(context, proposal).await? {
-        AdmissionState::Consumed(_, existing) => Ok(*existing),
+        AdmissionState::Consumed(_, existing) => {
+          cleanup_pending_exact(store, entropy, &purpose, "admission pending cleanup").await?;
+          Ok(*existing)
+        }
         _ => Err(Error::conflict("admission commit")),
       }
     }
@@ -258,44 +263,70 @@ pub(crate) async fn admission_state(
   let credential_use = snapshot.get(&use_namespace, &use_key).await?;
   let grant = snapshot.get(&grant_namespace, &grant_key).await?;
   let binding = snapshot.get(&binding_namespace, &binding_key).await?;
-  let (credential_use, grant, binding) = match (credential_use, grant, binding) {
-    (Some(credential_use), Some(grant), Some(binding)) => (credential_use, grant, binding),
-    (None, None, None) => return Ok(AdmissionState::Aborted),
-    _ => return Err(discovery_corrupt()),
+
+  let (pointer_namespace, pointer_key) = local_cluster_pointer_key()?;
+  let cluster = match snapshot.get(&pointer_namespace, &pointer_key).await? {
+    Some(pointer_value) => {
+      let pointer = super::records::LocalClusterPointerV1::decode(pointer_value.as_bytes())
+        .map_err(|_| discovery_corrupt())?;
+      Some(pointer.cluster().clone())
+    }
+    None => None,
   };
 
-  let credential_use =
-    CredentialUseV1::decode(credential_use.as_bytes()).map_err(|_| discovery_corrupt())?;
-  let grant = AdmissionGrantV1::decode(grant.as_bytes()).map_err(|_| discovery_corrupt())?;
-  let binding = IdentityBindingV1::decode(binding.as_bytes()).map_err(|_| discovery_corrupt())?;
-  let (pointer_namespace, pointer_key) = local_cluster_pointer_key()?;
-  let pointer_value = snapshot
-    .get(&pointer_namespace, &pointer_key)
-    .await?
-    .ok_or_else(discovery_corrupt)?;
-  let pointer = super::records::LocalClusterPointerV1::decode(pointer_value.as_bytes())
-    .map_err(|_| discovery_corrupt())?;
-  if credential_use.cluster() != grant.cluster()
-    || grant.cluster() != pointer.cluster()
-    || credential_use.issuer() != identity.node()
-    || credential_use.generation() != &proposal.generation
-    || credential_use.admission() != &proposal.admission
-    || credential_use.subject() != &proposal.subject
-    || credential_use.subject_key() != &proposal.subject_key
-    || grant.admission() != &proposal.admission
-    || grant.subject() != &proposal.subject
-    || grant.subject_key() != &proposal.subject_key
-    || grant.issuer() != identity.node()
-    || grant.generation() != &proposal.generation
-    || binding.node() != &proposal.subject
-    || binding.public_key() != &proposal.subject_key
-  {
-    return Err(Error::conflict("admission record"));
+  let credential_use = credential_use
+    .map(|value| {
+      let record = CredentialUseV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+      if record.issuer() != identity.node()
+        || record.generation() != &proposal.generation
+        || record.admission() != &proposal.admission
+        || record.subject() != &proposal.subject
+        || record.subject_key() != &proposal.subject_key
+        || cluster.as_ref() != Some(record.cluster())
+      {
+        return Err(Error::conflict("admission record"));
+      }
+      Ok(record)
+    })
+    .transpose()?;
+  let grant = grant
+    .map(|value| {
+      let record = AdmissionGrantV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+      if record.admission() != &proposal.admission
+        || record.subject() != &proposal.subject
+        || record.subject_key() != &proposal.subject_key
+        || record.issuer() != identity.node()
+        || record.generation() != &proposal.generation
+        || cluster.as_ref() != Some(record.cluster())
+      {
+        return Err(Error::conflict("admission grant"));
+      }
+      record
+        .verify(identity.public_key())
+        .map_err(|_| Error::conflict("admission grant"))?;
+      Ok(record)
+    })
+    .transpose()?;
+  let binding = binding
+    .map(|value| {
+      let record = IdentityBindingV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+      if record.node() != &proposal.subject || record.public_key() != &proposal.subject_key {
+        return Err(Error::conflict("admission record"));
+      }
+      Ok(record)
+    })
+    .transpose()?;
+
+  match (credential_use, grant, binding) {
+    (Some(credential_use), Some(grant), Some(_)) => {
+      if credential_use.cluster() != grant.cluster() {
+        return Err(Error::conflict("admission record"));
+      }
+      Ok(AdmissionState::Consumed(credential_use, Box::new(grant)))
+    }
+    (None, None, None) => Ok(AdmissionState::Aborted),
+    _ => Err(discovery_corrupt()),
   }
-  grant
-    .verify(identity.public_key())
-    .map_err(|_| Error::conflict("admission grant"))?;
-  Ok(AdmissionState::Consumed(credential_use, Box::new(grant)))
 }
 
 fn admission_purpose(generation: &GenerationId) -> String {
@@ -623,6 +654,51 @@ mod tests {
       AdmissionState::Aborted => panic!("recovered admission must be consumed"),
     }
     assert_never_deleted(&keys);
+  }
+
+  #[tokio::test]
+  async fn identity_records_admission_equivocated_outcomes_clean_pending_and_return_existing() {
+    for fault in [CommitFault::Aborted, CommitFault::Conflict] {
+      let (reference, _factory) = fresh_reference();
+      let faulting = FaultingFactory::new(
+        &reference,
+        vec![
+          CommitFault::Pass,
+          CommitFault::Pass,
+          CommitFault::Pass,
+          CommitFault::Pass,
+          CommitFault::Pass,
+          fault,
+        ],
+      );
+      let keys = ScriptedKeys::full();
+      let entropy = Arc::new(SequenceEntropy::default());
+      let context = open_context(&faulting.as_factory(), &keys, &entropy)
+        .await
+        .unwrap();
+      create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+        .await
+        .unwrap();
+      let first = proposal(37, &entropy);
+
+      let grant = commit_admission(&context, &provider_of(&keys), entropy.as_ref(), &first)
+        .await
+        .unwrap();
+      grant.verify(context.identity().public_key()).unwrap();
+      assert!(pending_keys(&reference).is_empty());
+      match admission_state(&context, &first).await.unwrap() {
+        AdmissionState::Consumed(_, existing) => assert_eq!(*existing, grant),
+        AdmissionState::Aborted => panic!("equivocated admission must be consumed"),
+      }
+
+      let commits_before = commit_calls(&reference);
+      let replay = commit_admission(&context, &provider_of(&keys), entropy.as_ref(), &first)
+        .await
+        .unwrap();
+      assert_eq!(replay, grant);
+      assert_eq!(commit_calls(&reference), commits_before);
+      assert_never_deleted(&keys);
+    }
   }
 
   #[tokio::test]

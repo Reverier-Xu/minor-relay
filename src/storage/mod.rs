@@ -305,21 +305,58 @@ impl MetadataStore {
   /// journal by the caller.
   ///
   /// The journal record was committed atomically with the target
-  /// transaction, so reconciliation must prove `Committed`.
+  /// transaction, so reconciliation must prove `Committed`. Recovering the
+  /// same identity again is idempotent: an already frozen store keeps its
+  /// pending identity and upgrades it to journal-proven so reconciliation
+  /// can proceed after a healed provider.
   pub(crate) fn freeze_journaled(&self, identity: &receipt::ReceiptIdentity) -> Result<()> {
     let mut state = self.lock_state()?;
-    if !matches!(*state, CommitState::Ready) {
-      return Err(Error::not_ready("metadata storage journal recovery"));
+    match &mut *state {
+      CommitState::Ready => {
+        *state = CommitState::Frozen {
+          pending: PendingCommit {
+            transaction: identity.transaction().clone(),
+            digest: identity.operation_digest().clone(),
+            journal_proven: true,
+          },
+          provider_call_active: false,
+        };
+        Ok(())
+      }
+      CommitState::Frozen { pending, .. }
+        if pending.transaction == *identity.transaction()
+          && pending.digest == *identity.operation_digest() =>
+      {
+        pending.journal_proven = true;
+        Ok(())
+      }
+      CommitState::Frozen { .. } => Err(Error::not_ready("metadata storage journal recovery")),
     }
-    *state = CommitState::Frozen {
-      pending: PendingCommit {
-        transaction: identity.transaction().clone(),
-        digest: identity.operation_digest().clone(),
-        journal_proven: true,
-      },
-      provider_call_active: false,
-    };
-    Ok(())
+  }
+
+  /// Reconciles a frozen store back to ready, if it is frozen.
+  ///
+  /// A ready store is unchanged. A frozen store reconciles its exact pending
+  /// identity once; `Committed` or `Aborted` clears the freeze while an
+  /// unresolved or conflicting outcome keeps it and fails.
+  pub(crate) async fn reconcile_if_frozen(&self) -> Result<()> {
+    {
+      let state = self.lock_state()?;
+      if matches!(*state, CommitState::Ready) {
+        return Ok(());
+      }
+    }
+    match self.reconcile().await? {
+      ReconcileOutcome::Committed(_) | ReconcileOutcome::Aborted => Ok(()),
+      ReconcileOutcome::DigestConflict => Err(Error::provider(
+        ProviderErrorKind::StorageCorrupt,
+        ProviderErrorContext::StorageReconcile,
+      )),
+      ReconcileOutcome::Unknown => Err(Error::provider(
+        ProviderErrorKind::CommitUnknown,
+        ProviderErrorContext::StorageReconcile,
+      )),
+    }
   }
 
   fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, CommitState>> {

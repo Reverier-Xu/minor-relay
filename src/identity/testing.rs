@@ -281,7 +281,6 @@ impl KeyProvider for ScriptedKeys {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum CommitFault {
   Pass,
   Aborted,
@@ -298,6 +297,7 @@ pub(crate) type CommitHook = Box<dyn FnOnce() + Send>;
 pub(crate) struct FaultingFactory {
   pub(crate) reference: Arc<ReferenceFactory>,
   script: Arc<Mutex<VecDeque<CommitFault>>>,
+  reconcile_script: Arc<Mutex<VecDeque<ReconcileOutcome>>>,
   hooks: Arc<Mutex<VecDeque<Option<CommitHook>>>>,
   committed_ops: Arc<Mutex<Vec<Vec<StoreOperation>>>>,
 }
@@ -315,9 +315,14 @@ impl FaultingFactory {
     Arc::new(Self {
       reference: Arc::clone(reference),
       script: Arc::new(Mutex::new(script.into())),
+      reconcile_script: Arc::new(Mutex::new(VecDeque::new())),
       hooks: Arc::new(Mutex::new(VecDeque::new())),
       committed_ops: Arc::new(Mutex::new(Vec::new())),
     })
+  }
+
+  pub(crate) fn push_reconcile_fault(&self, outcome: ReconcileOutcome) {
+    self.reconcile_script.lock().unwrap().push_back(outcome);
   }
 
   pub(crate) fn as_factory(self: &Arc<Self>) -> Arc<dyn StorageFactory> {
@@ -343,6 +348,7 @@ impl FaultingFactory {
 struct FaultingStorage {
   reference: Box<dyn Storage>,
   script: Arc<Mutex<VecDeque<CommitFault>>>,
+  reconcile_script: Arc<Mutex<VecDeque<ReconcileOutcome>>>,
   hooks: Arc<Mutex<VecDeque<Option<CommitHook>>>>,
   committed_ops: Arc<Mutex<Vec<Vec<StoreOperation>>>>,
 }
@@ -364,6 +370,7 @@ impl StorageFactory for FaultingFactory {
       Ok(Box::new(FaultingStorage {
         reference,
         script: Arc::clone(&self.script),
+        reconcile_script: Arc::clone(&self.reconcile_script),
         hooks: Arc::clone(&self.hooks),
         committed_ops: Arc::clone(&self.committed_ops),
       }) as Box<dyn Storage>)
@@ -400,8 +407,20 @@ impl Storage for FaultingStorage {
       let digest = transaction.operation_digest().clone();
       match fault {
         CommitFault::Pass => self.reference.commit(transaction).await,
-        CommitFault::Aborted => Ok(CommitOutcome::Aborted),
-        CommitFault::Conflict => Ok(CommitOutcome::Conflict),
+        CommitFault::Aborted => {
+          assert!(matches!(
+            self.reference.commit(transaction).await?,
+            CommitOutcome::Committed(_)
+          ));
+          Ok(CommitOutcome::Aborted)
+        }
+        CommitFault::Conflict => {
+          assert!(matches!(
+            self.reference.commit(transaction).await?,
+            CommitOutcome::Committed(_)
+          ));
+          Ok(CommitOutcome::Conflict)
+        }
         CommitFault::UnknownNotApplied => Ok(CommitOutcome::Unknown {
           transaction: id,
           operation_digest: digest,
@@ -430,7 +449,13 @@ impl Storage for FaultingStorage {
   fn reconcile<'a>(
     &'a self, transaction: &'a TransactionId, digest: &'a Digest,
   ) -> BoxFuture<'a, Result<ReconcileOutcome>> {
-    self.reference.reconcile(transaction, digest)
+    let fault = self.reconcile_script.lock().unwrap().pop_front();
+    Box::pin(async move {
+      if let Some(outcome) = fault {
+        return Ok(outcome);
+      }
+      self.reference.reconcile(transaction, digest).await
+    })
   }
 
   fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
