@@ -1,227 +1,67 @@
 use std::{
   future::Future,
-  sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-  },
+  sync::Arc,
   task::{Context, Poll, Waker},
   time::Duration,
 };
 
 use minor_relay::{
-  BoxFuture, Command, CommitOutcome, Digest, DurabilityLevel, Error, ErrorKind, GetNodeStatus,
-  KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId, NodeBuilder,
-  NodeConfig, NodeHandle, NodeStatus, ProviderErrorContext, ProviderErrorKind, PublicKey, Query,
-  ReconcileOutcome, Result, Shutdown, ShutdownOutcome, ShutdownReason, Signature,
-  StoreCapabilities, StoreRequirements, StoreTransaction, TransactionId, WaitForShutdown,
-  extension::{Entropy, KeyProvider, Storage, StorageFactory},
+  Command, ErrorKind, GetNodeStatus, NodeBuilder, NodeHandle, NodeStatus, Query, Shutdown,
+  ShutdownOutcome, ShutdownReason, WaitForShutdown,
+  extension::{KeyProvider, StorageFactory},
 };
-use tokio::sync::Notify;
 
-#[derive(Debug, Default)]
-struct ProviderCounters {
-  calls: AtomicUsize,
+mod common;
+
+use common::{
+  DropTracker, EventLog, KeyCall, MemoryStorageFactory, ScriptedKeys, SequenceEntropy,
+  required_capabilities,
+};
+
+struct Providers {
+  events: Arc<EventLog>,
+  factory: Arc<MemoryStorageFactory>,
+  keys: Arc<ScriptedKeys>,
+  entropy: Arc<SequenceEntropy>,
+  factory_drops: Arc<DropTracker>,
+  storage_drops: Arc<DropTracker>,
+  key_drops: Arc<DropTracker>,
 }
 
-impl ProviderCounters {
-  fn record(&self) {
-    self.calls.fetch_add(1, Ordering::SeqCst);
-  }
-
-  fn calls(&self) -> usize {
-    self.calls.load(Ordering::SeqCst)
-  }
-}
-
-#[derive(Debug, Default)]
-struct CountingEntropy {
-  calls: AtomicUsize,
-  requested_bytes: AtomicUsize,
-}
-
-impl CountingEntropy {
-  fn calls(&self) -> usize {
-    self.calls.load(Ordering::SeqCst)
-  }
-
-  fn requested_bytes(&self) -> usize {
-    self.requested_bytes.load(Ordering::SeqCst)
-  }
-}
-
-impl Entropy for CountingEntropy {
-  fn fill(&self, output: &mut [u8]) -> Result<()> {
-    self.calls.fetch_add(1, Ordering::SeqCst);
-    self.requested_bytes.store(output.len(), Ordering::SeqCst);
-    output.fill(0x5A);
-    Ok(())
-  }
-}
-
-#[derive(Debug, Default)]
-struct DropTracker {
-  count: AtomicUsize,
-  changed: Notify,
-}
-
-impl DropTracker {
-  fn record(&self) {
-    self.count.fetch_add(1, Ordering::SeqCst);
-    self.changed.notify_waiters();
-  }
-
-  fn count(&self) -> usize {
-    self.count.load(Ordering::SeqCst)
-  }
-
-  async fn wait_for_all(&self) {
-    loop {
-      let changed = self.changed.notified();
-      if self.count() == 3 {
-        return;
-      }
-      changed.await;
+impl Providers {
+  fn new() -> Self {
+    let events = Arc::new(EventLog::default());
+    let factory_drops = Arc::new(DropTracker::default());
+    let storage_drops = Arc::new(DropTracker::default());
+    let key_drops = Arc::new(DropTracker::default());
+    Self {
+      factory: Arc::new(
+        MemoryStorageFactory::new(required_capabilities())
+          .with_events(Arc::clone(&events))
+          .with_factory_drops(Arc::clone(&factory_drops))
+          .with_storage_drops(Arc::clone(&storage_drops)),
+      ),
+      keys: Arc::new(
+        ScriptedKeys::full()
+          .with_events(Arc::clone(&events))
+          .with_drops(Arc::clone(&key_drops)),
+      ),
+      entropy: Arc::new(SequenceEntropy::with_events(Arc::clone(&events))),
+      events,
+      factory_drops,
+      storage_drops,
+      key_drops,
     }
   }
-}
 
-#[derive(Debug)]
-struct CountingStorageFactory {
-  counters: Arc<ProviderCounters>,
-  drops: Option<Arc<DropTracker>>,
-}
-
-impl Drop for CountingStorageFactory {
-  fn drop(&mut self) {
-    if let Some(drops) = &self.drops {
-      drops.record();
-    }
-  }
-}
-
-impl StorageFactory for CountingStorageFactory {
-  fn open<'a>(
-    &'a self, _requirements: StoreRequirements,
-  ) -> BoxFuture<'a, Result<Box<dyn Storage>>> {
-    self.counters.record();
-    let storage = CountingStorage {
-      counters: Arc::clone(&self.counters),
-      drops: self.drops.clone(),
-    };
-    Box::pin(async move { Ok(Box::new(storage) as Box<dyn Storage>) })
-  }
-}
-
-#[derive(Debug)]
-struct CountingStorage {
-  counters: Arc<ProviderCounters>,
-  drops: Option<Arc<DropTracker>>,
-}
-
-impl Drop for CountingStorage {
-  fn drop(&mut self) {
-    if let Some(drops) = &self.drops {
-      drops.record();
-    }
-  }
-}
-
-impl Storage for CountingStorage {
-  fn capabilities(&self) -> StoreCapabilities {
-    self.counters.record();
-    StoreCapabilities::new(DurabilityLevel::OsCrashDurable)
-      .conditional_batch(true)
-      .ordered_scan(true)
-      .reconciliation(true)
-      .exclusive_lifetime_lock(true)
+  fn builder(&self) -> NodeBuilder {
+    let factory: Arc<dyn StorageFactory> = Arc::<MemoryStorageFactory>::clone(&self.factory);
+    let keys: Arc<dyn KeyProvider> = Arc::<ScriptedKeys>::clone(&self.keys);
+    NodeBuilder::new(factory, keys).entropy(Arc::<SequenceEntropy>::clone(&self.entropy))
   }
 
-  fn snapshot<'a>(
-    &'a self,
-  ) -> BoxFuture<'a, Result<Box<dyn minor_relay::extension::StoreSnapshot>>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageSnapshot)) })
-  }
-
-  fn commit<'a>(&'a self, _transaction: StoreTransaction) -> BoxFuture<'a, Result<CommitOutcome>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageCommit)) })
-  }
-
-  fn reconcile<'a>(
-    &'a self, _transaction: &'a TransactionId, _digest: &'a Digest,
-  ) -> BoxFuture<'a, Result<ReconcileOutcome>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageReconcile)) })
-  }
-
-  fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::StorageFlush)) })
-  }
-}
-
-#[derive(Debug)]
-struct CountingKeys {
-  counters: Arc<ProviderCounters>,
-  drops: Option<Arc<DropTracker>>,
-}
-
-impl Drop for CountingKeys {
-  fn drop(&mut self) {
-    if let Some(drops) = &self.drops {
-      drops.record();
-    }
-  }
-}
-
-impl KeyProvider for CountingKeys {
-  fn capabilities(&self) -> KeyCapabilities {
-    self.counters.record();
-    KeyCapabilities::new()
-      .ed25519(true)
-      .reconciliation(true)
-      .deletion(true)
-  }
-
-  fn create_ed25519<'a>(
-    &'a self, _operation: &'a KeyOperationId,
-  ) -> BoxFuture<'a, Result<KeyCreateState>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::KeyCreate)) })
-  }
-
-  fn reconcile_create<'a>(
-    &'a self, _operation: &'a KeyOperationId,
-  ) -> BoxFuture<'a, Result<KeyCreateState>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::KeyReconcile)) })
-  }
-
-  fn public_key<'a>(&'a self, _handle: &'a KeyHandle) -> BoxFuture<'a, Result<PublicKey>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::KeyPublicKey)) })
-  }
-
-  fn sign<'a>(
-    &'a self, _handle: &'a KeyHandle, _message: &'a [u8],
-  ) -> BoxFuture<'a, Result<Signature>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::KeySign)) })
-  }
-
-  fn delete<'a>(
-    &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
-  ) -> BoxFuture<'a, Result<KeyDeleteState>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::KeyDelete)) })
-  }
-
-  fn reconcile_delete<'a>(
-    &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
-  ) -> BoxFuture<'a, Result<KeyDeleteState>> {
-    self.counters.record();
-    Box::pin(async { Err(provider_error(ProviderErrorContext::KeyReconcile)) })
+  async fn start(&self) -> NodeHandle {
+    self.builder().start().await.unwrap()
   }
 }
 
@@ -237,32 +77,40 @@ fn g1_lifecycle_sealed_operations_preserve_outputs() {
 }
 
 #[tokio::test]
-async fn g1_lifecycle_start_and_shutdown_opens_storage_without_key_calls() {
-  let counters = Arc::new(ProviderCounters::default());
-  let entropy = Arc::new(CountingEntropy::default());
-  let handle = builder(Arc::clone(&counters), None, entropy.clone())
-    .start()
-    .await
-    .unwrap();
+async fn g1_lifecycle_start_and_shutdown_provisions_identity_once() {
+  let providers = Providers::new();
+  let handle = providers.start().await;
 
   assert_eq!(
     handle.query(GetNodeStatus::new()).await.unwrap(),
     NodeStatus::Running,
   );
-  assert_eq!(entropy.calls(), 1);
-  assert_eq!(entropy.requested_bytes(), 32);
-  assert_eq!(counters.calls(), 2);
+  assert_eq!(
+    providers.entropy.fills(),
+    &[32, 16, 16, 16, 16, 16],
+    "startup fills the runtime seed, then generates node, operation, and transaction IDs",
+  );
+  let calls = providers.keys.take_calls();
+  assert!(
+    matches!(
+      calls.as_slice(),
+      [KeyCall::Create(_), KeyCall::PublicKey(_)]
+    ),
+    "startup provisions and verifies the local identity: {calls:?}",
+  );
+  assert_eq!(providers.factory.commit_calls(), 3);
 
   let outcome = handle.command(Shutdown::new()).await.unwrap();
   assert_eq!(outcome.reason(), &ShutdownReason::Explicit);
-  assert_eq!(entropy.calls(), 1);
-  assert_eq!(counters.calls(), 2);
+  assert_eq!(providers.entropy.fills().len(), 6);
+  assert_eq!(providers.factory.commit_calls(), 3);
+  assert_eq!(providers.keys.take_calls(), vec![]);
 }
 
 #[tokio::test]
 async fn g1_lifecycle_cloned_handles_share_runtime_status() {
-  let counters = Arc::new(ProviderCounters::default());
-  let first = start_node(counters, None).await;
+  let providers = Providers::new();
+  let first = providers.start().await;
   let second = first.clone();
 
   assert_eq!(
@@ -278,8 +126,8 @@ async fn g1_lifecycle_cloned_handles_share_runtime_status() {
 
 #[tokio::test]
 async fn g1_lifecycle_shutdown_and_wait_are_idempotent() {
-  let counters = Arc::new(ProviderCounters::default());
-  let handle = start_node(counters, None).await;
+  let providers = Providers::new();
+  let handle = providers.start().await;
   let waiter = handle.clone();
   let waiting = tokio::spawn(async move { waiter.query(WaitForShutdown::new()).await });
   tokio::task::yield_now().await;
@@ -303,9 +151,8 @@ async fn g1_lifecycle_shutdown_and_wait_are_idempotent() {
 
 #[tokio::test]
 async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
-  let counters = Arc::new(ProviderCounters::default());
-  let drops = Arc::new(DropTracker::default());
-  let handle = start_node(Arc::clone(&counters), Some(Arc::clone(&drops))).await;
+  let providers = Providers::new();
+  let handle = providers.start().await;
   let barrier = Arc::new(tokio::sync::Barrier::new(16));
   let mut callers = Vec::new();
   for _ in 0..16 {
@@ -324,23 +171,33 @@ async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
     );
   }
 
-  assert_eq!(drops.count(), 3);
-  assert_eq!(counters.calls(), 2);
+  assert_eq!(
+    providers.storage_drops.count(),
+    1,
+    "concurrent shutdown must run exactly one provider drain",
+  );
+  assert_eq!(providers.factory_drops.count(), 0);
+  assert_eq!(providers.key_drops.count(), 0);
+  drop(providers.factory);
+  drop(providers.keys);
+  assert_eq!(providers.factory_drops.count(), 1);
+  assert_eq!(providers.key_drops.count(), 1);
 }
 
 #[test]
 fn g1_lifecycle_start_without_tokio_returns_not_ready_without_provider_calls() {
-  let counters = Arc::new(ProviderCounters::default());
-  let entropy = Arc::new(CountingEntropy::default());
-  let mut start = Box::pin(builder(Arc::clone(&counters), None, entropy.clone()).start());
+  let providers = Providers::new();
+  let mut start = Box::pin(providers.builder().start());
   let waker = Waker::noop();
   let mut context = Context::from_waker(waker);
 
   let result = Future::poll(start.as_mut(), &mut context);
 
   assert!(matches!(result, Poll::Ready(Err(error)) if error.kind() == ErrorKind::NotReady));
-  assert_eq!(entropy.calls(), 0);
-  assert_eq!(counters.calls(), 0);
+  assert_eq!(providers.entropy.fills(), &[] as &[usize]);
+  assert_eq!(providers.events.events(), &[] as &[&str]);
+  assert_eq!(providers.factory.open_calls(), 0);
+  assert_eq!(providers.keys.take_calls(), vec![]);
 }
 
 #[test]
@@ -349,8 +206,16 @@ fn g1_lifecycle_runtime_loss_publishes_failed_terminal_state() {
     .enable_all()
     .build()
     .unwrap();
-  let counters = Arc::new(ProviderCounters::default());
-  let handle = runtime.block_on(start_node(Arc::clone(&counters), None));
+  let providers = Providers::new();
+  let handle = runtime.block_on(providers.start());
+  let calls = providers.keys.take_calls();
+  assert!(
+    matches!(
+      calls.as_slice(),
+      [KeyCall::Create(_), KeyCall::PublicKey(_)]
+    ),
+    "startup provisions the identity before runtime loss: {calls:?}",
+  );
   drop(runtime);
 
   let observer = tokio::runtime::Builder::new_current_thread()
@@ -367,59 +232,37 @@ fn g1_lifecycle_runtime_loss_publishes_failed_terminal_state() {
       ShutdownReason::Fatal(ErrorKind::Internal),
     );
   });
-  assert_eq!(counters.calls(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_shutdown_releases_retained_providers() {
-  let counters = Arc::new(ProviderCounters::default());
-  let drops = Arc::new(DropTracker::default());
-  let handle = start_node(Arc::clone(&counters), Some(Arc::clone(&drops))).await;
+  let providers = Providers::new();
+  let handle = providers.start().await;
 
   handle.command(Shutdown::new()).await.unwrap();
 
-  assert_eq!(drops.count(), 3);
-  assert_eq!(counters.calls(), 2);
+  assert_eq!(providers.storage_drops.count(), 1);
+  assert_eq!(providers.factory_drops.count(), 0);
+  assert_eq!(providers.key_drops.count(), 0);
+  drop(providers.factory);
+  drop(providers.keys);
+  assert_eq!(providers.factory_drops.count(), 1);
+  assert_eq!(providers.key_drops.count(), 1);
 }
 
 #[tokio::test]
 async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
-  let counters = Arc::new(ProviderCounters::default());
-  let drops = Arc::new(DropTracker::default());
-  let handle = start_node(Arc::clone(&counters), Some(Arc::clone(&drops))).await;
+  let providers = Providers::new();
+  let handle = providers.start().await;
 
   drop(handle);
-  tokio::time::timeout(Duration::from_secs(1), drops.wait_for_all())
+  tokio::time::timeout(Duration::from_secs(1), providers.storage_drops.wait_for(1))
     .await
     .unwrap();
 
-  assert_eq!(drops.count(), 3);
-  assert_eq!(counters.calls(), 2);
-}
-
-fn builder(
-  counters: Arc<ProviderCounters>, drops: Option<Arc<DropTracker>>, entropy: Arc<CountingEntropy>,
-) -> NodeBuilder {
-  NodeBuilder::new(
-    Arc::new(CountingStorageFactory {
-      counters: Arc::clone(&counters),
-      drops: drops.clone(),
-    }),
-    Arc::new(CountingKeys { counters, drops }),
-  )
-  .config(NodeConfig::new())
-  .entropy(entropy)
-}
-
-async fn start_node(
-  counters: Arc<ProviderCounters>, drops: Option<Arc<DropTracker>>,
-) -> NodeHandle {
-  builder(counters, drops, Arc::new(CountingEntropy::default()))
-    .start()
-    .await
-    .unwrap()
-}
-
-fn provider_error(context: ProviderErrorContext) -> Error {
-  Error::provider(ProviderErrorKind::Internal, context)
+  assert_eq!(providers.storage_drops.count(), 1);
+  drop(providers.factory);
+  drop(providers.keys);
+  assert_eq!(providers.factory_drops.count(), 1);
+  assert_eq!(providers.key_drops.count(), 1);
 }

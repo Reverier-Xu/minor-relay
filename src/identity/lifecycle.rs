@@ -66,6 +66,10 @@ impl LocalIdentityContext {
   pub(crate) const fn identity(&self) -> &LocalIdentityV1 {
     &self.identity
   }
+
+  pub(crate) fn into_parts(self) -> (MetadataStore, LocalIdentityV1) {
+    (self.store, self.identity)
+  }
 }
 
 /// Opens or creates the local node identity with exact crash recovery.
