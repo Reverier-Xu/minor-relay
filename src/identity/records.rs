@@ -94,6 +94,10 @@ pub(crate) fn local_identity_key() -> Result<(StoreNamespace, StoreKey)> {
   ))
 }
 
+pub(crate) fn key_creation_intent_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(KEY_CREATION_INTENT_NAMESPACE)
+}
+
 pub(crate) fn key_creation_intent_key(
   operation: &KeyOperationId,
 ) -> Result<(StoreNamespace, StoreKey)> {
