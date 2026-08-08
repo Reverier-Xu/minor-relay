@@ -234,6 +234,12 @@ impl StoreRequirements {
     self.transactional_migration = required;
     self
   }
+
+  #[cfg(test)]
+  pub(crate) const fn with_required_durability(mut self, level: DurabilityLevel) -> Self {
+    self.required_durability = level;
+    self
+  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

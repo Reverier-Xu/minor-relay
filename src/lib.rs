@@ -69,3 +69,24 @@ pub mod extension {
     provider::{KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot},
   };
 }
+
+pub mod adapters {
+  //! Explicit storage-adapter constructors.
+  //!
+  //! Adapter selection is always an explicit caller choice; no feature
+  //! selects a backend implicitly.
+
+  use std::{path::PathBuf, sync::Arc};
+
+  use crate::extension::StorageFactory;
+
+  /// Creates a test-only immutable JSON generation store factory rooted at
+  /// `path`.
+  ///
+  /// The directory must exist. The factory holds one alias-safe exclusive
+  /// lifetime lock per open store and never overwrites a final generation.
+  #[cfg(feature = "json")]
+  pub fn json_store(path: PathBuf) -> Arc<dyn StorageFactory> {
+    Arc::new(crate::storage::json::JsonStoreFactory::new(path))
+  }
+}

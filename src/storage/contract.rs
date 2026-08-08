@@ -970,7 +970,7 @@ async fn storage_contract_prepared_transactions_are_atomic_idempotent_and_perman
       .unwrap()
       .unwrap()
       .as_bytes(),
-    &[],
+    ACTIVE_MARKER_VALUE,
   );
 
   let target = ReceiptIdentity::from_receipt(&receipt);

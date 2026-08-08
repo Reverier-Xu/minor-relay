@@ -367,6 +367,8 @@ impl MetadataStore {
   }
 }
 
+#[cfg(feature = "json")]
+pub(crate) mod json;
 #[allow(dead_code)]
 pub(crate) mod pending;
 #[allow(dead_code)]

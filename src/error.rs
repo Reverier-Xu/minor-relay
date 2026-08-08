@@ -129,6 +129,13 @@ impl Error {
     }
   }
 
+  pub(crate) const fn unsupported_schema(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::UnsupportedSchema,
+      context,
+    }
+  }
+
   pub(crate) const fn internal(context: &'static str) -> Self {
     Self {
       kind: ErrorKind::Internal,
