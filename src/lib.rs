@@ -76,8 +76,10 @@ pub mod adapters {
   //! Adapter selection is always an explicit caller choice; no feature
   //! selects a backend implicitly.
 
+  #[cfg(feature = "json")]
   use std::{path::PathBuf, sync::Arc};
 
+  #[cfg(feature = "json")]
   use crate::extension::StorageFactory;
 
   /// Creates a test-only immutable JSON generation store factory rooted at

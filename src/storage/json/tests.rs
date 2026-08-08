@@ -646,3 +646,21 @@ async fn json_adapter_reopen_uses_newest_snapshot_without_deleted_keys() {
     b"second"
   );
 }
+
+#[tokio::test]
+async fn json_adapter_failed_lock_open_does_not_poison_future_opens() {
+  let dir = tempdir();
+  fs::create_dir(dir.path().join("minor-relay.lock")).unwrap();
+  let factory = factory(&dir);
+  for attempt in 0..2 {
+    let error = factory
+      .open(StoreRequirements::metadata())
+      .await
+      .unwrap_err();
+    assert_ne!(
+      error.kind(),
+      ErrorKind::StorageLocked,
+      "attempt {attempt} must fail with the real I/O error, not a poisoned guard"
+    );
+  }
+}

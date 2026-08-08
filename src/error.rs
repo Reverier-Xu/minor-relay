@@ -129,6 +129,7 @@ impl Error {
     }
   }
 
+  #[cfg(feature = "json")]
   pub(crate) const fn unsupported_schema(context: &'static str) -> Self {
     Self {
       kind: ErrorKind::UnsupportedSchema,
