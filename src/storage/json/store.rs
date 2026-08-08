@@ -13,7 +13,7 @@ use std::{
   collections::{BTreeMap, BTreeSet},
   fmt,
   fs::{self, File, OpenOptions},
-  io::Write,
+  io::{Read, Seek, SeekFrom, Write},
   path::{Path, PathBuf},
   sync::{Arc, LazyLock, Mutex},
 };
@@ -59,7 +59,7 @@ impl JsonStoreFactory {
     }
   }
 
-  #[cfg(test)]
+  #[cfg(all(test, unix))]
   pub(crate) fn with_limits(
     directory: PathBuf, max_generations: u64, max_total_bytes: u64,
   ) -> Self {
@@ -159,6 +159,26 @@ impl StoreGuard {
       _lock_file: lock_file,
     })
   }
+
+  /// Reads the lock header through the held handle. Windows denies opening
+  /// the same path again while this handle is open, so no second handle is
+  /// ever created.
+  fn lock_bytes(&self) -> std::io::Result<Vec<u8>> {
+    let mut file = &self._lock_file;
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+  }
+
+  /// Writes the lock header through the held handle and flushes it.
+  fn write_lock_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = &self._lock_file;
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(bytes)?;
+    file.sync_all()
+  }
 }
 
 #[derive(Clone)]
@@ -202,14 +222,15 @@ impl JsonStorage {
       ));
     }
 
-    let lock_path = canonical.join(LOCK_FILE);
-    let lock_bytes = fs::read(&lock_path)
+    let lock_bytes = guard
+      .lock_bytes()
       .map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
     let store_uuid = if lock_bytes.is_empty() {
       let mut uuid = [0_u8; 16];
       getrandom::fill(&mut uuid)
         .map_err(|_| provider_error(ProviderErrorKind::Io, ProviderErrorContext::Entropy))?;
-      fs::write(&lock_path, LockHeader::new(uuid).encode()?)
+      guard
+        .write_lock_bytes(&LockHeader::new(uuid).encode()?)
         .map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
       uuid
     } else {

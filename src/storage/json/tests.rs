@@ -4,26 +4,25 @@
 //! prove a nonempty lane. Tests use real temporary directories and exercise
 //! the adapter through the crate-private factory and the public SPI.
 
-use std::{
-  fs,
-  path::{Path, PathBuf},
-  sync::Arc,
-};
+#[cfg(unix)]
+use std::path::{Path, PathBuf};
+use std::{fs, sync::Arc};
 
 use tempfile::TempDir;
 
-use super::{
-  JsonStoreFactory,
-  document::{
-    GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA, hex_decode_bytes,
-  },
+use super::JsonStoreFactory;
+#[cfg(unix)]
+use super::document::{
+  GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA, hex_decode_bytes,
+};
+#[cfg(unix)]
+use crate::{
+  CommitOutcome, CommitReceipt, Digest, ReconcileOutcome, StoreExpectation, StoreOperation,
+  StoreRevision, StoreTransaction, StoreValue, TransactionId, provider::Storage,
 };
 use crate::{
-  CommitOutcome, CommitReceipt, Digest, DurabilityLevel, ErrorKind, QualifiedTag, ReconcileOutcome,
-  StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
-  StoreTransaction, StoreValue, TransactionId,
-  provider::{Storage, StorageFactory},
-  storage::receipt::ReceiptReferenceToken,
+  DurabilityLevel, ErrorKind, QualifiedTag, StoreKey, StoreNamespace, StoreRequirements,
+  provider::StorageFactory, storage::receipt::ReceiptReferenceToken,
 };
 
 fn tempdir() -> TempDir {
@@ -34,6 +33,7 @@ fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
   Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()))
 }
 
+#[cfg(unix)]
 fn limited_factory(dir: &TempDir, generations: u64, bytes: u64) -> Arc<dyn StorageFactory> {
   Arc::new(JsonStoreFactory::with_limits(
     dir.path().to_path_buf(),
@@ -51,14 +51,17 @@ fn key(bytes: &[u8]) -> StoreKey {
   StoreKey::new(Arc::from(bytes))
 }
 
+#[cfg(unix)]
 fn value(bytes: &[u8]) -> StoreValue {
   StoreValue::new(Arc::from(bytes))
 }
 
+#[cfg(unix)]
 fn transaction_id(index: u64) -> TransactionId {
   TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }
 
+#[cfg(unix)]
 fn put_transaction(index: u64, base: StoreRevision, entries: &[(&str, &[u8])]) -> StoreTransaction {
   let namespace = namespace("one");
   let operations = entries
@@ -73,6 +76,7 @@ fn put_transaction(index: u64, base: StoreRevision, entries: &[(&str, &[u8])]) -
   StoreTransaction::new(transaction_id(index), base, operations).unwrap()
 }
 
+#[cfg(unix)]
 async fn committed(storage: &dyn Storage, transaction: StoreTransaction) -> CommitReceipt {
   match storage.commit(transaction).await.unwrap() {
     CommitOutcome::Committed(receipt) => receipt,
@@ -80,14 +84,17 @@ async fn committed(storage: &dyn Storage, transaction: StoreTransaction) -> Comm
   }
 }
 
+#[cfg(unix)]
 async fn open(factory: &Arc<dyn StorageFactory>) -> Box<dyn Storage> {
   factory.open(StoreRequirements::metadata()).await.unwrap()
 }
 
+#[cfg(unix)]
 async fn head_revision(storage: &dyn Storage) -> StoreRevision {
   storage.snapshot().await.unwrap().revision().clone()
 }
 
+#[cfg(unix)]
 fn generation_files(dir: &Path) -> Vec<PathBuf> {
   let mut files: Vec<PathBuf> = fs::read_dir(dir)
     .unwrap()
@@ -101,6 +108,7 @@ fn generation_files(dir: &Path) -> Vec<PathBuf> {
   files
 }
 
+#[cfg(unix)]
 fn read_generation(dir: &Path, index: usize) -> (Vec<u8>, GenerationDocument) {
   let files = generation_files(dir);
   let bytes = fs::read(&files[index]).unwrap();
@@ -108,6 +116,7 @@ fn read_generation(dir: &Path, index: usize) -> (Vec<u8>, GenerationDocument) {
   (bytes, document)
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_generation_file_is_deterministic_and_header_complete() {
   let dir = tempdir();
@@ -148,6 +157,7 @@ async fn json_adapter_generation_file_is_deterministic_and_header_complete() {
   assert_eq!(parsed.checksum, document.checksum);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_names_are_unique_zero_padded_and_never_reused() {
   let dir = tempdir();
@@ -190,6 +200,7 @@ async fn json_adapter_names_are_unique_zero_padded_and_never_reused() {
   );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_map_keys_serialize_in_byte_order() {
   let dir = tempdir();
@@ -225,6 +236,7 @@ async fn json_adapter_map_keys_serialize_in_byte_order() {
   assert_eq!(keys, vec!["00", "80", "ff"]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_commit_never_overwrites_final_generation() {
   let dir = tempdir();
@@ -247,6 +259,7 @@ async fn json_adapter_commit_never_overwrites_final_generation() {
   assert_eq!(fs::read(&collision).unwrap(), before);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_stale_temporary_cleanup_preserves_finals_and_unrelated_files() {
   let dir = tempdir();
@@ -273,6 +286,7 @@ async fn json_adapter_stale_temporary_cleanup_preserves_finals_and_unrelated_fil
   drop(reopened);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_generation_quota_refuses_before_creating_files() {
   let dir = tempdir();
@@ -300,6 +314,7 @@ async fn json_adapter_generation_quota_refuses_before_creating_files() {
   assert_eq!(generation_files(dir.path()).len(), 2);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_total_byte_quota_refuses_before_creating_files() {
   let dir = tempdir();
@@ -326,6 +341,7 @@ async fn json_adapter_total_byte_quota_refuses_before_creating_files() {
   }));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_second_open_is_storage_locked_and_drop_releases() {
   let dir = tempdir();
@@ -368,6 +384,7 @@ async fn json_adapter_alias_open_through_symlink_is_storage_locked() {
   drop(storage);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_reopen_restores_records_receipts_and_revision() {
   let dir = tempdir();
@@ -411,6 +428,7 @@ async fn json_adapter_reopen_restores_records_receipts_and_revision() {
   ));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_reopen_rejects_corruption_and_never_selects_older() {
   async fn expect_reopen_error(dir: &TempDir, kind: ErrorKind) {
@@ -574,6 +592,7 @@ fn json_adapter_receipt_reference_tokens_cover_generation_records() {
   assert_ne!(token, other);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn json_adapter_reopen_uses_newest_snapshot_without_deleted_keys() {
   let dir = tempdir();
