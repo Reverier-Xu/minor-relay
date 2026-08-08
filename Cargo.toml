@@ -11,16 +11,9 @@ version      = "0.1.0"
 
 [features]
 default = ["json"]
-json = [
-  "dep:atomic-write-file",
-  "dep:fs4",
-  "dep:rustix",
-  "dep:serde",
-  "dep:serde_json",
-]
+json    = ["dep:fs4", "dep:rustix", "dep:serde", "dep:serde_json"]
 
 [dependencies]
-atomic-write-file = { version = "0.3", optional = true }
 ed25519-dalek = { version = "3.0", default-features = false, features = [
   "fast",
   "rand_core",
