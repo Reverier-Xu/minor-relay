@@ -249,7 +249,7 @@ pub(super) fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub(super) fn hex_decode_bytes(value: &str, context: &'static str) -> Result<Vec<u8>> {
-  if value.len() % 2 != 0
+  if !value.len().is_multiple_of(2)
     || !value
       .bytes()
       .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))

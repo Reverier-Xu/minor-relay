@@ -539,13 +539,12 @@ fn load_chain(directory: &Path, store_uuid: &[u8; 16]) -> Result<Head> {
     let Some(name) = name.to_str() else {
       continue;
     };
-    if let Some((generation, transaction)) = parse_generation_name(name) {
-      if generations
+    if let Some((generation, transaction)) = parse_generation_name(name)
+      && generations
         .insert(generation, (entry.path(), transaction))
         .is_some()
-      {
-        return Err(corrupt_open());
-      }
+    {
+      return Err(corrupt_open());
     }
   }
   let mut entries = BTreeMap::new();
