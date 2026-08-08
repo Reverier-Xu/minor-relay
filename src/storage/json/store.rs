@@ -97,8 +97,21 @@ impl StorageFactory for JsonStoreFactory {
   }
 }
 
+/// Removes the canonical path from the in-process open registry on drop,
+/// including every fallible path between insertion and guard construction.
+struct SetGuard(PathBuf);
+
+impl Drop for SetGuard {
+  fn drop(&mut self) {
+    if let Ok(mut open) = OPEN_STORES.lock() {
+      open.remove(&self.0);
+    }
+  }
+}
+
 struct StoreGuard {
   canonical: PathBuf,
+  _set_guard: SetGuard,
   _lock_file: File,
 }
 
@@ -113,7 +126,7 @@ impl StoreGuard {
         ProviderErrorContext::StorageOpen,
       ));
     }
-    {
+    let set_guard = {
       let mut open = OPEN_STORES
         .lock()
         .map_err(|_| Error::internal("json store guard"))?;
@@ -123,7 +136,8 @@ impl StoreGuard {
           ProviderErrorContext::StorageOpen,
         ));
       }
-    }
+      SetGuard(canonical.clone())
+    };
     let lock_path = canonical.join(LOCK_FILE);
     let lock_file = OpenOptions::new()
       .read(true)
@@ -133,10 +147,6 @@ impl StoreGuard {
       .open(&lock_path)
       .map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
     if let Err(error) = FileExt::try_lock(&lock_file) {
-      OPEN_STORES
-        .lock()
-        .map_err(|_| Error::internal("json store guard"))?
-        .remove(&canonical);
       let kind = match error {
         fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
         fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
@@ -145,16 +155,9 @@ impl StoreGuard {
     }
     Ok(Self {
       canonical,
+      _set_guard: set_guard,
       _lock_file: lock_file,
     })
-  }
-}
-
-impl Drop for StoreGuard {
-  fn drop(&mut self) {
-    if let Ok(mut open) = OPEN_STORES.lock() {
-      open.remove(&self.canonical);
-    }
   }
 }
 
@@ -192,7 +195,7 @@ impl JsonStorage {
     let canonical = guard.canonical.clone();
     let os_crash = probe_directory_barrier(&canonical);
     let capabilities = capability_set(os_crash);
-    if requirements.required_durability() == DurabilityLevel::OsCrashDurable && !os_crash {
+    if !capabilities.satisfies(requirements) {
       return Err(provider_error(
         ProviderErrorKind::UnsupportedCapability,
         ProviderErrorContext::StorageOpen,
@@ -387,7 +390,12 @@ impl JsonStorage {
       receipts: Arc::new(receipts),
       total_bytes,
     };
-    cleanup_temp_files(&self._guard.canonical)?;
+    cleanup_temp_files(&self._guard.canonical).map_err(|_| {
+      provider_error(
+        ProviderErrorKind::CommitUnknown,
+        ProviderErrorContext::StorageCommit,
+      )
+    })?;
     if barrier_result.is_err() {
       return Ok(CommitOutcome::Unknown {
         transaction: transaction.id().clone(),
@@ -556,6 +564,10 @@ fn load_chain(directory: &Path, store_uuid: &[u8; 16]) -> Result<Head> {
     if *generation != expected {
       return Err(corrupt_open());
     }
+    let metadata = entry_metadata(path)?;
+    if metadata.len() > MAX_TOTAL_BYTES {
+      return Err(corrupt_open());
+    }
     let bytes =
       fs::read(path).map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
     let document = GenerationDocument::parse(&bytes).map_err(|error| {
@@ -601,11 +613,26 @@ fn load_chain(directory: &Path, store_uuid: &[u8; 16]) -> Result<Head> {
       revision,
     );
     receipts.insert(transaction.clone(), receipt);
-    let expected_receipts: Vec<String> = receipts.keys().map(|id| id.as_str().to_owned()).collect();
-    let actual_receipts: Vec<String> = document
+    let expected_receipts: Vec<(String, String, String)> = receipts
+      .iter()
+      .map(|(id, receipt)| {
+        (
+          id.as_str().to_owned(),
+          hex_encode(receipt.operation_digest().as_bytes()),
+          hex_encode(receipt.committed_revision().as_bytes()),
+        )
+      })
+      .collect();
+    let actual_receipts: Vec<(String, String, String)> = document
       .receipts
       .iter()
-      .map(|receipt| receipt.transaction.clone())
+      .map(|receipt| {
+        (
+          receipt.transaction.clone(),
+          receipt.operation_digest.clone(),
+          receipt.committed_revision.clone(),
+        )
+      })
       .collect();
     if actual_receipts != expected_receipts {
       return Err(corrupt_open());
@@ -687,6 +714,10 @@ fn cleanup_temp_files(directory: &Path) -> Result<()> {
     }
   }
   Ok(())
+}
+
+fn entry_metadata(path: &Path) -> Result<fs::Metadata> {
+  fs::metadata(path).map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))
 }
 
 fn corrupt_open() -> Error {
