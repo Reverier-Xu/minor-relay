@@ -13,12 +13,11 @@ use std::{
 };
 
 use minor_relay::{
-  BoxFuture, Command, Error, ErrorKind, GetNodeStatus, KeyCapabilities, KeyCreateState,
-  KeyDeleteState, KeyHandle, KeyOperationId, NodeBuilder, NodeStatus, ProviderErrorContext,
-  ProviderErrorKind, PublicKey, Query, Result, Shutdown, Signature,
+  BoxFuture, Error, ErrorKind, GetNodeStatus, KeyCapabilities, KeyCreateState, KeyDeleteState,
+  KeyHandle, KeyOperationId, NodeBuilder, NodeStatus, ProviderErrorContext, ProviderErrorKind,
+  PublicKey, Result, Shutdown, Signature,
   extension::{KeyProvider, StorageFactory},
 };
-use tempfile::TempDir;
 
 #[derive(Debug, Default)]
 struct Calls {
