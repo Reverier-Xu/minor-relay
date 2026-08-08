@@ -13,20 +13,18 @@ if (($# != 0)); then
 fi
 
 MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == 20fa82da6007b9e13852e92211ad1fa9f00d2bd471e1a31f9a0af85db88946df ]] || {
+[[ $MANIFEST_DIGEST == 0bd2de688031e10d08f0e9f1e41c5eb0771ab3be45c3c8de39c376b16c599ac9 ]] || {
   printf 'workspace manifests or lockfile differ from the reviewed G2 json baseline\n' >&2
   exit 1
 }
 
 EXPECTED=$(cat <<'EOF'
-atomic-write-file@0.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=default
 autocfg@1.5.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 bit-set@0.8.0 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 bit-vec@0.8.0 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 bitflags@2.13.1 source=registry+https://github.com/rust-lang/crates.io-index features=std
 block-buffer@0.12.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 cfg-if@1.0.4 source=registry+https://github.com/rust-lang/crates.io-index features=
-cfg_aliases@0.2.2 source=registry+https://github.com/rust-lang/crates.io-index features=
 const-oid@0.10.2 source=registry+https://github.com/rust-lang/crates.io-index features=
 cpufeatures@0.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 crypto-common@0.2.2 source=registry+https://github.com/rust-lang/crates.io-index features=rand_core
@@ -44,14 +42,13 @@ getrandom@0.3.4 source=registry+https://github.com/rust-lang/crates.io-index fea
 getrandom@0.4.3 source=registry+https://github.com/rust-lang/crates.io-index features=
 hybrid-array@0.4.14 source=registry+https://github.com/rust-lang/crates.io-index features=
 itoa@1.0.18 source=registry+https://github.com/rust-lang/crates.io-index features=
-libc@0.2.189 source=registry+https://github.com/rust-lang/crates.io-index features=default,extra_traits,std
+libc@0.2.189 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 linux-raw-sys@0.12.1 source=registry+https://github.com/rust-lang/crates.io-index features=auxvec,elf,errno,general,ioctl,no_std
 memchr@2.8.3 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,std
 minicbor-derive@0.19.5 source=registry+https://github.com/rust-lang/crates.io-index features=
 minicbor@2.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,derive,minicbor-derive,std
 minor-relay-test-support@0.1.0 source=workspace features=
 minor-relay@0.1.0 source=workspace features=default,json
-nix@0.30.1 source=registry+https://github.com/rust-lang/crates.io-index features=default,feature,fs,user
 num-traits@0.2.19 source=registry+https://github.com/rust-lang/crates.io-index features=std
 once_cell@1.21.4 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,race,std
 pin-project-lite@0.2.17 source=registry+https://github.com/rust-lang/crates.io-index features=
@@ -62,7 +59,7 @@ quick-error@1.2.3 source=registry+https://github.com/rust-lang/crates.io-index f
 quote@1.0.47 source=registry+https://github.com/rust-lang/crates.io-index features=default,proc-macro
 r-efi@5.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 r-efi@6.0.0 source=registry+https://github.com/rust-lang/crates.io-index features=
-rand@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,os_rng,small_rng,std,std_rng,thread_rng
+rand@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,os_rng,std
 rand_chacha@0.9.0 source=registry+https://github.com/rust-lang/crates.io-index features=std
 rand_core@0.10.1 source=registry+https://github.com/rust-lang/crates.io-index features=
 rand_core@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index features=os_rng,std
