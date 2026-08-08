@@ -235,7 +235,7 @@ impl StoreRequirements {
     self
   }
 
-  #[cfg(test)]
+  #[cfg(all(test, not(unix)))]
   pub(crate) const fn with_required_durability(mut self, level: DurabilityLevel) -> Self {
     self.required_durability = level;
     self

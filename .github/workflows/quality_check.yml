@@ -205,6 +205,37 @@ jobs:
       - name: fixed simulator gate
         run: cargo +1.97.1 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
 
+  features:
+    name: features
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RUSTFLAGS: -Dwarnings
+      RUSTDOCFLAGS: -Dwarnings
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: install MSRV toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+
+      - name: install cargo-hack
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
+        with:
+          tool: cargo-hack@0.6.45
+
+      - name: verify cargo-hack
+        run: test "$(cargo hack --version)" = "cargo-hack 0.6.45"
+
+      - name: feature powerset check
+        run: cargo +1.97.1 hack check --feature-powerset --depth 1 --locked
+
+      - name: feature powerset test
+        run: cargo +1.97.1 hack test --feature-powerset --depth 1 --locked
+
   container:
     name: container
     runs-on: ubuntu-latest
