@@ -6,18 +6,18 @@
 //! public `NodeBuilder`/provider SPI only. Test names are prefixed
 //! `json_runtime_` for the task verifier's nonempty lane proof.
 
-use std::{
-  fs,
-  path::Path,
-  sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::{fs, path::Path};
 
 use minor_relay::{
-  BoxFuture, Error, ErrorKind, GetNodeStatus, KeyCapabilities, KeyCreateState, KeyDeleteState,
-  KeyHandle, KeyOperationId, NodeBuilder, NodeStatus, ProviderErrorContext, ProviderErrorKind,
-  PublicKey, Result, Shutdown, Signature,
+  BoxFuture, Error, ErrorKind, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle,
+  KeyOperationId, NodeBuilder, ProviderErrorContext, ProviderErrorKind, PublicKey, Result,
+  Signature,
   extension::{KeyProvider, StorageFactory},
 };
+#[cfg(unix)]
+use minor_relay::{GetNodeStatus, NodeStatus, Shutdown};
 
 #[derive(Debug, Default)]
 struct Calls {
@@ -133,6 +133,7 @@ impl KeyProvider for DeterministicKeys {
   }
 }
 
+#[cfg(unix)]
 fn generation_files(dir: &Path) -> Vec<String> {
   let mut files: Vec<String> = fs::read_dir(dir)
     .unwrap()
@@ -145,6 +146,7 @@ fn generation_files(dir: &Path) -> Vec<String> {
   files
 }
 
+#[cfg(unix)]
 fn temp_files(dir: &Path) -> Vec<String> {
   fs::read_dir(dir)
     .unwrap()
