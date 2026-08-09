@@ -8,11 +8,14 @@ use std::{
 
 use tempfile::TempDir;
 
-use super::{JsonStoreFactory, document::GenerationDocument};
+use super::JsonStoreFactory;
+#[cfg(unix)]
+use super::document::GenerationDocument;
+#[cfg(unix)]
+use crate::{CommitOutcome, CommitReceipt, StoreRequirements, provider::Storage};
 use crate::{
-  CommitOutcome, CommitReceipt, QualifiedTag, StoreExpectation, StoreKey, StoreNamespace,
-  StoreOperation, StoreRequirements, StoreRevision, StoreTransaction, StoreValue, TransactionId,
-  provider::{Storage, StorageFactory},
+  QualifiedTag, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRevision,
+  StoreTransaction, StoreValue, TransactionId, provider::StorageFactory,
 };
 
 pub(crate) fn tempdir() -> TempDir {
@@ -67,6 +70,7 @@ pub(crate) fn put_transaction(
   StoreTransaction::new(transaction_id(index), base, operations).unwrap()
 }
 
+#[cfg(unix)]
 pub(crate) async fn committed(
   storage: &dyn Storage, transaction: StoreTransaction,
 ) -> CommitReceipt {
@@ -76,10 +80,12 @@ pub(crate) async fn committed(
   }
 }
 
+#[cfg(unix)]
 pub(crate) async fn open(factory: &Arc<dyn StorageFactory>) -> Box<dyn Storage> {
   factory.open(StoreRequirements::metadata()).await.unwrap()
 }
 
+#[cfg(unix)]
 pub(crate) async fn head_revision(storage: &dyn Storage) -> StoreRevision {
   storage.snapshot().await.unwrap().revision().clone()
 }
@@ -97,6 +103,7 @@ pub(crate) fn generation_files(dir: &Path) -> Vec<PathBuf> {
   files
 }
 
+#[cfg(unix)]
 pub(crate) fn read_generation(dir: &Path, index: usize) -> (Vec<u8>, GenerationDocument) {
   let files = generation_files(dir);
   let bytes = fs::read(&files[index]).unwrap();

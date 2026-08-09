@@ -4,20 +4,26 @@
 //! prove a nonempty lane. Tests use real temporary directories and exercise
 //! the adapter through the crate-private factory and the public SPI.
 
-use std::{fs, sync::Arc};
+use std::fs;
+#[cfg(unix)]
+use std::sync::Arc;
 
+#[cfg(unix)]
 use tempfile::TempDir;
 
+#[cfg(unix)]
+use super::JsonStoreFactory;
 #[cfg(unix)]
 use super::document::{
   GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA, hex_decode_bytes,
 };
-use super::{JsonStoreFactory, helpers::*};
+use super::helpers::*;
+#[cfg(unix)]
+use crate::provider::StorageFactory;
 #[cfg(unix)]
 use crate::{Digest, ReconcileOutcome, StoreExpectation, StoreOperation, StoreTransaction};
 use crate::{
-  DurabilityLevel, ErrorKind, StoreRequirements, provider::StorageFactory,
-  storage::receipt::ReceiptReferenceToken,
+  DurabilityLevel, ErrorKind, StoreRequirements, storage::receipt::ReceiptReferenceToken,
 };
 
 #[cfg(unix)]
