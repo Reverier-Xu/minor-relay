@@ -137,8 +137,11 @@ impl Drop for SetGuard {
 
 struct StoreGuard {
   canonical: PathBuf,
-  _set_guard: SetGuard,
+  // Drop order is significant: the OS lock must be released before the
+  // in-process registry entry, otherwise a reopen started between the two
+  // drops observes a spurious `StorageLocked`.
   _lock_file: File,
+  _set_guard: SetGuard,
 }
 
 impl StoreGuard {
@@ -181,8 +184,8 @@ impl StoreGuard {
     }
     Ok(Self {
       canonical,
-      _set_guard: set_guard,
       _lock_file: lock_file,
+      _set_guard: set_guard,
     })
   }
 
