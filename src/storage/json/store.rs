@@ -175,12 +175,28 @@ impl StoreGuard {
       .truncate(false)
       .open(&lock_path)
       .map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
-    if let Err(error) = FileExt::try_lock(&lock_file) {
-      let kind = match error {
-        fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
-        fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
-      };
-      return Err(provider_error(kind, ProviderErrorContext::StorageOpen));
+    // A just-released OS lock can transiently report `WouldBlock` against a
+    // recycled inode on copy-on-write filesystems such as btrfs. Absorb that
+    // short propagation window with a few bounded yields; a genuine
+    // concurrent holder keeps failing every attempt and is still refused
+    // deterministically.
+    let mut attempts = 0_u8;
+    loop {
+      attempts += 1;
+      match FileExt::try_lock(&lock_file) {
+        Ok(()) => break,
+        Err(error) => {
+          let would_block = matches!(error, fs4::TryLockError::WouldBlock);
+          if !would_block || attempts >= 10 {
+            let kind = match error {
+              fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
+              fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
+            };
+            return Err(provider_error(kind, ProviderErrorContext::StorageOpen));
+          }
+          std::thread::yield_now();
+        }
+      }
     }
     Ok(Self {
       canonical,

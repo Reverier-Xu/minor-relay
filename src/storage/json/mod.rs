@@ -16,4 +16,6 @@ mod crash;
 #[cfg(test)]
 mod helpers;
 #[cfg(test)]
+mod native;
+#[cfg(test)]
 mod tests;
