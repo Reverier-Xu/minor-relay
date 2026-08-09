@@ -30,7 +30,7 @@ use std::{sync::Arc, time::Duration};
 
 use super::records::{
   KeyCreationIntentV1, LocalIdentityV1, key_creation_intent_key, key_creation_intent_namespace,
-  local_identity_key,
+  key_deleted_key, key_deletion_intent_key, local_identity_key,
 };
 use crate::{
   CommitOutcome, CreatedKey, Error, KeyCreateState, KeyOperationId, NodeId, ProviderErrorContext,
@@ -359,6 +359,21 @@ async fn finalize_identity(
   );
   let target = intent.recovery_identity(&stored_intent)?;
   let snapshot = store.snapshot().await?;
+  // A handle with a deletion intent or tombstone must never be referenced by
+  // a new record again.
+  let (deletion_namespace, deletion_key) = key_deletion_intent_key(created.handle())?;
+  let (deleted_namespace, deleted_key) = key_deleted_key(created.handle())?;
+  if snapshot
+    .get(&deletion_namespace, &deletion_key)
+    .await?
+    .is_some()
+    || snapshot
+      .get(&deleted_namespace, &deleted_key)
+      .await?
+      .is_some()
+  {
+    return Err(Error::conflict("key handle reuse"));
+  }
   let (local_namespace, local_key) = local_identity_key()?;
   let (intent_namespace, intent_key) = key_creation_intent_key(intent.operation())?;
   let local_token = ReceiptReferenceToken::for_record(&local_namespace, &local_key);

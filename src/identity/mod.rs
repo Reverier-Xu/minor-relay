@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 pub(crate) mod admission;
 #[allow(dead_code)]
+pub(crate) mod deletion;
+#[allow(dead_code)]
 pub(crate) mod genesis;
 mod id;
 #[allow(dead_code)]

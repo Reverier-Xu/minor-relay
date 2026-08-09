@@ -24,6 +24,8 @@ const CLUSTER_GENESIS_SCHEMA: &str = "relay.woooo.tech/schemas/cluster-genesis-v
 const LOCAL_CLUSTER_POINTER_SCHEMA: &str = "relay.woooo.tech/schemas/local-cluster-pointer-v1";
 const CREDENTIAL_USE_SCHEMA: &str = "relay.woooo.tech/schemas/credential-use-v1";
 const ADMISSION_GRANT_SCHEMA: &str = "relay.woooo.tech/schemas/admission-grant-v1";
+const KEY_DELETION_INTENT_SCHEMA: &str = "relay.woooo.tech/schemas/key-deletion-intent-v1";
+const KEY_DELETED_SCHEMA: &str = "relay.woooo.tech/schemas/key-deleted-v1";
 
 const LOCAL_IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
 const KEY_CREATION_INTENT_NAMESPACE: &str = "relay.woooo.tech/metadata/key-creation-intent-v1";
@@ -32,6 +34,8 @@ const CLUSTER_GENESIS_NAMESPACE: &str = "relay.woooo.tech/metadata/cluster-genes
 const LOCAL_CLUSTER_POINTER_NAMESPACE: &str = "relay.woooo.tech/metadata/local-cluster-pointer-v1";
 const CREDENTIAL_USE_NAMESPACE: &str = "relay.woooo.tech/metadata/credential-use-v1";
 const ADMISSION_GRANT_NAMESPACE: &str = "relay.woooo.tech/metadata/admission-grant-v1";
+const KEY_DELETION_INTENT_NAMESPACE: &str = "relay.woooo.tech/metadata/key-deletion-intent-v1";
+const KEY_DELETED_NAMESPACE: &str = "relay.woooo.tech/metadata/key-deleted-v1";
 
 const SINGLETON_KEY: &[u8] = b"self";
 const RECORD_LIMITS: CborLimits = CborLimits::new(1, 16, 1_024);
@@ -160,6 +164,28 @@ pub(crate) fn admission_grant_key(admission: &AdmissionId) -> Result<(StoreNames
   Ok((
     metadata_namespace(ADMISSION_GRANT_NAMESPACE)?,
     store_key(admission.as_bytes()),
+  ))
+}
+
+pub(crate) fn key_deletion_intent_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(KEY_DELETION_INTENT_NAMESPACE)
+}
+
+pub(crate) fn key_deleted_namespace() -> Result<StoreNamespace> {
+  metadata_namespace(KEY_DELETED_NAMESPACE)
+}
+
+pub(crate) fn key_deletion_intent_key(handle: &KeyHandle) -> Result<(StoreNamespace, StoreKey)> {
+  Ok((
+    metadata_namespace(KEY_DELETION_INTENT_NAMESPACE)?,
+    store_key(handle.expose_provider_handle()),
+  ))
+}
+
+pub(crate) fn key_deleted_key(handle: &KeyHandle) -> Result<(StoreNamespace, StoreKey)> {
+  Ok((
+    metadata_namespace(KEY_DELETED_NAMESPACE)?,
+    store_key(handle.expose_provider_handle()),
   ))
 }
 
@@ -416,6 +442,196 @@ impl KeyCreationIntentV1 {
       TransactionId::parse(&wire.transaction)?,
       StoreRevision::new(Arc::from(wire.base_revision))?,
     )
+  }
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct KeyDeletionIntentWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  record_version: u64,
+  #[n(2)]
+  operation: String,
+  #[n(3)]
+  #[cbor(with = "minicbor::bytes")]
+  handle: Vec<u8>,
+  #[n(4)]
+  purpose: String,
+  #[n(5)]
+  transaction: String,
+  #[n(6)]
+  #[cbor(with = "minicbor::bytes")]
+  base_revision: Vec<u8>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct KeyDeletionIntentV1 {
+  operation: KeyOperationId,
+  handle: KeyHandle,
+  purpose: String,
+  transaction: TransactionId,
+  base_revision: StoreRevision,
+}
+
+impl KeyDeletionIntentV1 {
+  pub(crate) fn new(
+    operation: KeyOperationId, handle: KeyHandle, purpose: String, transaction: TransactionId,
+    base_revision: StoreRevision,
+  ) -> Result<Self> {
+    if purpose.is_empty()
+      || purpose.len() > MAX_PURPOSE_LEN
+      || !purpose.bytes().all(|byte| (0x20..=0x7E).contains(&byte))
+    {
+      return Err(Error::invalid_input("key deletion intent purpose"));
+    }
+    Ok(Self {
+      operation,
+      handle,
+      purpose,
+      transaction,
+      base_revision,
+    })
+  }
+
+  pub(crate) fn operation(&self) -> &KeyOperationId {
+    &self.operation
+  }
+
+  pub(crate) fn handle(&self) -> &KeyHandle {
+    &self.handle
+  }
+
+  pub(crate) fn purpose(&self) -> &str {
+    &self.purpose
+  }
+
+  pub(crate) const fn transaction(&self) -> &TransactionId {
+    &self.transaction
+  }
+
+  /// Reconstructs the exact storage receipt identity committed with this
+  /// intent from the stored intent value, mirroring the creation-intent
+  /// recovery path.
+  pub(crate) fn recovery_identity(&self, stored_value: &StoreValue) -> Result<ReceiptIdentity> {
+    let (namespace, key) = key_deletion_intent_key(&self.handle)?;
+    let token = ReceiptReferenceToken::for_record(&namespace, &key);
+    recover_self_referenced_transaction(
+      &self.transaction,
+      &self.base_revision,
+      vec![StoreOperation::Put {
+        namespace,
+        key,
+        expected: StoreExpectation::Absent,
+        value: stored_value.clone(),
+      }],
+      &[token],
+    )
+  }
+
+  pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+    encode_canonical(
+      &KeyDeletionIntentWire {
+        schema: KEY_DELETION_INTENT_SCHEMA.to_owned(),
+        record_version: RECORD_VERSION,
+        operation: self.operation.as_str().to_owned(),
+        handle: self.handle.expose_provider_handle().to_vec(),
+        purpose: self.purpose.clone(),
+        transaction: self.transaction.as_str().to_owned(),
+        base_revision: self.base_revision.as_bytes().to_vec(),
+      },
+      RECORD_LIMITS,
+    )
+  }
+
+  pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+    let wire: KeyDeletionIntentWire = decode_wire(bytes)?;
+    expect_schema(&wire.schema, KEY_DELETION_INTENT_SCHEMA)?;
+    expect_version(wire.record_version)?;
+    Self::new(
+      KeyOperationId::parse(&wire.operation)?,
+      KeyHandle::from_provider_bytes(Arc::from(wire.handle))?,
+      wire.purpose,
+      TransactionId::parse(&wire.transaction)?,
+      StoreRevision::new(Arc::from(wire.base_revision))?,
+    )
+  }
+}
+
+impl std::fmt::Debug for KeyDeletionIntentV1 {
+  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    formatter
+      .debug_struct("KeyDeletionIntentV1")
+      .field("operation", &self.operation)
+      .field("purpose", &self.purpose)
+      .field("transaction", &self.transaction)
+      .finish_non_exhaustive()
+  }
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct KeyDeletedWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  record_version: u64,
+  #[n(2)]
+  operation: String,
+  #[n(3)]
+  #[cbor(with = "minicbor::bytes")]
+  handle: Vec<u8>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct KeyDeletedV1 {
+  operation: KeyOperationId,
+  handle: KeyHandle,
+}
+
+impl KeyDeletedV1 {
+  pub(crate) const fn new(operation: KeyOperationId, handle: KeyHandle) -> Self {
+    Self { operation, handle }
+  }
+
+  pub(crate) fn operation(&self) -> &KeyOperationId {
+    &self.operation
+  }
+
+  pub(crate) fn handle(&self) -> &KeyHandle {
+    &self.handle
+  }
+
+  pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+    encode_canonical(
+      &KeyDeletedWire {
+        schema: KEY_DELETED_SCHEMA.to_owned(),
+        record_version: RECORD_VERSION,
+        operation: self.operation.as_str().to_owned(),
+        handle: self.handle.expose_provider_handle().to_vec(),
+      },
+      RECORD_LIMITS,
+    )
+  }
+
+  pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+    let wire: KeyDeletedWire = decode_wire(bytes)?;
+    expect_schema(&wire.schema, KEY_DELETED_SCHEMA)?;
+    expect_version(wire.record_version)?;
+    Ok(Self {
+      operation: KeyOperationId::parse(&wire.operation)?,
+      handle: KeyHandle::from_provider_bytes(Arc::from(wire.handle))?,
+    })
+  }
+}
+
+impl std::fmt::Debug for KeyDeletedV1 {
+  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    formatter
+      .debug_struct("KeyDeletedV1")
+      .field("operation", &self.operation)
+      .finish_non_exhaustive()
   }
 }
 
