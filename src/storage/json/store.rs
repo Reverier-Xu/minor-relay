@@ -9,6 +9,8 @@
 //! exclusive lock on the lock file plus an in-process canonical-path guard
 //! prevents concurrent or aliased opens for the backend lifetime.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 use std::{
   collections::{BTreeMap, BTreeSet},
   fmt,
@@ -17,6 +19,30 @@ use std::{
   path::{Path, PathBuf},
   sync::{Arc, LazyLock, Mutex},
 };
+
+/// Test-only crash injection for the subprocess durability matrix.
+///
+/// The hook table is compiled only into test builds; production code carries
+/// an empty inlined stub. A child test process selects one boundary through
+/// the environment and aborts when execution reaches it.
+#[cfg(test)]
+static CRASH_POINT: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(test)]
+pub(crate) fn select_crash_point(point: u8) {
+  CRASH_POINT.store(point, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn crash_hook(point: u8) {
+  if CRASH_POINT.load(AtomicOrdering::SeqCst) == point {
+    std::process::abort();
+  }
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn crash_hook(_point: u8) {}
 
 use fs4::FileExt;
 
@@ -397,12 +423,15 @@ impl JsonStorage {
         ProviderErrorContext::StorageCommit,
       ));
     }
+    crash_hook(1);
     write_and_rename(&temp_path, &final_path, &document_bytes).map_err(map_commit_io_error)?;
+    crash_hook(9);
     let barrier_result = if self.capabilities.durability() == DurabilityLevel::OsCrashDurable {
       directory_barrier(&self._guard.canonical)
     } else {
       Ok(())
     };
+    crash_hook(10);
     *state = Head {
       generation: next_generation,
       digest: GenerationDocument::digest(&document_bytes),
@@ -411,12 +440,20 @@ impl JsonStorage {
       receipts: Arc::new(receipts),
       total_bytes,
     };
+    crash_hook(11);
     cleanup_temp_files(&self._guard.canonical).map_err(|_| {
       provider_error(
         ProviderErrorKind::CommitUnknown,
         ProviderErrorContext::StorageCommit,
       )
     })?;
+    crash_hook(12);
+    if self.capabilities.durability() == DurabilityLevel::OsCrashDurable {
+      // The commit durability point already passed, so a cleanup barrier
+      // failure is maintenance-only and never changes the outcome.
+      let _ = directory_barrier(&self._guard.canonical);
+    }
+    crash_hook(13);
     if barrier_result.is_err() {
       return Ok(CommitOutcome::Unknown {
         transaction: transaction.id().clone(),
@@ -471,6 +508,7 @@ fn write_and_rename(temp_path: &Path, final_path: &Path, bytes: &[u8]) -> std::i
   // A strictly recognized stale temp may remain after an interrupted write;
   // the exclusive lock proves it can only be ours, so it is removed once.
   for attempt in 0..2 {
+    crash_hook(2);
     let mut file = match OpenOptions::new()
       .write(true)
       .create_new(true)
@@ -483,13 +521,24 @@ fn write_and_rename(temp_path: &Path, final_path: &Path, bytes: &[u8]) -> std::i
       }
       Err(error) => return Err(error),
     };
+    crash_hook(3);
     let result = (|| {
-      file.write_all(bytes)?;
-      file.sync_all()
+      let written = file.write_all(bytes);
+      crash_hook(4);
+      written?;
+      crash_hook(5);
+      let flushed = file.sync_all();
+      crash_hook(6);
+      flushed
     })();
     drop(file);
     match result {
-      Ok(()) => return fs::rename(temp_path, final_path),
+      Ok(()) => {
+        crash_hook(7);
+        let renamed = fs::rename(temp_path, final_path);
+        crash_hook(8);
+        return renamed;
+      }
       Err(error) => {
         let _ = fs::remove_file(temp_path);
         return Err(error);

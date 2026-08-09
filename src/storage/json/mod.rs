@@ -12,4 +12,8 @@ mod store;
 pub(crate) use store::JsonStoreFactory;
 
 #[cfg(test)]
+mod crash;
+#[cfg(test)]
+mod helpers;
+#[cfg(test)]
 mod tests;
