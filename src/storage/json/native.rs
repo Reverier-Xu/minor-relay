@@ -131,16 +131,18 @@ async fn json_native_concurrent_open_from_second_process_is_storage_locked_until
   let status = wait_child(&mut child, "lock release on stdin close");
   assert!(status.success(), "child exit: {status}");
 
-  let storage = open(&factory).await;
+  // Windows LockFileEx is mandatory: the lock file is only readable while
+  // no store holds it, so compare contents outside any open window.
   let lock_before = fs::read(dir.path().join("minor-relay.lock")).unwrap();
+  let storage = open(&factory).await;
   drop(storage);
   let storage = open(&factory).await;
+  drop(storage);
   assert_eq!(
     fs::read(dir.path().join("minor-relay.lock")).unwrap(),
     lock_before,
     "the stale lock file is retained and reused"
   );
-  drop(storage);
 }
 
 #[tokio::test]
