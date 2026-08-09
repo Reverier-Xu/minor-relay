@@ -694,7 +694,7 @@ mod tests {
 mod guard_tests {
   use std::sync::Arc;
 
-  use super::{tests::*, *};
+  use super::*;
   use crate::{
     StoreOperation,
     identity::{
