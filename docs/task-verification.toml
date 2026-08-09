@@ -229,14 +229,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G02-04"
 verification_id = "VERIFY-G02-04"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G02-04"
 owner_task = "T-G02-04"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g2-crash-matrix.sh"]
 timeout_seconds = 1800
 
 [[task]]
