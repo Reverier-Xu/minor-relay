@@ -187,7 +187,7 @@ impl StoreGuard {
         Ok(()) => break,
         Err(error) => {
           let would_block = matches!(error, fs4::TryLockError::WouldBlock);
-          if !would_block || attempts >= 10 {
+          if !would_block || attempts >= 50 {
             let kind = match error {
               fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
               fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
