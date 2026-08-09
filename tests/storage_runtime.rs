@@ -33,6 +33,8 @@ const FRESH_START_EVENTS: &[&str] = &[
   "create",
   "public-key",
   "snapshot",
+  "get",
+  "get",
   "entropy",
   "get",
   "get",
