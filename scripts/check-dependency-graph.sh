@@ -13,7 +13,7 @@ if (($# != 0)); then
 fi
 
 MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == b7dea8d73301f197f381ea5e39f9090647b56563be8bef5415e26abb00b01e45 ]] || {
+[[ $MANIFEST_DIGEST == 9d5ae51fa138145813b6e408c1c8eb0ee33accaccbe0324757fb3bf37fa696eb ]] || {
   printf 'workspace manifests or lockfile differ from the reviewed G2 json baseline\n' >&2
   exit 1
 }
@@ -43,7 +43,7 @@ getrandom@0.4.3 source=registry+https://github.com/rust-lang/crates.io-index fea
 hybrid-array@0.4.14 source=registry+https://github.com/rust-lang/crates.io-index features=
 itoa@1.0.18 source=registry+https://github.com/rust-lang/crates.io-index features=
 libc@0.2.189 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
-linux-raw-sys@0.12.1 source=registry+https://github.com/rust-lang/crates.io-index features=auxvec,elf,errno,general,ioctl,no_std
+linux-raw-sys@0.12.1 source=registry+https://github.com/rust-lang/crates.io-index features=auxvec,elf,errno,general,ioctl,no_std,prctl
 memchr@2.8.3 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,std
 minicbor-derive@0.19.5 source=registry+https://github.com/rust-lang/crates.io-index features=
 minicbor@2.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,derive,minicbor-derive,std
@@ -66,7 +66,7 @@ rand_core@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index fea
 rand_xorshift@0.4.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 regex-syntax@0.8.11 source=registry+https://github.com/rust-lang/crates.io-index features=default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
 rustc_version@0.4.1 source=registry+https://github.com/rust-lang/crates.io-index features=
-rustix@1.1.4 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,fs,std
+rustix@1.1.4 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,fs,process,std
 rusty-fork@0.3.1 source=registry+https://github.com/rust-lang/crates.io-index features=timeout,wait-timeout
 semver@1.0.28 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 serde@1.0.229 source=registry+https://github.com/rust-lang/crates.io-index features=default,derive,serde_derive,std

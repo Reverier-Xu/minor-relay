@@ -212,10 +212,21 @@ async fn json_native_alias_open_through_junction_is_storage_locked() {
 }
 
 #[cfg(unix)]
+fn running_as_root() -> bool {
+  rustix::process::geteuid().as_raw() == 0
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn json_native_permission_failures_are_typed_and_fail_closed() {
   use std::os::unix::fs::PermissionsExt as _;
 
+  if running_as_root() {
+    // Root bypasses directory permission modes (CAP_DAC_OVERRIDE), so the
+    // permission-denied assertion is not observable; CI containers run as
+    // root while native developer/CI shells exercise the denial path.
+    return;
+  }
   let dir = tempfile::tempdir().unwrap();
   let factory: Arc<dyn StorageFactory> = Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()));
   let original = fs::metadata(dir.path()).unwrap().permissions();
@@ -243,6 +254,10 @@ async fn json_native_permission_failures_are_typed_and_fail_closed() {
 async fn json_native_failed_cleanup_is_typed_and_recovers_after_permission_fix() {
   use std::os::unix::fs::PermissionsExt as _;
 
+  if running_as_root() {
+    // See the euid note in the permission-failure test above.
+    return;
+  }
   let dir = tempfile::tempdir().unwrap();
   let factory: Arc<dyn StorageFactory> = Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()));
   let storage = open(&factory).await;
