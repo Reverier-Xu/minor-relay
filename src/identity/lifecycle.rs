@@ -376,6 +376,20 @@ async fn finalize_identity(
   }
   let (local_namespace, local_key) = local_identity_key()?;
   let (intent_namespace, intent_key) = key_creation_intent_key(intent.operation())?;
+  // Transactional guard: the journaled commit must also prove no deletion
+  // intent or tombstone appeared for this handle after the snapshot.
+  let reuse_guards = [
+    StoreOperation::Check {
+      namespace: deletion_namespace,
+      key: deletion_key,
+      expected: StoreExpectation::Absent,
+    },
+    StoreOperation::Check {
+      namespace: deleted_namespace,
+      key: deleted_key,
+      expected: StoreExpectation::Absent,
+    },
+  ];
   let local_token = ReceiptReferenceToken::for_record(&local_namespace, &local_key);
   let intent_token = ReceiptReferenceToken::for_record(&intent_namespace, &intent_key);
   let prepared = store
@@ -395,7 +409,10 @@ async fn finalize_identity(
           expected: StoreExpectation::Absent,
           value: StoreValue::new(Arc::from(identity.encode()?)),
         },
-      ],
+      ]
+      .into_iter()
+      .chain(reuse_guards)
+      .collect(),
       vec![
         ReceiptReferenceChange::Remove {
           target,

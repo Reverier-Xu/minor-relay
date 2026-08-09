@@ -18,7 +18,9 @@ use super::{
     LocalIdentityContext, cleanup_pending_exact, discover_local_identity, discovery_corrupt,
     reconcile_corrupt, reconcile_recovered_journal, reconcile_unknown,
   },
-  records::{KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key},
+  records::{
+    KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key, local_identity_key,
+  },
 };
 use crate::{
   CommitOutcome, Error, ErrorKind, KeyDeleteState, KeyHandle, KeyOperationId, ReconcileOutcome,
@@ -58,7 +60,8 @@ pub(crate) async fn delete_unreferenced_key(
     {
       return Ok(());
     }
-    if let Some((_, identity)) = discover_local_identity(snapshot.as_ref()).await?
+    let local_identity = discover_local_identity(snapshot.as_ref()).await?;
+    if let Some((_, identity)) = &local_identity
       && identity.handle() == handle
     {
       return Err(Error::conflict("referenced key handle"));
@@ -84,16 +87,29 @@ pub(crate) async fn delete_unreferenced_key(
         )?;
         let token = ReceiptReferenceToken::for_record(&intent_namespace, &intent_key);
         let value = StoreValue::new(Arc::from(intent.encode()?));
+        // Transactional guard: pin the exact local-identity record this
+        // snapshot proved unreferenced, so a concurrent finalization that
+        // changes it aborts the intent install.
+        let mut caller_operations = Vec::new();
+        if let Some((stored_identity, _)) = &local_identity {
+          let (local_namespace, local_key) = local_identity_key()?;
+          caller_operations.push(StoreOperation::Check {
+            namespace: local_namespace,
+            key: local_key,
+            expected: StoreExpectation::Exact(stored_identity.digest().clone()),
+          });
+        }
+        caller_operations.push(StoreOperation::Put {
+          namespace: intent_namespace.clone(),
+          key: intent_key.clone(),
+          expected: StoreExpectation::Absent,
+          value: value.clone(),
+        });
         let prepared = store
           .prepare_transaction_with_receipt_changes(
             snapshot.as_ref(),
             intent.transaction().clone(),
-            vec![StoreOperation::Put {
-              namespace: intent_namespace.clone(),
-              key: intent_key.clone(),
-              expected: StoreExpectation::Absent,
-              value: value.clone(),
-            }],
+            caller_operations,
             vec![ReceiptReferenceChange::AddSelf(vec![token])],
           )
           .await?;
@@ -671,5 +687,84 @@ mod tests {
     // No deletion was requested, so the shared invariant must observe zero
     // provider delete calls.
     assert_never_deleted(&fixture.keys);
+  }
+}
+
+#[cfg(test)]
+mod guard_tests {
+  use std::sync::Arc;
+
+  use super::{tests::*, *};
+  use crate::{
+    StoreOperation,
+    identity::{
+      records::{key_deleted_namespace, key_deletion_intent_namespace, local_identity_key},
+      testing::{FaultingFactory, ScriptedKeys, SequenceEntropy, fresh_reference, open_context},
+    },
+  };
+
+  #[tokio::test]
+  async fn key_intent_install_transaction_pins_local_identity_digest() {
+    let (reference, _factory) = fresh_reference();
+    let faulting = FaultingFactory::new(&reference, vec![]);
+    let keys = ScriptedKeys::full();
+    let entropy = Arc::new(SequenceEntropy::default());
+    let context = open_context(&faulting.as_factory(), &keys, &entropy)
+      .await
+      .unwrap();
+    let operation = KeyOperationId::parse("keyop_000000000000000000055").unwrap();
+    let handle = keys.create_detached(&operation).handle().clone();
+
+    delete_unreferenced_key(&context, &keys.as_provider(), entropy.as_ref(), &handle)
+      .await
+      .unwrap();
+
+    let committed = faulting.committed_ops();
+    let install = &committed[3];
+    let (local_namespace, local_key) = local_identity_key().unwrap();
+    assert!(
+      install.iter().any(|operation| {
+        matches!(
+          operation,
+          StoreOperation::Check {
+            namespace,
+            key,
+            expected: StoreExpectation::Exact(_),
+          } if namespace == &local_namespace && key == &local_key
+        )
+      }),
+      "intent install must pin the exact local identity record"
+    );
+  }
+
+  #[tokio::test]
+  async fn key_intent_finalize_transaction_checks_deletion_namespaces_absent() {
+    let (reference, _factory) = fresh_reference();
+    let faulting = FaultingFactory::new(&reference, vec![]);
+    let keys = ScriptedKeys::full();
+    let entropy = Arc::new(SequenceEntropy::default());
+    open_context(&faulting.as_factory(), &keys, &entropy)
+      .await
+      .unwrap();
+
+    let committed = faulting.committed_ops();
+    let finalize = &committed[1];
+    let deletion_namespace = key_deletion_intent_namespace().unwrap();
+    let deleted_namespace = key_deleted_namespace().unwrap();
+    for namespace in [deletion_namespace, deleted_namespace] {
+      assert!(
+        finalize.iter().any(|operation| {
+          matches!(
+            operation,
+            StoreOperation::Check {
+              namespace: actual,
+              expected: StoreExpectation::Absent,
+              ..
+            } if actual == &namespace
+          )
+        }),
+        "finalize must check {namespace:?} absent"
+      );
+    }
   }
 }
