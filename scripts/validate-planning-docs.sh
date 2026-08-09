@@ -62,7 +62,7 @@ verify_frozen_document docs/decision-register.toml 196721e8aa89decd64abdf734b953
 verify_frozen_document docs/scenario-catalog.toml 9ab91d6dfe967b52f3fc9dacef43abe2367f97a695038da7e58bbcdbf2eddf54
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml 1e32e8fc58d63e2c7e8c1eb9ae98d422cc6a20b70d6c2b93f05c53ff8306c0b0
+verify_frozen_document docs/task-verification.toml 05e84932548951a958a059be2d43c1e1240edebe851a5cc982a5d972a2f491a8
 verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
 
 for file in "${TOML_FILES[@]}"; do
@@ -216,7 +216,7 @@ check_g2_entry_map() {
       {task: "T-G02-02", verification: "VERIFY-G02-02", state: "ready", argv: ["scripts/verify-g2-identity-records.sh"]},
       {task: "T-G02-03", verification: "VERIFY-G02-03", state: "ready", argv: ["scripts/verify-g2-json-adapter.sh"]},
       {task: "T-G02-04", verification: "VERIFY-G02-04", state: "ready", argv: ["scripts/verify-g2-crash-matrix.sh"]},
-      {task: "T-G02-05", verification: "VERIFY-G02-05", state: "planned", argv: []}
+      {task: "T-G02-05", verification: "VERIFY-G02-05", state: "ready", argv: ["scripts/verify-g2-native-json.sh"]}
     ] as $expected
     | [.task[] | select(.id | startswith("T-G02-"))]
       == [$expected[] | {id: .task, verification_id: .verification, state, include_quality: true}]
@@ -650,6 +650,15 @@ if [[ ${1:-} == "--self-test" ]]; then
   ' "$TMP/task-verification.json" > "$TMP/negative-g2-04-entry-map.json"
   if check_g2_entry_map "$TMP/negative-g2-04-entry-map.json"; then
     fail "substituted G2-04 verification state/argv was accepted"
+  fi
+
+  jq '
+    (.task[] | select(.id == "T-G02-05")).state = "planned"
+    | (.verification[] | select(.id == "VERIFY-G02-05")).state = "planned"
+    | (.verification[] | select(.id == "VERIFY-G02-05")).argv = []
+  ' "$TMP/task-verification.json" > "$TMP/negative-g2-05-entry-map.json"
+  if check_g2_entry_map "$TMP/negative-g2-05-entry-map.json"; then
+    fail "substituted G2-05 verification state/argv was accepted"
   fi
 
   jq '(.verification[] | select(.state == "ready")).argv = ["env", "bash", "-c", "touch /tmp/planning-pwn"]' "$TMP/task-verification.json" > "$TMP/negative-hostile-argv.json"
