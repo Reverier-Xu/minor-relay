@@ -75,6 +75,13 @@ pub(crate) enum SignScript {
   WrongMessage,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DeleteScript {
+  Apply,
+  StillPresent,
+  Unknown,
+}
+
 pub(crate) struct ScriptedKeys {
   inner: Arc<ScriptedKeyInner>,
 }
@@ -93,6 +100,7 @@ struct ScriptedKeyInner {
   operations: Mutex<BTreeMap<KeyOperationId, Vec<u8>>>,
   calls: Mutex<Vec<KeyCall>>,
   sign_script: Mutex<VecDeque<SignScript>>,
+  delete_script: Mutex<VecDeque<DeleteScript>>,
   next_handle: AtomicUsize,
 }
 
@@ -110,6 +118,7 @@ impl ScriptedKeys {
         operations: Mutex::new(BTreeMap::new()),
         calls: Mutex::new(Vec::new()),
         sign_script: Mutex::new(VecDeque::new()),
+        delete_script: Mutex::new(VecDeque::new()),
         next_handle: AtomicUsize::new(0),
       }),
     })
@@ -130,6 +139,23 @@ impl ScriptedKeys {
 
   pub(crate) fn push_sign_script(&self, script: SignScript) {
     self.inner.sign_script.lock().unwrap().push_back(script);
+  }
+
+  pub(crate) fn push_delete_script(&self, script: DeleteScript) {
+    self.inner.delete_script.lock().unwrap().push_back(script);
+  }
+
+  pub(crate) fn create_detached(&self, operation: &KeyOperationId) -> CreatedKey {
+    self.inner.apply_create(operation)
+  }
+
+  pub(crate) fn has_handle(&self, handle: &KeyHandle) -> bool {
+    self
+      .inner
+      .records
+      .lock()
+      .unwrap()
+      .contains_key(handle.expose_provider_handle())
   }
 
   #[allow(dead_code)]
@@ -266,17 +292,48 @@ impl KeyProvider for ScriptedKeys {
   }
 
   fn delete<'a>(
-    &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
+    &'a self, _operation: &'a KeyOperationId, handle: &'a KeyHandle,
   ) -> BoxFuture<'a, Result<KeyDeleteState>> {
     self.inner.push_call(KeyCall::Delete);
-    Box::pin(async { Err(Error::internal("unexpected key deletion")) })
+    let script = self
+      .inner
+      .delete_script
+      .lock()
+      .unwrap()
+      .pop_front()
+      .unwrap_or(DeleteScript::Apply);
+    let state = match script {
+      DeleteScript::Apply => {
+        self
+          .inner
+          .records
+          .lock()
+          .unwrap()
+          .remove(handle.expose_provider_handle());
+        KeyDeleteState::Absent
+      }
+      DeleteScript::StillPresent => KeyDeleteState::Present,
+      DeleteScript::Unknown => KeyDeleteState::Unknown,
+    };
+    Box::pin(async move { Ok(state) })
   }
 
   fn reconcile_delete<'a>(
-    &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
+    &'a self, _operation: &'a KeyOperationId, handle: &'a KeyHandle,
   ) -> BoxFuture<'a, Result<KeyDeleteState>> {
     self.inner.push_call(KeyCall::ReconcileDelete);
-    Box::pin(async { Err(Error::internal("unexpected key deletion")) })
+    let state = if self
+      .inner
+      .records
+      .lock()
+      .unwrap()
+      .contains_key(handle.expose_provider_handle())
+    {
+      KeyDeleteState::Present
+    } else {
+      KeyDeleteState::Absent
+    };
+    Box::pin(async move { Ok(state) })
   }
 }
 
