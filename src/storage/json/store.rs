@@ -180,14 +180,14 @@ impl StoreGuard {
     // short propagation window with a few bounded yields; a genuine
     // concurrent holder keeps failing every attempt and is still refused
     // deterministically.
-    let mut attempts = 0_u8;
+    let mut attempts = 0_u16;
     loop {
       attempts += 1;
       match FileExt::try_lock(&lock_file) {
         Ok(()) => break,
         Err(error) => {
           let would_block = matches!(error, fs4::TryLockError::WouldBlock);
-          if !would_block || attempts >= 50 {
+          if !would_block || attempts >= 1_000 {
             let kind = match error {
               fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
               fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
