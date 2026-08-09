@@ -4,117 +4,21 @@
 //! prove a nonempty lane. Tests use real temporary directories and exercise
 //! the adapter through the crate-private factory and the public SPI.
 
-#[cfg(unix)]
-use std::path::{Path, PathBuf};
 use std::{fs, sync::Arc};
 
 use tempfile::TempDir;
 
-use super::JsonStoreFactory;
 #[cfg(unix)]
 use super::document::{
   GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA, hex_decode_bytes,
 };
+use super::{JsonStoreFactory, helpers::*};
 #[cfg(unix)]
+use crate::{Digest, ReconcileOutcome, StoreExpectation, StoreOperation, StoreTransaction};
 use crate::{
-  CommitOutcome, CommitReceipt, Digest, ReconcileOutcome, StoreExpectation, StoreOperation,
-  StoreRevision, StoreTransaction, StoreValue, TransactionId, provider::Storage,
+  DurabilityLevel, ErrorKind, StoreRequirements, provider::StorageFactory,
+  storage::receipt::ReceiptReferenceToken,
 };
-use crate::{
-  DurabilityLevel, ErrorKind, QualifiedTag, StoreKey, StoreNamespace, StoreRequirements,
-  provider::StorageFactory, storage::receipt::ReceiptReferenceToken,
-};
-
-fn tempdir() -> TempDir {
-  tempfile::tempdir().unwrap()
-}
-
-fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
-  Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()))
-}
-
-#[cfg(unix)]
-fn limited_factory(dir: &TempDir, generations: u64, bytes: u64) -> Arc<dyn StorageFactory> {
-  Arc::new(JsonStoreFactory::with_limits(
-    dir.path().to_path_buf(),
-    generations,
-    bytes,
-  ))
-}
-
-fn namespace(name: &str) -> StoreNamespace {
-  StoreNamespace::new(QualifiedTag::parse(&format!("relay.woooo.tech/metadata/{name}")).unwrap())
-    .unwrap()
-}
-
-fn key(bytes: &[u8]) -> StoreKey {
-  StoreKey::new(Arc::from(bytes))
-}
-
-#[cfg(unix)]
-fn value(bytes: &[u8]) -> StoreValue {
-  StoreValue::new(Arc::from(bytes))
-}
-
-#[cfg(unix)]
-fn transaction_id(index: u64) -> TransactionId {
-  TransactionId::parse(&format!("txn_{index:021}")).unwrap()
-}
-
-#[cfg(unix)]
-fn put_transaction(index: u64, base: StoreRevision, entries: &[(&str, &[u8])]) -> StoreTransaction {
-  let namespace = namespace("one");
-  let operations = entries
-    .iter()
-    .map(|(suffix, value_bytes)| StoreOperation::Put {
-      namespace: namespace.clone(),
-      key: key(format!("key-{suffix}").as_bytes()),
-      expected: StoreExpectation::Absent,
-      value: value(value_bytes),
-    })
-    .collect();
-  StoreTransaction::new(transaction_id(index), base, operations).unwrap()
-}
-
-#[cfg(unix)]
-async fn committed(storage: &dyn Storage, transaction: StoreTransaction) -> CommitReceipt {
-  match storage.commit(transaction).await.unwrap() {
-    CommitOutcome::Committed(receipt) => receipt,
-    other => panic!("expected committed, got {other:?}"),
-  }
-}
-
-#[cfg(unix)]
-async fn open(factory: &Arc<dyn StorageFactory>) -> Box<dyn Storage> {
-  factory.open(StoreRequirements::metadata()).await.unwrap()
-}
-
-#[cfg(unix)]
-async fn head_revision(storage: &dyn Storage) -> StoreRevision {
-  storage.snapshot().await.unwrap().revision().clone()
-}
-
-#[cfg(unix)]
-fn generation_files(dir: &Path) -> Vec<PathBuf> {
-  let mut files: Vec<PathBuf> = fs::read_dir(dir)
-    .unwrap()
-    .filter_map(|entry| {
-      let path = entry.unwrap().path();
-      let name = path.file_name()?.to_str()?.to_owned();
-      (name.starts_with("gen-") && name.ends_with(".json")).then_some(path)
-    })
-    .collect();
-  files.sort();
-  files
-}
-
-#[cfg(unix)]
-fn read_generation(dir: &Path, index: usize) -> (Vec<u8>, GenerationDocument) {
-  let files = generation_files(dir);
-  let bytes = fs::read(&files[index]).unwrap();
-  let document = GenerationDocument::parse(&bytes).unwrap();
-  (bytes, document)
-}
 
 #[cfg(unix)]
 #[tokio::test]

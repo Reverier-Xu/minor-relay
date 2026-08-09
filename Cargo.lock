@@ -262,6 +262,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "wait-timeout",
 ]
 
 [[package]]
