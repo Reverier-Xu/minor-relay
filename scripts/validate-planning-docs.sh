@@ -62,7 +62,7 @@ verify_frozen_document docs/decision-register.toml 196721e8aa89decd64abdf734b953
 verify_frozen_document docs/scenario-catalog.toml 9ab91d6dfe967b52f3fc9dacef43abe2367f97a695038da7e58bbcdbf2eddf54
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml 05e84932548951a958a059be2d43c1e1240edebe851a5cc982a5d972a2f491a8
+verify_frozen_document docs/task-verification.toml 9b6aeea396cb1659c808d4bb4e4210fe804d1d96f1447c1ed6280364effd1144
 verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
 
 for file in "${TOML_FILES[@]}"; do
@@ -225,6 +225,25 @@ check_g2_entry_map() {
   ' "$file" >/dev/null
 }
 check_g2_entry_map "$TMP/task-verification.json" || fail "G2 entry map differs from the reviewed executable baseline"
+
+check_g3_entry_map() {
+  local file=$1
+  jq -e '
+    [
+      {task: "T-G03-01", verification: "VERIFY-G03-01", state: "ready", argv: ["scripts/verify-g3-handshake.sh"]},
+      {task: "T-G03-02", verification: "VERIFY-G03-02", state: "planned", argv: []},
+      {task: "T-G03-03", verification: "VERIFY-G03-03", state: "planned", argv: []},
+      {task: "T-G03-04", verification: "VERIFY-G03-04", state: "planned", argv: []},
+      {task: "T-G03-05", verification: "VERIFY-G03-05", state: "planned", argv: []},
+      {task: "T-G03-06", verification: "VERIFY-G03-06", state: "planned", argv: []}
+    ] as $expected
+    | [.task[] | select(.id | startswith("T-G03-"))]
+      == [$expected[] | {id: .task, verification_id: .verification, state, include_quality: true}]
+    and [.verification[] | select(.owner_task | startswith("T-G03-"))]
+      == [$expected[] | {id: .verification, owner_task: .task, state, argv, timeout_seconds: 1800}]
+  ' "$file" >/dev/null
+}
+check_g3_entry_map "$TMP/task-verification.json" || fail "G3 entry map differs from the reviewed executable baseline"
 
 check_argv_policy() {
   local file=$1
@@ -659,6 +678,15 @@ if [[ ${1:-} == "--self-test" ]]; then
   ' "$TMP/task-verification.json" > "$TMP/negative-g2-05-entry-map.json"
   if check_g2_entry_map "$TMP/negative-g2-05-entry-map.json"; then
     fail "substituted G2-05 verification state/argv was accepted"
+  fi
+
+  jq '
+    (.task[] | select(.id == "T-G03-01")).state = "planned"
+    | (.verification[] | select(.id == "VERIFY-G03-01")).state = "planned"
+    | (.verification[] | select(.id == "VERIFY-G03-01")).argv = []
+  ' "$TMP/task-verification.json" > "$TMP/negative-g3-01-entry-map.json"
+  if check_g3_entry_map "$TMP/negative-g3-01-entry-map.json"; then
+    fail "substituted G3-01 verification state/argv was accepted"
   fi
 
   jq '(.verification[] | select(.state == "ready")).argv = ["env", "bash", "-c", "touch /tmp/planning-pwn"]' "$TMP/task-verification.json" > "$TMP/negative-hostile-argv.json"
