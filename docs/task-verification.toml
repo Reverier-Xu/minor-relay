@@ -255,14 +255,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G03-01"
 verification_id = "VERIFY-G03-01"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G03-01"
 owner_task = "T-G03-01"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g3-handshake.sh"]
 timeout_seconds = 1800
 
 [[task]]
