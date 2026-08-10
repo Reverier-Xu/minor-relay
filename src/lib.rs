@@ -54,7 +54,9 @@ pub use identity::{
 };
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};
-pub use protocol::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};
+pub use protocol::{
+  DiscoveryTag, FeatureDefinition, FeatureTag, ProtocolTag, QualifiedTag, TransportTag,
+};
 pub use provider::{
   CommitOutcome, CommitReceipt, CreatedKey, DurabilityLevel, KeyCapabilities, KeyCreateState,
   KeyDeleteState, KeyHandle, KeyOperationId, ReconcileOutcome, StoreCapabilities, StoreEntry,
