@@ -105,6 +105,22 @@ pub(crate) fn select(
           label: tag.as_str().to_owned(),
         });
       }
+      // Defense in depth: a label known to the local registry must carry the
+      // registry's exact definition digest, so two mutually consistent but
+      // wrong offers can never select it.
+      if let Some(definition) = registry.get(tag) {
+        let registry_digest =
+          definition
+            .definition_digest()
+            .map_err(|_| SelectionError::Malformed {
+              context: "selection definition digest",
+            })?;
+        if &registry_digest != digest {
+          return Err(SelectionError::DigestMismatch {
+            label: tag.as_str().to_owned(),
+          });
+        }
+      }
       selected.insert(tag);
     }
   }
@@ -379,6 +395,39 @@ mod tests {
       &forged,
       initiator.required(),
       forged.required(),
+    )
+    .unwrap_err();
+    assert_eq!(
+      error,
+      SelectionError::DigestMismatch {
+        label: "relay.woooo.tech/features/auth-ed25519-session".to_owned(),
+      }
+    );
+
+    // Defense in depth: both offers carrying the same wrong digest for a
+    // registry-known label still rejects against the local registry.
+    let mut wrong_supported = responder.supported().to_vec();
+    wrong_supported[0].1 = Digest::from_bytes([0xCD; 32]);
+    let wrong_responder = FeatureOffer::new(
+      wrong_supported,
+      responder.required().to_vec(),
+      responder.limits().to_vec(),
+    )
+    .unwrap();
+    let mut wrong_initiator_supported = initiator.supported().to_vec();
+    wrong_initiator_supported[0].1 = Digest::from_bytes([0xCD; 32]);
+    let wrong_initiator = FeatureOffer::new(
+      wrong_initiator_supported,
+      initiator.required().to_vec(),
+      initiator.limits().to_vec(),
+    )
+    .unwrap();
+    let error = select(
+      &registry,
+      &wrong_initiator,
+      &wrong_responder,
+      wrong_initiator.required(),
+      wrong_responder.required(),
     )
     .unwrap_err();
     assert_eq!(
