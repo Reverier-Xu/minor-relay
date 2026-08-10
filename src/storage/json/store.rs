@@ -18,6 +18,7 @@ use std::{
   io::{Read, Seek, SeekFrom, Write},
   path::{Path, PathBuf},
   sync::{Arc, LazyLock, Mutex},
+  time::Duration,
 };
 
 /// Test-only crash injection for the subprocess durability matrix.
@@ -177,24 +178,24 @@ impl StoreGuard {
       .map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
     // A just-released OS lock can transiently report `WouldBlock` against a
     // recycled inode on copy-on-write filesystems such as btrfs. Absorb that
-    // short propagation window with a few bounded yields; a genuine
-    // concurrent holder keeps failing every attempt and is still refused
-    // deterministically.
-    let mut attempts = 0_u16;
+    // release-propagation window with a bounded real-time backoff; a genuine
+    // concurrent holder keeps the lock for its store lifetime and is still
+    // refused deterministically.
+    let mut attempts = 0_u8;
     loop {
       attempts += 1;
       match FileExt::try_lock(&lock_file) {
         Ok(()) => break,
         Err(error) => {
           let would_block = matches!(error, fs4::TryLockError::WouldBlock);
-          if !would_block || attempts >= 1_000 {
+          if !would_block || attempts >= 20 {
             let kind = match error {
               fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
               fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
             };
             return Err(provider_error(kind, ProviderErrorContext::StorageOpen));
           }
-          std::thread::yield_now();
+          std::thread::sleep(Duration::from_micros(500));
         }
       }
     }
