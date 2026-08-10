@@ -90,7 +90,7 @@ where
   Ok(value)
 }
 
-fn validate_canonical(bytes: &[u8], limits: CborLimits) -> Result<()> {
+pub(crate) fn validate_canonical(bytes: &[u8], limits: CborLimits) -> Result<()> {
   if limits.max_depth == 0
     || limits.max_collection_items == 0
     || limits.max_body_len == 0

@@ -10,7 +10,7 @@ pub(crate) mod lifecycle;
 #[allow(dead_code)]
 pub(crate) mod records;
 #[allow(dead_code)]
-mod signature;
+pub(crate) mod signature;
 #[cfg(test)]
 pub(crate) mod testing;
 mod value;
