@@ -12,8 +12,8 @@
 //!   handshake/control CBOR body ceiling (65,536) plus one 16-byte prelude.
 //!   tungstenite enforces it while reassembling fragments, so a fragmented
 //!   hostile message is bounded before the body is exposed. Single-frame
-//!   parsing keeps the tungstenite default guard (16 MiB); the aggregate
-//!   limit above is the authoritative bound.
+//!   parsing keeps the tungstenite default guard (16 MiB); the aggregate limit
+//!   above is the authoritative bound.
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
@@ -35,19 +35,17 @@ pub(crate) const WS_PATH: &str = "/mrly";
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65_536 + PRELUDE_LEN;
 
 fn config() -> WebSocketConfig {
-  WebSocketConfig {
-    max_message_size: Some(MAX_MESSAGE_BYTES),
-    max_frame_size: None,
-    ..WebSocketConfig::default()
-  }
+  let mut config = WebSocketConfig::default();
+  config.max_message_size = Some(MAX_MESSAGE_BYTES);
+  config.max_frame_size = None;
+  config
 }
 
 /// Accepts the server half of a WebSocket upgrade over an established TLS
 /// stream. Only `GET /mrly` upgrades are accepted.
 pub(crate) async fn accept<Stream>(stream: Stream) -> Result<WebSocketStream<Stream>>
 where
-  Stream: AsyncRead + AsyncWrite + Unpin,
-{
+  Stream: AsyncRead + AsyncWrite + Unpin, {
   accept_hdr_async_with_config(stream, check_path, Some(config()))
     .await
     .map_err(|_| Error::invalid_input("websocket accept"))
@@ -55,10 +53,11 @@ where
 
 /// Runs the client half of a WebSocket upgrade over an established TLS
 /// stream, requesting the fixed `/mrly` path.
-pub(crate) async fn connect<Stream>(stream: Stream, authority: &str) -> Result<WebSocketStream<Stream>>
+pub(crate) async fn connect<Stream>(
+  stream: Stream, authority: &str,
+) -> Result<WebSocketStream<Stream>>
 where
-  Stream: AsyncRead + AsyncWrite + Unpin,
-{
+  Stream: AsyncRead + AsyncWrite + Unpin, {
   let request = format!("wss://{authority}{WS_PATH}");
   let (stream, _response) = client_async_with_config(request, stream, Some(config()))
     .await
@@ -66,14 +65,16 @@ where
   Ok(stream)
 }
 
-fn check_path(request: &Request, response: Response) -> std::result::Result<Response, ErrorResponse> {
+fn check_path(
+  request: &Request, response: Response,
+) -> std::result::Result<Response, ErrorResponse> {
   if request.uri().path() == WS_PATH {
     return Ok(response);
   }
 
   // The rejection body carries no request data: hostile paths never echo
   // into responses or failure artifacts.
-  let mut rejection = Response::new(Some("unsupported websocket path".to_owned()));
+  let mut rejection = ErrorResponse::new(Some("unsupported websocket path".to_owned()));
   *rejection.status_mut() = StatusCode::NOT_FOUND;
   Err(rejection)
 }

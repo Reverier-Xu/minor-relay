@@ -112,7 +112,10 @@ impl fmt::Display for Endpoint {
 
 impl fmt::Debug for Endpoint {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    formatter.debug_tuple("Endpoint").field(&self.canonical).finish()
+    formatter
+      .debug_tuple("Endpoint")
+      .field(&self.canonical)
+      .finish()
   }
 }
 
@@ -136,7 +139,7 @@ fn split_authority(authority: &str) -> Result<(&str, bool, Option<&str>)> {
     1 => {
       let (host, port) = authority.split_once(':').ok_or_else(error)?;
       Ok((host, false, Some(port)))
-    },
+    }
     // Unbracketed IPv6 is never canonical.
     _ => Err(error()),
   }
@@ -159,8 +162,24 @@ fn validate_host(host: &str) -> Result<()> {
   if host.is_empty() || host.len() > MAX_HOST_LEN {
     return Err(error());
   }
-  if host.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.') {
+  if host
+    .bytes()
+    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+  {
     return validate_ipv4(host);
+  }
+  if host.contains(':') {
+    // Bracketed IPv6 literal: split_authority already required brackets and
+    // at least two colons; only hexadecimal digits and colons remain.
+    if host.bytes().filter(|byte| *byte == b':').count() < 2
+      || !host
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
+      || host.contains(":::")
+    {
+      return Err(error());
+    }
+    return Ok(());
   }
 
   for label in host.split('.') {

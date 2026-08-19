@@ -98,7 +98,12 @@ impl Connection {
   ) -> Result<Self> {
     let authority = tcp
       .peer_addr()
-      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportConnect))?
+      .map_err(|_| {
+        Error::provider(
+          ProviderErrorKind::Io,
+          ProviderErrorContext::TransportConnect,
+        )
+      })?
       .to_string();
     let tls = TlsConnector::from(config)
       .connect(server_name, tcp)
@@ -121,7 +126,9 @@ impl Connection {
   /// Sends one wire message. The message is checked against the local rules
   /// before encoding so a local bug fails fast instead of emitting bytes
   /// the peer must reject.
-  pub(crate) async fn send(&mut self, schema_id: u16, kind_id: u16, flags: u16, body: &[u8]) -> Result<()> {
+  pub(crate) async fn send(
+    &mut self, schema_id: u16, kind_id: u16, flags: u16, body: &[u8],
+  ) -> Result<()> {
     let body_len =
       u32::try_from(body.len()).map_err(|_| Error::invalid_input("wire body length"))?;
     if !(self.rules.is_declared)(schema_id, kind_id)
@@ -167,7 +174,7 @@ impl Connection {
             flags: prelude.flags(),
             body: body.to_vec(),
           }));
-        },
+        }
         WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
         WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
         WsMessage::Close(_) => return Ok(None),
@@ -206,10 +213,14 @@ fn exporter_channel_binding<Data>(
 fn receive_error(error: tokio_tungstenite::tungstenite::Error) -> Error {
   use tokio_tungstenite::tungstenite::Error as WsError;
   match error {
-    WsError::Io(_) => Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportReceive),
-    WsError::Capacity(_) => {
-      Error::provider(ProviderErrorKind::Overloaded, ProviderErrorContext::TransportReceive)
-    },
+    WsError::Io(_) => Error::provider(
+      ProviderErrorKind::Io,
+      ProviderErrorContext::TransportReceive,
+    ),
+    WsError::Capacity(_) => Error::provider(
+      ProviderErrorKind::Overloaded,
+      ProviderErrorContext::TransportReceive,
+    ),
     _ => Error::invalid_input("websocket message"),
   }
 }

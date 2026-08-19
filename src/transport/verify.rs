@@ -21,14 +21,14 @@
 //! Focused review notes:
 //!
 //! - `verify_tls13_signature` delegates to rustls's WebPKI signature
-//!   verification, which rejects signature schemes that are not valid for
-//!   TLS 1.3, schemes outside the provider's mapping, malformed
-//!   certificates, and invalid signatures.
-//! - `verify_tls12_signature` rejects unconditionally: TLS 1.2 is compiled
-//!   out (no rustls `tls12` feature) and both endpoint configurations pin
-//!   TLS 1.3, so a TLS 1.2 `CertificateVerify` can never be legitimate.
-//! - `verify_server_cert` rejects empty and malformed leaves even in join
-//!   mode; relaxation never extends to undecodable input.
+//!   verification, which rejects signature schemes that are not valid for TLS
+//!   1.3, schemes outside the provider's mapping, malformed certificates, and
+//!   invalid signatures.
+//! - `verify_tls12_signature` rejects unconditionally: TLS 1.2 is compiled out
+//!   (no rustls `tls12` feature) and both endpoint configurations pin TLS 1.3,
+//!   so a TLS 1.2 `CertificateVerify` can never be legitimate.
+//! - `verify_server_cert` rejects empty and malformed leaves even in join mode;
+//!   relaxation never extends to undecodable input.
 
 use rustls::{
   CertificateError, DigitallySignedStruct, Error as RustlsError, PeerIncompatible, SignatureScheme,
@@ -70,18 +70,16 @@ impl BootstrapCertVerifier {
 
 impl ServerCertVerifier for BootstrapCertVerifier {
   fn verify_server_cert(
-    &self,
-    end_entity: &CertificateDer<'_>,
-    _intermediates: &[CertificateDer<'_>],
-    _server_name: &ServerName<'_>,
-    _ocsp_response: &[u8],
-    _now: UnixTime,
+    &self, end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>],
+    _server_name: &ServerName<'_>, _ocsp_response: &[u8], _now: UnixTime,
   ) -> Result<ServerCertVerified, RustlsError> {
     // ADR-0001 relaxes chain, hostname, and validity-window trust. The leaf
     // must still carry bytes and decode as a well-formed X.509 certificate;
     // anything less fails closed.
     if end_entity.as_ref().is_empty() {
-      return Err(RustlsError::InvalidCertificate(CertificateError::BadEncoding));
+      return Err(RustlsError::InvalidCertificate(
+        CertificateError::BadEncoding,
+      ));
     }
     let parsed = ParsedCertificate::try_from(end_entity)
       .map_err(|_| RustlsError::InvalidCertificate(CertificateError::BadEncoding))?;
@@ -98,10 +96,7 @@ impl ServerCertVerifier for BootstrapCertVerifier {
   }
 
   fn verify_tls12_signature(
-    &self,
-    _message: &[u8],
-    _cert: &CertificateDer<'_>,
-    _dss: &DigitallySignedStruct,
+    &self, _message: &[u8], _cert: &CertificateDer<'_>, _dss: &DigitallySignedStruct,
   ) -> Result<HandshakeSignatureValid, RustlsError> {
     // TLS 1.2 is compiled out and both configurations pin TLS 1.3, so this
     // path is unreachable; refuse unconditionally instead of accepting
@@ -110,10 +105,7 @@ impl ServerCertVerifier for BootstrapCertVerifier {
   }
 
   fn verify_tls13_signature(
-    &self,
-    message: &[u8],
-    cert: &CertificateDer<'_>,
-    dss: &DigitallySignedStruct,
+    &self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct,
   ) -> Result<HandshakeSignatureValid, RustlsError> {
     // Full validation of the TLS 1.3 CertificateVerify signature against
     // the presented leaf key. rustls rejects schemes that are not valid for
@@ -123,7 +115,24 @@ impl ServerCertVerifier for BootstrapCertVerifier {
   }
 
   fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-    self.supported.supported_schemes()
+    // TLS 1.3 CertificateVerify schemes only; TLS 1.2 RSA-PKCS1 and SHA-1
+    // schemes are never advertised even though the provider lists them.
+    self
+      .supported
+      .supported_schemes()
+      .into_iter()
+      .filter(|scheme| {
+        matches!(
+          scheme,
+          SignatureScheme::ED25519
+            | SignatureScheme::ECDSA_NISTP256_SHA256
+            | SignatureScheme::ECDSA_NISTP384_SHA384
+            | SignatureScheme::RSA_PSS_SHA256
+            | SignatureScheme::RSA_PSS_SHA384
+            | SignatureScheme::RSA_PSS_SHA512
+        )
+      })
+      .collect()
   }
 }
 
@@ -211,8 +220,9 @@ mod tests {
   fn tls_transport_verifier_member_mode_binds_expected_leaf_key() {
     let expected = certificate(7);
     let other = certificate(9);
-    let expected_spki =
-      ParsedCertificate::try_from(expected.end_entity()).unwrap().subject_public_key_info();
+    let expected_spki = ParsedCertificate::try_from(expected.end_entity())
+      .unwrap()
+      .subject_public_key_info();
     let verifier = verifier(TrustMode::Member { expected_spki });
 
     verifier
@@ -226,7 +236,13 @@ mod tests {
       .unwrap();
     assert!(
       verifier
-        .verify_server_cert(other.end_entity(), &[], &server_name(), &[], UnixTime::now())
+        .verify_server_cert(
+          other.end_entity(),
+          &[],
+          &server_name(),
+          &[],
+          UnixTime::now()
+        )
         .is_err()
     );
   }
@@ -250,7 +266,11 @@ mod tests {
           | SignatureScheme::RSA_PKCS1_SHA1
       ));
     }
-    assert!(verifier.supported_verify_schemes().contains(&SignatureScheme::ED25519));
+    assert!(
+      verifier
+        .supported_verify_schemes()
+        .contains(&SignatureScheme::ED25519)
+    );
   }
 
   #[test]

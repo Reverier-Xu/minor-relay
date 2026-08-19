@@ -41,6 +41,7 @@ mod protocol;
 mod provider;
 mod runtime;
 mod storage;
+mod transport;
 mod view;
 
 #[cfg(test)]
