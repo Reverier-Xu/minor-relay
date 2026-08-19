@@ -3,6 +3,13 @@ id: ADR-0004
 title: Fix the toolchain feature policy and evidence budgets
 status: accepted
 date: 2026-08-02
+amended:
+  - date: 2026-08-10
+    summary: >-
+      Promote rcgen 0.14.8 from dev-only to a production dependency for in-memory
+      ephemeral self-signed listener certificates (defaults off, ring provider).
+      The durable identity key remains separate; certificates are generated per
+      listener, never persisted, and never derived from identity keys.
 deciders: minor-relay maintainers
 ---
 
@@ -131,6 +138,7 @@ duplicate-tree, and contract checks.
 | `atomic-write-file` | 0.3.0 | Safe same-directory file flush/rename; observable operation errors |
 | `fs4` | 1.1.0 | Safe cross-platform lifetime file locking for `json` |
 | `rustix` | 1.1.4 | Unix-only safe directory-fd `fsync`; `fs` feature |
+| `rcgen` | 0.14.8 | Defaults off; ring provider; in-memory ephemeral self-signed listener certificates |
 | `serde` | 1.0.229 | Optional `json` persisted format only, with derive |
 | `serde_json` | 1.0.151 | Optional `json`; no unbounded-depth or preserve-order features |
 | `redb` | 4.1.0 | Optional production adapter only |
@@ -141,7 +149,6 @@ Initial dev/build tools are:
 | --- | ---: | --- |
 | `proptest` | 1.11.0 | Retained failures, fork/timeout enabled |
 | `tempfile` | 3.27.0 | Unique filesystem fixtures |
-| `rcgen` | 0.14.8 | Test certificates only, ring provider |
 | `cargo-hack` | 0.6.45 | Pinned feature powerset CI |
 | `cargo-fuzz` | 0.13.2 | Pinned nightly libFuzzer driver |
 | `cargo-semver-checks` | 0.50.0 | Public API baseline at G10 |
