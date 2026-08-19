@@ -20,4 +20,6 @@ mod value;
 pub use credential::{IssuedJoinCredential, JoinCredential};
 pub(crate) use id::random_base62_suffix;
 pub use id::{ClusterId, NodeId, OperationId, TraceId, TransactionId};
+#[allow(unused_imports)]
+pub(crate) use id::{ListenerId, SessionId};
 pub use value::{Digest, PublicKey, Signature};

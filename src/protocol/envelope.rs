@@ -1,10 +1,10 @@
 use crate::{Error, Result};
 
 const MAGIC: [u8; 4] = *b"MRLY";
-const PRELUDE_LEN: usize = 16;
+pub(crate) const PRELUDE_LEN: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Prelude {
+pub(crate) struct Prelude {
   schema_id: u16,
   kind_id: u16,
   flags: u16,
@@ -12,7 +12,7 @@ struct Prelude {
 }
 
 impl Prelude {
-  const fn new(schema_id: u16, kind_id: u16, flags: u16, body_len: u32) -> Self {
+  pub(crate) const fn new(schema_id: u16, kind_id: u16, flags: u16, body_len: u32) -> Self {
     Self {
       schema_id,
       kind_id,
@@ -21,19 +21,19 @@ impl Prelude {
     }
   }
 
-  const fn schema_id(self) -> u16 {
+  pub(crate) const fn schema_id(self) -> u16 {
     self.schema_id
   }
 
-  const fn kind_id(self) -> u16 {
+  pub(crate) const fn kind_id(self) -> u16 {
     self.kind_id
   }
 
-  const fn flags(self) -> u16 {
+  pub(crate) const fn flags(self) -> u16 {
     self.flags
   }
 
-  fn encode(self) -> [u8; PRELUDE_LEN] {
+  pub(crate) fn encode(self) -> [u8; PRELUDE_LEN] {
     let schema = self.schema_id.to_be_bytes();
     let kind = self.kind_id.to_be_bytes();
     let flags = self.flags.to_be_bytes();
@@ -75,7 +75,7 @@ impl Prelude {
   }
 }
 
-fn split_message<IsDeclared>(
+pub(crate) fn split_message<IsDeclared>(
   message: &[u8], allowed_flags: u16, message_limit: u32, receive_limit: u32,
   is_declared: IsDeclared,
 ) -> Result<(Prelude, &[u8])>

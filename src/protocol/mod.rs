@@ -16,5 +16,7 @@ mod tag;
 mod wire;
 
 pub(crate) use cbor::{CborLimits, decode_canonical, encode_canonical, validate_canonical};
+#[allow(unused_imports)]
+pub(crate) use envelope::{PRELUDE_LEN, Prelude, split_message};
 pub use feature::FeatureDefinition;
 pub use tag::{DiscoveryTag, FeatureTag, ProtocolTag, QualifiedTag, TransportTag};
