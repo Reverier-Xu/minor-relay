@@ -50,7 +50,8 @@ pub use api::BoxFuture;
 pub use config::{NodeConfig, ParserLimits, RecoveryConfig, TraceMetadataLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
 pub use identity::{
-  ClusterId, Digest, NodeId, OperationId, PublicKey, Signature, TraceId, TransactionId,
+  ClusterId, Digest, IssuedJoinCredential, JoinCredential, NodeId, OperationId, PublicKey,
+  Signature, TraceId, TransactionId,
 };
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};

@@ -2,21 +2,21 @@
 //! ADR-0002) over abstract canonical messages.
 //!
 //! This module models the ADR-0001 message ordering and transcript assembly
-//! without any socket, TLS, or credential-derivation code. Ownership
-//! boundaries:
+//! without any socket or TLS code. Ownership boundaries:
 //!
-//! - The real TLS 1.3 transport, the RFC 9266 exporter channel binding, and the
-//!   HKDF/HMAC credential proof derivation belong to G3-02/G3-03. Here the
-//!   channel binding is a locally supplied fixed 32-byte placeholder and
-//!   credential proofs are opaque 32-byte values compared by exact equality.
-//!   Constant-time proof comparison arrives with the real derivation; no proof,
-//!   exporter, or credential bytes are ever logged by this module.
-//! - The message kind IDs used here are handshake-internal ordering labels. The
-//!   immutable published schema/kind registry belongs to the G3-02 wire
-//!   transport.
+//! - The real TLS 1.3 transport and the RFC 9266 exporter channel binding
+//!   belong to the G3-02 transport; here the channel binding is a locally
+//!   supplied fixed 32-byte value and never a wire field. Join-mode credential
+//!   proofs are real ADR-0001 values derived through [`super::credential`]
+//!   (HKDF-SHA256 over the channel binding and credential body, role-separated
+//!   HMAC-SHA256 over the transcript digest) and verified in constant time. No
+//!   proof, exporter, or credential bytes are ever logged by this module.
+//! - The message kind IDs are the immutable published schema `0x0001` kind IDs
+//!   of the closed [`super::wire`] registry.
 //! - Admission commits, grants, and cluster adoption follow in G3-03; this
-//!   state machine only authenticates. Join-mode endpoints are configured with
-//!   the expected cluster ID and credential generation ID up front.
+//!   state machine only authenticates and delivers the opaque grant bytes.
+//!   Join-mode endpoints are configured with the expected cluster ID and
+//!   credential generation ID up front.
 //!
 //! Protocol positions (strict global lockstep, no retry fallback paths):
 //!
@@ -33,6 +33,9 @@
 //! 5. `SelectionConfirmation` (responder): the selection bytes, which must
 //!    equal the initiator's locally computed bytes exactly. Position five
 //!    completes authentication; the state machine is then terminal.
+//! 6. `AdmissionGrantDelivery` (responder, join mode only): opaque grant bytes
+//!    sent only after authentication completed. Position six is
+//!    post-authentication and never part of the transcript.
 //!
 //! The canonical, length-delimited transcript covers ADR-0001 items 1..=9:
 //! protocol magic and base schema ID `0x0001`, mode and join-mode generation
@@ -46,11 +49,15 @@
 use minicbor::{Decode, Decoder, Encode, bytes::ByteVec};
 
 use super::{
+  credential::{
+    CredentialProof, CredentialSecret, PROOF_LEN, ProofRole, derive_proof, verify_proof,
+  },
   decode_canonical, encode_canonical,
   feature::FeatureRegistry,
   offer::{FeatureOffer, OFFER_CBOR_LIMITS, Role},
   selection::{Selection, select},
   validate_canonical,
+  wire::HandshakeKind,
 };
 use crate::{
   ClusterId, Digest, Error, NodeId, PublicKey, Signature,
@@ -60,17 +67,18 @@ use crate::{
 const PROTOCOL_MAGIC: &str = "MRLY";
 const BASE_SCHEMA_ID: u64 = 0x0001;
 const PROTOCOL_POSITIONS: u8 = 5;
+const GRANT_DELIVERY_POSITION: u8 = 6;
 const GENERATION_LEN: usize = 16;
-const PROOF_LEN: usize = 32;
 const NONCE_LEN: usize = 32;
 const PUBLIC_KEY_LEN: usize = 32;
 const SIGNATURE_LEN: usize = 64;
 
-const KIND_INITIATOR_HELLO: u64 = 1;
-const KIND_RESPONDER_HELLO: u64 = 2;
-const KIND_RESPONDER_PROOF: u64 = 3;
-const KIND_INITIATOR_PROOF: u64 = 4;
-const KIND_SELECTION_CONFIRMATION: u64 = 5;
+const KIND_INITIATOR_HELLO: u64 = HandshakeKind::InitiatorHello.kind_id() as u64;
+const KIND_RESPONDER_HELLO: u64 = HandshakeKind::ResponderHello.kind_id() as u64;
+const KIND_RESPONDER_PROOF: u64 = HandshakeKind::ResponderProof.kind_id() as u64;
+const KIND_INITIATOR_PROOF: u64 = HandshakeKind::InitiatorProof.kind_id() as u64;
+const KIND_SELECTION_CONFIRMATION: u64 = HandshakeKind::SelectionConfirmation.kind_id() as u64;
+const KIND_ADMISSION_GRANT_DELIVERY: u64 = HandshakeKind::AdmissionGrantDelivery.kind_id() as u64;
 
 /// The exact ADR-0001 responder session-signature domain.
 pub(crate) const SESSION_V1_RESPONDER_DOMAIN: &[u8] =
@@ -105,29 +113,6 @@ impl HandshakeMode {
   }
 }
 
-/// An opaque 32-byte credential proof placeholder.
-///
-/// The HKDF/HMAC derivation over the real TLS exporter is owned by
-/// G3-02/G3-03; this phase stores and compares values by exact equality only.
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) struct CredentialProof([u8; PROOF_LEN]);
-
-impl CredentialProof {
-  pub(crate) const fn from_bytes(value: [u8; PROOF_LEN]) -> Self {
-    Self(value)
-  }
-
-  const fn as_bytes(&self) -> &[u8; PROOF_LEN] {
-    &self.0
-  }
-}
-
-impl core::fmt::Debug for CredentialProof {
-  fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    formatter.write_str("CredentialProof(..)")
-  }
-}
-
 /// The typed reason a handshake transition was rejected.
 ///
 /// Every variant is produced before any signing or admitting step; the state
@@ -154,8 +139,11 @@ pub(crate) enum HandshakeError {
   UnexpectedCluster,
   /// The peer binding conflicts with the configured expected key.
   ExpectedKeyConflict,
-  /// The opaque credential proof differs from the expected value.
+  /// The received credential proof fails constant-time verification
+  /// against the locally derived value.
   ProofMismatch,
+  /// The local credential proof derivation failed.
+  Derivation,
   /// Strict Ed25519 session-signature verification failed.
   InvalidSignature,
   /// The confirmed selection bytes differ from the local computation.
@@ -184,6 +172,7 @@ impl From<HandshakeError> for Error {
         Error::authentication_failed("handshake expected key conflict")
       }
       HandshakeError::ProofMismatch => Error::authentication_failed("handshake proof mismatch"),
+      HandshakeError::Derivation => Error::internal("handshake proof derivation"),
       HandshakeError::InvalidSignature => {
         Error::authentication_failed("handshake session signature")
       }
@@ -208,10 +197,10 @@ pub(crate) struct HandshakeConfig {
   pub(crate) expected_peer: Option<(NodeId, PublicKey)>,
   /// The non-secret join credential generation ID (join mode only).
   pub(crate) generation: Option<[u8; GENERATION_LEN]>,
-  /// The opaque proof this endpoint sends (join mode only).
-  pub(crate) local_proof: Option<CredentialProof>,
-  /// The opaque proof this endpoint expects from the peer (join mode only).
-  pub(crate) expected_peer_proof: Option<CredentialProof>,
+  /// The join credential body both endpoints derive and verify
+  /// role-separated proofs from (join mode only). Never logged, persisted,
+  /// or sent on the wire.
+  pub(crate) credential: Option<CredentialSecret>,
   pub(crate) local_nonce: [u8; NONCE_LEN],
   pub(crate) local_offer: FeatureOffer,
   /// Locally derived channel binding placeholder; the real RFC 9266 exporter
@@ -239,6 +228,8 @@ pub(crate) struct Handshake {
   peer_hello: Option<HelloView>,
   selection: Option<Selection>,
   transcript: Option<Vec<u8>>,
+  grant_sent: bool,
+  grant: Option<Vec<u8>>,
 }
 
 impl Handshake {
@@ -249,10 +240,7 @@ impl Handshake {
   ) -> Result<Self, HandshakeError> {
     match config.mode {
       HandshakeMode::Join => {
-        if config.generation.is_none()
-          || config.local_proof.is_none()
-          || config.expected_peer_proof.is_none()
-        {
+        if config.generation.is_none() || config.credential.is_none() {
           return Err(HandshakeError::Malformed {
             context: "handshake join inputs",
           });
@@ -260,8 +248,7 @@ impl Handshake {
       }
       HandshakeMode::Member => {
         if config.generation.is_some()
-          || config.local_proof.is_some()
-          || config.expected_peer_proof.is_some()
+          || config.credential.is_some()
           || config.expected_peer.is_none()
         {
           return Err(HandshakeError::Malformed {
@@ -297,6 +284,8 @@ impl Handshake {
       peer_hello: None,
       selection: None,
       transcript: None,
+      grant_sent: false,
+      grant: None,
     })
   }
 
@@ -358,12 +347,10 @@ impl Handshake {
     &mut self, signature: Signature,
   ) -> Result<Vec<u8>, HandshakeError> {
     self.begin_send(KIND_RESPONDER_PROOF, Role::Responder)?;
+    let proof = self.derive_local_proof(ProofRole::Responder)?;
     let wire = ProofWire {
       kind: KIND_RESPONDER_PROOF,
-      proof: self
-        .config
-        .local_proof
-        .map(|proof| ByteVec::from(proof.as_bytes().to_vec())),
+      proof: proof.map(|proof| ByteVec::from(proof.as_bytes().to_vec())),
       signature: ByteVec::from(signature.as_bytes().to_vec()),
     };
     self.finish_send(wire)
@@ -375,15 +362,37 @@ impl Handshake {
     &mut self, signature: Signature,
   ) -> Result<Vec<u8>, HandshakeError> {
     self.begin_send(KIND_INITIATOR_PROOF, Role::Initiator)?;
+    let proof = self.derive_local_proof(ProofRole::Initiator)?;
     let wire = ProofWire {
       kind: KIND_INITIATOR_PROOF,
-      proof: self
-        .config
-        .local_proof
-        .map(|proof| ByteVec::from(proof.as_bytes().to_vec())),
+      proof: proof.map(|proof| ByteVec::from(proof.as_bytes().to_vec())),
       signature: ByteVec::from(signature.as_bytes().to_vec()),
     };
     self.finish_send(wire)
+  }
+
+  /// The locally derived join-mode credential proof for `role`, or `None`
+  /// in member mode. The proof is derived from the transcript digest and
+  /// never embedded in the transcript itself.
+  fn derive_local_proof(&self, role: ProofRole) -> Result<Option<CredentialProof>, HandshakeError> {
+    match self.config.mode {
+      HandshakeMode::Member => Ok(None),
+      HandshakeMode::Join => {
+        let secret = self
+          .config
+          .credential
+          .as_ref()
+          .ok_or(HandshakeError::State {
+            context: "handshake credential",
+          })?;
+        let digest = self.transcript_digest().ok_or(HandshakeError::State {
+          context: "handshake transcript",
+        })?;
+        derive_proof(role, &self.config.channel_binding, secret, &digest)
+          .map(Some)
+          .map_err(|_| HandshakeError::Derivation)
+      }
+    }
   }
 
   /// Position 5 (responder): the exact local selection bytes.
@@ -404,14 +413,60 @@ impl Handshake {
     self.finish_send(wire)
   }
 
+  /// Position 6 (responder, join mode only): opaque signed admission grant
+  /// bytes, sent only after authentication completed. The grant is
+  /// post-authentication and never part of the transcript; grant
+  /// construction and validation belong to the G3-03 admission layer.
+  pub(crate) fn admission_grant_delivery(
+    &mut self, grant: &[u8],
+  ) -> Result<Vec<u8>, HandshakeError> {
+    if self.config.role != Role::Responder {
+      return Err(HandshakeError::State {
+        context: "handshake send role",
+      });
+    }
+    if self.config.mode != HandshakeMode::Join {
+      return Err(HandshakeError::State {
+        context: "handshake grant mode",
+      });
+    }
+    if !self.is_authenticated() {
+      return Err(HandshakeError::State {
+        context: "handshake grant order",
+      });
+    }
+    if self.grant_sent {
+      return Err(HandshakeError::State {
+        context: "handshake grant duplicate",
+      });
+    }
+    if grant.is_empty() {
+      return Err(HandshakeError::Malformed {
+        context: "handshake grant",
+      });
+    }
+    let wire = GrantDeliveryWire {
+      kind: KIND_ADMISSION_GRANT_DELIVERY,
+      grant: ByteVec::from(grant.to_vec()),
+    };
+    let bytes =
+      encode_canonical(&wire, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
+        context: "handshake encode",
+      })?;
+    self.grant_sent = true;
+    Ok(bytes)
+  }
+
+  /// The received admission grant bytes, once position six completed.
+  pub(crate) fn grant_delivery(&self) -> Option<&[u8]> {
+    self.grant.as_deref()
+  }
+
   /// Validates and consumes one inbound canonical message, rejecting
   /// duplicates, unknown fields, ordering violations, reflections, identity
   /// collisions, cluster or key conflicts, proof or signature mismatches, and
   /// selection divergence before the machine advances.
   pub(crate) fn receive(&mut self, bytes: &[u8]) -> Result<(), HandshakeError> {
-    if self.completed >= PROTOCOL_POSITIONS {
-      return Err(HandshakeError::Terminal);
-    }
     validate_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
     let (arity, position) = probe(bytes)?;
     if arity != u64::from(position_arity(position)) {
@@ -419,6 +474,12 @@ impl Handshake {
     }
     if position_sender(position) == self.config.role {
       return Err(HandshakeError::RoleSwapped);
+    }
+    if position == GRANT_DELIVERY_POSITION {
+      return self.receive_grant_delivery(bytes);
+    }
+    if self.completed >= PROTOCOL_POSITIONS {
+      return Err(HandshakeError::Terminal);
     }
     if position <= self.completed {
       return Err(HandshakeError::Duplicate);
@@ -429,8 +490,8 @@ impl Handshake {
     match position {
       1 => self.receive_initiator_hello(bytes)?,
       2 => self.receive_responder_hello(bytes)?,
-      3 => self.receive_proof(bytes, SESSION_V1_RESPONDER_DOMAIN)?,
-      4 => self.receive_proof(bytes, SESSION_V1_INITIATOR_DOMAIN)?,
+      3 => self.receive_proof(bytes, SESSION_V1_RESPONDER_DOMAIN, ProofRole::Responder)?,
+      4 => self.receive_proof(bytes, SESSION_V1_INITIATOR_DOMAIN, ProofRole::Initiator)?,
       _ => self.receive_confirmation(bytes)?,
     }
     self.completed += 1;
@@ -568,20 +629,37 @@ impl Handshake {
     Ok(())
   }
 
-  fn receive_proof(&mut self, bytes: &[u8], domain: &[u8]) -> Result<(), HandshakeError> {
+  fn receive_proof(
+    &mut self, bytes: &[u8], domain: &[u8], role: ProofRole,
+  ) -> Result<(), HandshakeError> {
     let wire: ProofWire = decode_wire(bytes)?;
     let proof =
       optional_bytes::<PROOF_LEN>(wire.proof, "handshake proof")?.map(CredentialProof::from_bytes);
-    match (self.config.mode, &proof, &self.config.expected_peer_proof) {
-      (HandshakeMode::Join, Some(actual), Some(expected)) if actual == expected => {}
-      (HandshakeMode::Join, Some(_), _) => return Err(HandshakeError::ProofMismatch),
-      (HandshakeMode::Join, None, _) => {
+    match (self.config.mode, &proof) {
+      (HandshakeMode::Join, Some(actual)) => {
+        let secret = self
+          .config
+          .credential
+          .as_ref()
+          .ok_or(HandshakeError::State {
+            context: "handshake credential",
+          })?;
+        let digest = self.transcript_digest().ok_or(HandshakeError::State {
+          context: "handshake transcript",
+        })?;
+        let verified = verify_proof(role, &self.config.channel_binding, secret, &digest, actual)
+          .map_err(|_| HandshakeError::Derivation)?;
+        if !verified {
+          return Err(HandshakeError::ProofMismatch);
+        }
+      }
+      (HandshakeMode::Join, None) => {
         return Err(HandshakeError::Malformed {
           context: "handshake proof",
         });
       }
-      (HandshakeMode::Member, None, None) => {}
-      (HandshakeMode::Member, ..) => {
+      (HandshakeMode::Member, None) => {}
+      (HandshakeMode::Member, Some(_)) => {
         return Err(HandshakeError::Malformed {
           context: "handshake proof field",
         });
@@ -612,6 +690,28 @@ impl Handshake {
     if wire.selection.as_slice() != selection.bytes() {
       return Err(HandshakeError::SelectionBytesMismatch);
     }
+    Ok(())
+  }
+
+  fn receive_grant_delivery(&mut self, bytes: &[u8]) -> Result<(), HandshakeError> {
+    if self.config.mode != HandshakeMode::Join {
+      return Err(HandshakeError::Malformed {
+        context: "handshake grant mode",
+      });
+    }
+    if !self.is_authenticated() {
+      return Err(HandshakeError::OutOfOrder);
+    }
+    if self.grant.is_some() {
+      return Err(HandshakeError::Duplicate);
+    }
+    let wire: GrantDeliveryWire = decode_wire(bytes)?;
+    if wire.grant.is_empty() {
+      return Err(HandshakeError::Malformed {
+        context: "handshake grant",
+      });
+    }
+    self.grant = Some(wire.grant.to_vec());
     Ok(())
   }
 }
@@ -647,6 +747,7 @@ fn probe(bytes: &[u8]) -> Result<(u64, u8), HandshakeError> {
     KIND_RESPONDER_PROOF => 3,
     KIND_INITIATOR_PROOF => 4,
     KIND_SELECTION_CONFIRMATION => 5,
+    KIND_ADMISSION_GRANT_DELIVERY => GRANT_DELIVERY_POSITION,
     _ => {
       return Err(HandshakeError::Malformed {
         context: "handshake message kind",
@@ -796,6 +897,15 @@ struct ConfirmationWire {
   selection: ByteVec,
 }
 
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct GrantDeliveryWire {
+  #[n(0)]
+  kind: u64,
+  #[n(1)]
+  grant: ByteVec,
+}
+
 #[derive(Encode)]
 #[cbor(array)]
 struct IdentityWire {
@@ -840,6 +950,7 @@ mod tests {
 
   use super::{
     super::{
+      credential::CredentialSecret,
       feature::FeatureRegistry,
       offer::fixtures::{initiator_offer, responder_offer},
     },
@@ -854,6 +965,11 @@ mod tests {
   const INITIATOR_NONCE: [u8; NONCE_LEN] = [0x10; NONCE_LEN];
   const RESPONDER_NONCE: [u8; NONCE_LEN] = [0x20; NONCE_LEN];
   const CHANNEL_BINDING: [u8; 32] = [0xCB; 32];
+  const CREDENTIAL: [u8; 32] = [0x42; 32];
+
+  fn credential() -> CredentialSecret {
+    CredentialSecret::from_bytes(CREDENTIAL)
+  }
 
   fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -902,8 +1018,7 @@ mod tests {
           local_key: public_key(&INITIATOR_SEED),
           expected_peer: None,
           generation: Some(GENERATION),
-          local_proof: Some(CredentialProof::from_bytes([0x44; PROOF_LEN])),
-          expected_peer_proof: Some(CredentialProof::from_bytes([0x55; PROOF_LEN])),
+          credential: Some(credential()),
           local_nonce: INITIATOR_NONCE,
           local_offer: initiator_offer(&registry),
           channel_binding: CHANNEL_BINDING,
@@ -919,8 +1034,7 @@ mod tests {
           local_key: public_key(&RESPONDER_SEED),
           expected_peer: None,
           generation: Some(GENERATION),
-          local_proof: Some(CredentialProof::from_bytes([0x55; PROOF_LEN])),
-          expected_peer_proof: Some(CredentialProof::from_bytes([0x44; PROOF_LEN])),
+          credential: Some(credential()),
           local_nonce: RESPONDER_NONCE,
           local_offer: responder_offer(&registry),
           channel_binding: CHANNEL_BINDING,
@@ -944,8 +1058,7 @@ mod tests {
           local_key: initiator_key.clone(),
           expected_peer: Some((node_id(2), responder_key.clone())),
           generation: None,
-          local_proof: None,
-          expected_peer_proof: None,
+          credential: None,
           local_nonce: INITIATOR_NONCE,
           local_offer: initiator_offer(&registry),
           channel_binding: CHANNEL_BINDING,
@@ -961,8 +1074,7 @@ mod tests {
           local_key: responder_key.clone(),
           expected_peer: Some((node_id(1), initiator_key.clone())),
           generation: None,
-          local_proof: None,
-          expected_peer_proof: None,
+          credential: None,
           local_nonce: RESPONDER_NONCE,
           local_offer: responder_offer(&registry),
           channel_binding: CHANNEL_BINDING,
@@ -1165,6 +1277,110 @@ mod tests {
   }
 
   #[test]
+  fn handshake_join_mode_sends_real_derived_proofs() {
+    let pair = join_pair();
+    let exchange = drive(&pair, &[], false, false).unwrap();
+    let digest = exchange.initiator.transcript_digest().unwrap();
+    let secret = credential();
+
+    // The wire proofs equal the exact ADR-0001 HKDF/HMAC derivation over
+    // the transcript digest; the transcript bytes stay free of proofs.
+    let responder_wire: ProofWire = decode_wire(&exchange.messages[2]).unwrap();
+    let expected = derive_proof(ProofRole::Responder, &CHANNEL_BINDING, &secret, &digest).unwrap();
+    assert_eq!(
+      responder_wire.proof.as_ref().unwrap().as_slice(),
+      expected.as_bytes().as_slice()
+    );
+    let initiator_wire: ProofWire = decode_wire(&exchange.messages[3]).unwrap();
+    let expected = derive_proof(ProofRole::Initiator, &CHANNEL_BINDING, &secret, &digest).unwrap();
+    assert_eq!(
+      initiator_wire.proof.as_ref().unwrap().as_slice(),
+      expected.as_bytes().as_slice()
+    );
+    assert_ne!(responder_wire.proof, initiator_wire.proof);
+
+    // Member mode keeps null proof fields.
+    let member = drive(&member_pair(), &[], false, false).unwrap();
+    let wire: ProofWire = decode_wire(&member.messages[2]).unwrap();
+    assert!(wire.proof.is_none());
+    let wire: ProofWire = decode_wire(&member.messages[3]).unwrap();
+    assert!(wire.proof.is_none());
+  }
+
+  #[test]
+  fn handshake_join_grant_delivery_is_post_authentication() {
+    let pair = join_pair();
+    let grant = [0xAA; 48];
+
+    // After authentication the responder delivers the grant exactly once.
+    let mut exchange = drive(&pair, &[], false, false).unwrap();
+    let message = exchange.responder.admission_grant_delivery(&grant).unwrap();
+    exchange.initiator.receive(&message).unwrap();
+    assert_eq!(exchange.initiator.grant_delivery(), Some(grant.as_slice()));
+    assert_eq!(
+      exchange.initiator.receive(&message),
+      Err(HandshakeError::Duplicate)
+    );
+    assert!(exchange.responder.admission_grant_delivery(&grant).is_err());
+
+    // The transcript and digest are untouched by the delivery.
+    assert_eq!(
+      exchange.initiator.transcript_bytes().unwrap(),
+      exchange.responder.transcript_bytes().unwrap()
+    );
+    assert_eq!(
+      hex(exchange.initiator.transcript_digest().unwrap().as_bytes()),
+      JOIN_TRANSCRIPT_DIGEST_HEX
+    );
+
+    // Pre-authentication delivery is out of order on both directions.
+    assert!(
+      fresh(&pair.responder)
+        .admission_grant_delivery(&grant)
+        .is_err()
+    );
+    assert_eq!(
+      fresh(&pair.initiator).receive(&message),
+      Err(HandshakeError::OutOfOrder)
+    );
+
+    // Member mode never carries a grant delivery.
+    let member = member_pair();
+    let mut member_exchange = drive(&member, &[], false, false).unwrap();
+    assert!(
+      member_exchange
+        .responder
+        .admission_grant_delivery(&grant)
+        .is_err()
+    );
+    assert_eq!(
+      member_exchange.initiator.receive(&message),
+      Err(HandshakeError::Malformed {
+        context: "handshake grant mode"
+      })
+    );
+
+    // The initiator never sends a grant, and empty grants are malformed.
+    let mut exchange = drive(&pair, &[], false, false).unwrap();
+    assert!(exchange.initiator.admission_grant_delivery(&grant).is_err());
+    assert!(exchange.responder.admission_grant_delivery(&[]).is_err());
+    let empty = encode_canonical(
+      &GrantDeliveryWire {
+        kind: KIND_ADMISSION_GRANT_DELIVERY,
+        grant: ByteVec::from(Vec::new()),
+      },
+      OFFER_CBOR_LIMITS,
+    )
+    .unwrap();
+    assert_eq!(
+      exchange.initiator.receive(&empty),
+      Err(HandshakeError::Malformed {
+        context: "handshake grant"
+      })
+    );
+  }
+
+  #[test]
   fn handshake_state_machine_rejects_malformed_transitions() {
     let pair = join_pair();
     let honest = drive(&pair, &[], false, false).unwrap();
@@ -1295,17 +1511,16 @@ mod tests {
       Some(HandshakeError::InvalidSignature)
     );
 
-    // Credential proof mismatch in both directions.
+    // Credential proof mismatch in both directions: a wrong credential on
+    // either side fails constant-time verification.
     let mut proof_pair = join_pair();
-    proof_pair.responder.config.expected_peer_proof =
-      Some(CredentialProof::from_bytes([0xEE; PROOF_LEN]));
+    proof_pair.responder.config.credential = Some(CredentialSecret::from_bytes([0xEE; 32]));
     assert_eq!(
       drive(&proof_pair, &[], false, false).err(),
       Some(HandshakeError::ProofMismatch)
     );
     let mut proof_pair = join_pair();
-    proof_pair.initiator.config.expected_peer_proof =
-      Some(CredentialProof::from_bytes([0xEE; PROOF_LEN]));
+    proof_pair.initiator.config.credential = Some(CredentialSecret::from_bytes([0xEE; 32]));
     assert_eq!(
       drive(&proof_pair, &[], false, false).err(),
       Some(HandshakeError::ProofMismatch)

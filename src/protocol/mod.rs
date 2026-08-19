@@ -1,5 +1,7 @@
 mod cbor;
 #[allow(dead_code)]
+mod credential;
+#[allow(dead_code)]
 mod envelope;
 #[allow(dead_code)]
 mod feature;
@@ -10,6 +12,8 @@ mod offer;
 #[allow(dead_code)]
 mod selection;
 mod tag;
+#[allow(dead_code)]
+mod wire;
 
 pub(crate) use cbor::{CborLimits, decode_canonical, encode_canonical, validate_canonical};
 pub use feature::FeatureDefinition;

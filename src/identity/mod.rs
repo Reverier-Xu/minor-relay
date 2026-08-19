@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 pub(crate) mod admission;
 #[allow(dead_code)]
+pub(crate) mod credential;
+#[allow(dead_code)]
 pub(crate) mod deletion;
 #[allow(dead_code)]
 pub(crate) mod genesis;
@@ -15,6 +17,7 @@ pub(crate) mod signature;
 pub(crate) mod testing;
 mod value;
 
+pub use credential::{IssuedJoinCredential, JoinCredential};
 pub(crate) use id::random_base62_suffix;
 pub use id::{ClusterId, NodeId, OperationId, TraceId, TransactionId};
 pub use value::{Digest, PublicKey, Signature};
