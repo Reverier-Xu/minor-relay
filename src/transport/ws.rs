@@ -65,6 +65,10 @@ where
   Ok(stream)
 }
 
+// The tungstenite callback signature fixes the error type; the response
+// headers make the Err variant large, which is inherent to the callback
+// contract and not a result channel for secrets.
+#[allow(clippy::result_large_err)]
 fn check_path(
   request: &Request, response: Response,
 ) -> std::result::Result<Response, ErrorResponse> {

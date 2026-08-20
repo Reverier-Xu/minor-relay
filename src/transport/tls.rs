@@ -95,7 +95,7 @@ fn client_config(mode: TrustMode) -> Result<Arc<ClientConfig>> {
 
 #[cfg(test)]
 mod tests {
-  use rustls::{SupportedCipherSuite, server::NoServerSessionStorage};
+  use rustls::SupportedCipherSuite;
 
   use super::{crypto_provider, join_client_config, server_config};
   use crate::{api::Entropy, transport::cert::EphemeralCertificate};
