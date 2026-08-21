@@ -11,6 +11,7 @@ use minor_relay::{
   CreateCluster, Endpoint, ErrorKind, GetLocalNode, JoinCluster, JoinCredential, Listen,
   NodeBuilder, NodeHandle, RotateJoinCredential, Shutdown,
 };
+#[cfg(feature = "json")]
 use tempfile::TempDir;
 
 mod common;
@@ -31,6 +32,7 @@ async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> N
   }
 }
 
+#[cfg(feature = "json")]
 async fn start_json(dir: &TempDir, keys: Arc<ScriptedKeys>) -> Node {
   let handle = NodeBuilder::new(
     minor_relay::adapters::json_store(dir.path().to_path_buf()),
@@ -94,6 +96,7 @@ async fn secure_join_completes_exporter_bound_join_and_persists_admission() {
   joiner.handle.command(Shutdown::new()).await.unwrap();
 }
 
+#[cfg(feature = "json")]
 #[tokio::test]
 async fn secure_join_json_backend_round_trips_the_same_join() {
   let receiver_dir = tempfile::tempdir().unwrap();
@@ -176,4 +179,251 @@ async fn secure_join_wrong_credential_fails_without_admission() {
 
   receiver.handle.command(Shutdown::new()).await.unwrap();
   joiner.handle.command(Shutdown::new()).await.unwrap();
+}
+
+// ---- T-G03-02 packet data plane evidence (SC-G03-P0-06) ----
+
+use std::sync::Mutex as StdMutex;
+
+use minor_relay::{
+  BoxFuture, ExtensionRegistry, IncomingPacket, PacketBody, PacketMetadata, PacketPolicy,
+  PacketTarget, ProtocolDefinition, ProtocolTag, QualifiedTag,
+};
+
+#[derive(Debug)]
+struct VecBody {
+  chunks: std::vec::IntoIter<Arc<[u8]>>,
+}
+
+impl VecBody {
+  fn new(chunks: Vec<&'static [u8]>) -> Self {
+    Self {
+      chunks: chunks
+        .into_iter()
+        .map(Arc::from)
+        .collect::<Vec<_>>()
+        .into_iter(),
+    }
+  }
+}
+
+impl PacketBody for VecBody {
+  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+    Box::pin(async move { Ok(self.chunks.next()) })
+  }
+}
+
+#[derive(Debug, Default)]
+struct Collector {
+  packets: StdMutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl minor_relay::PacketConsumer for Collector {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, minor_relay::Result<()>> {
+    Box::pin(async move {
+      let mut body = Vec::new();
+      while let Some(chunk) = packet.body().next_chunk().await? {
+        body.extend_from_slice(&chunk);
+      }
+      self
+        .packets
+        .lock()
+        .unwrap()
+        .push((packet.trace_id().to_string(), body));
+      Ok(())
+    })
+  }
+}
+
+async fn start_with_protocol(
+  storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
+  consumer: Arc<Collector>,
+) -> NodeHandle {
+  let mut extensions = ExtensionRegistry::new();
+  extensions.register_protocol(definition, consumer).unwrap();
+  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  NodeBuilder::new(factory, keys)
+    .extensions(extensions)
+    .start()
+    .await
+    .unwrap()
+}
+
+fn protocol(tag: &str) -> ProtocolDefinition {
+  ProtocolDefinition::new(
+    ProtocolTag::parse(&format!("relay.woooo.tech/protocols/{tag}")).unwrap(),
+    minor_relay::FeatureTag::parse("relay.woooo.tech/features/session-core").unwrap(),
+  )
+}
+
+fn metadata() -> PacketMetadata {
+  PacketMetadata::new()
+    .insert(
+      QualifiedTag::parse("relay.woooo.tech/resources/test-label").unwrap(),
+      Arc::from(b"value".as_slice()),
+    )
+    .unwrap()
+}
+
+fn policy() -> PacketPolicy {
+  PacketPolicy::new(
+    QualifiedTag::parse("relay.woooo.tech/policies/direct").unwrap(),
+    1,
+  )
+  .unwrap()
+}
+
+#[tokio::test]
+async fn secure_join_packet_streams_ordered_after_authentication() {
+  let receiver_collector = Arc::new(Collector::default());
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(70_000)),
+      protocol("test-echo"),
+      receiver_collector,
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  let collector = Arc::new(Collector::default());
+  let joiner_handle = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(80_000)),
+    protocol("test-echo"),
+    collector.clone(),
+  )
+  .await;
+
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let admission = joiner_handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+
+  // The receiver sends to the joiner over the established authenticated
+  // session; the TraceId is visible before any body delivery.
+  let packet = receiver
+    .handle
+    .create_packet(
+      PacketTarget::Exact(admission.admitted_node().clone()),
+      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      policy(),
+      metadata(),
+    )
+    .unwrap();
+  let trace_before = packet.trace_id().clone();
+  let ack = packet
+    .send_sync(Box::new(VecBody::new(vec![
+      b"chunk-1", b"chunk-2", b"chunk-3",
+    ])))
+    .await
+    .unwrap();
+  assert_eq!(ack.trace_id(), &trace_before);
+  assert_eq!(ack.destination(), admission.admitted_node());
+
+  // Admission is acked before the consumer finishes; wait for the bounded
+  // consumer task to record the packet without wall-clock sleeps.
+  for _ in 0..4096 {
+    if !collector.packets.lock().unwrap().is_empty() {
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
+  let packets = collector.packets.lock().unwrap().clone();
+  assert_eq!(packets.len(), 1);
+  assert_eq!(packets[0].0, trace_before.to_string());
+  assert_eq!(packets[0].1, b"chunk-1chunk-2chunk-3");
+
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+  joiner_handle.command(Shutdown::new()).await.unwrap();
+}
+
+#[tokio::test]
+async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(90_000)),
+      protocol("test-echo"),
+      Arc::new(Collector::default()),
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+
+  // No session to any node: routing to an unknown exact node fails before
+  // any delivery work.
+  let unknown = minor_relay::NodeId::parse("node_999999999999999999999").unwrap();
+  let packet = receiver
+    .handle
+    .create_packet(
+      PacketTarget::Exact(unknown),
+      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      policy(),
+      PacketMetadata::new(),
+    )
+    .unwrap();
+  let error = packet
+    .send_sync(Box::new(VecBody::new(vec![b"never-delivered"])))
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::RouteUnavailable);
+
+  // Unregistered protocol: rejected before admission even with a session.
+  let collector = Arc::new(Collector::default());
+  let joiner_handle = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(95_000)),
+    protocol("only-this"),
+    collector,
+  )
+  .await;
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let admission = joiner_handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+
+  // Sender-side: creating a packet for a protocol the local registry never
+  // registered fails before any session work.
+  let error = receiver
+    .handle
+    .create_packet(
+      PacketTarget::Exact(admission.admitted_node().clone()),
+      ProtocolTag::parse("relay.woooo.tech/protocols/not-registered").unwrap(),
+      policy(),
+      PacketMetadata::new(),
+    )
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::Unsupported);
+
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+  joiner_handle.command(Shutdown::new()).await.unwrap();
 }

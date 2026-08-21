@@ -101,8 +101,11 @@ pub(crate) const MAX_MESSAGE_BYTES: usize = 65_536 + PRELUDE_LEN;
 
 fn config() -> WebSocketConfig {
   let mut config = WebSocketConfig::default();
+  // Bound the per-frame guard as well as the aggregate message guard: an
+  // unbounded frame size lets tungstenite reserve the attacker-declared
+  // frame length before the aggregate limit is evaluated.
   config.max_message_size = Some(MAX_MESSAGE_BYTES);
-  config.max_frame_size = None;
+  config.max_frame_size = Some(MAX_MESSAGE_BYTES);
   config
 }
 

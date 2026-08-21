@@ -203,6 +203,7 @@ async fn finish_shutdown(
 struct Supervisor {
   dependencies: RuntimeDependencies,
   shutdown_tx: watch::Sender<()>,
+  connection_tasks: Arc<std::sync::Mutex<Vec<AbortHandle>>>,
   driver: SessionDriver,
   packet: Arc<SessionPacketContext>,
   route_capacity: usize,
@@ -236,6 +237,7 @@ impl Supervisor {
     Self {
       dependencies,
       shutdown_tx,
+      connection_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
       driver,
       packet,
       route_capacity,
@@ -245,8 +247,14 @@ impl Supervisor {
 
   fn into_dependencies(self) -> RuntimeDependencies {
     // Every open session task observes the shutdown signal and closes its
-    // connection instead of being orphaned when the supervisor exits.
+    // connection instead of being orphaned when the supervisor exits; the
+    // tracked abort handles terminate the untracked accept-side tasks.
     let _ = self.shutdown_tx.send(());
+    if let Ok(handles) = self.connection_tasks.lock() {
+      for handle in handles.iter() {
+        handle.abort();
+      }
+    }
     self.dependencies
   }
 
@@ -292,21 +300,23 @@ impl Supervisor {
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
+    let connection_tasks = self.connection_tasks.clone();
     let abort = tasks.spawn(async move {
       loop {
         let Ok((tcp, _)) = listener.accept().await else {
           return;
         };
-        let hint = match driver.join_hint().await {
-          Ok(hint) => hint,
-          Err(_) => return,
+        // A transient hint failure must not kill the listener: skip this
+        // connection and keep accepting.
+        let Ok(hint) = driver.join_hint().await else {
+          continue;
         };
         let config = config.clone();
         let driver = driver.clone();
         let sessions = sessions.clone();
         let packet = packet.clone();
         let shutdown = shutdown.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
           if let Ok(mut connection) = Connection::accept(tcp, config, rules, hint.as_ref()).await
             && let Ok(session) = driver.respond(&mut connection).await
           {
@@ -315,6 +325,9 @@ impl Supervisor {
             run_session(connection, session, packet, sessions, shutdown).await;
           }
         });
+        if let Ok(mut tasks) = connection_tasks.lock() {
+          tasks.push(task.abort_handle());
+        }
       }
     });
     let id = crate::identity::ListenerId::generate(self.dependencies.entropy.as_ref())?;

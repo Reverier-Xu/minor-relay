@@ -142,7 +142,7 @@ impl SessionDriver {
   /// cluster or no active generation) means the listener publishes no hint
   /// and cannot admit joiners.
   pub(crate) async fn join_hint(&self) -> Result<Option<JoinHint>> {
-    let Some(genesis) = existing_cluster(&self.context).await? else {
+    let Some(pointer) = crate::identity::genesis::local_cluster(&self.context).await? else {
       return Ok(None);
     };
     let generation = self
@@ -158,7 +158,7 @@ impl SessionDriver {
       Ok(generation) => generation,
       Err(_) => return Ok(None),
     };
-    Ok(Some(JoinHint::new(genesis.cluster().clone(), generation)))
+    Ok(Some(JoinHint::new(pointer.cluster().clone(), generation)))
   }
 
   /// Runs the responder (listener) side of one accepted connection.
@@ -180,12 +180,12 @@ impl SessionDriver {
     let first = receive_kind(connection, HandshakeKind::InitiatorHello).await?;
     let peek = peek_initiator_hello(&first.body)?;
 
-    let genesis = existing_cluster(&self.context)
+    let pointer = crate::identity::genesis::local_cluster(&self.context)
       .await?
       .ok_or_else(|| Error::authentication_failed("session cluster"))?;
     // Early rejection before any signing work: the advertised cluster must
     // match this receiver's cluster exactly.
-    if peek.cluster != *genesis.cluster() {
+    if peek.cluster != *pointer.cluster() {
       return Err(Error::authentication_failed("session cluster"));
     }
     let identity = self.context.identity();
@@ -238,7 +238,7 @@ impl SessionDriver {
       HandshakeConfig {
         mode: peek.mode,
         role: Role::Responder,
-        cluster: genesis.cluster().clone(),
+        cluster: pointer.cluster().clone(),
         local_id: identity.node().clone(),
         local_key: identity.public_key().clone(),
         expected_peer,
