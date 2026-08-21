@@ -146,6 +146,7 @@ fn framed(stream: WebSocketStream<TlsStream<TcpStream>>) -> Connection {
     rules: rules(),
     channel_binding: [0; CHANNEL_BINDING_LEN],
     join_hint: None,
+    source: None,
   }
 }
 
