@@ -539,3 +539,85 @@ async fn tls_transport_rejects_malformed_presented_chain() {
   let (client, _server) = connect_to_hostile_server(hostile_server_config(certified)).await;
   assert_eq!(client.unwrap_err().kind(), ErrorKind::AuthenticationFailed);
 }
+
+#[tokio::test]
+async fn tls_transport_split_halves_deliver_many_messages_in_order() {
+  let (client, server) = loopback_pair_with(join_client_config().unwrap(), certificate(17)).await;
+  // The fixed session rule declares packet kind 0x10 only.
+  let mut declared_rules = rules();
+  declared_rules.is_declared = |schema, kind| schema == 1 && kind == 0x10;
+  let client = Connection {
+    rules: declared_rules,
+    ..client
+  };
+  let mut server_rules = rules();
+  server_rules.is_declared = |schema, kind| schema == 1 && kind == 0x10;
+  let server = Connection {
+    rules: server_rules,
+    ..server
+  };
+  let (mut client_writer, _client_reader) = client.into_split();
+  let (_server_writer, mut server_reader) = server.into_split();
+
+  for index in 0..8_u16 {
+    let body = format!("message-{index}").into_bytes();
+    client_writer.send(0x10, &body).await.unwrap();
+  }
+
+  for index in 0..8_u16 {
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), server_reader.receive())
+      .await
+      .expect("reader must not stall")
+      .unwrap()
+      .unwrap();
+    assert_eq!(received.schema_id, 1);
+    assert_eq!(received.kind_id, 0x10);
+    assert_eq!(received.body, format!("message-{index}").into_bytes());
+  }
+
+  drop(client_writer);
+  drop(_client_reader);
+}
+
+#[tokio::test]
+async fn tls_transport_split_burst_after_round_trip_delivers_all_messages() {
+  let (client, server) = loopback_pair_with(join_client_config().unwrap(), certificate(19)).await;
+  let mut both_rules = rules();
+  both_rules.is_declared = |schema, kind| schema == 1 && kind == 0x10;
+  let client = Connection {
+    rules: both_rules,
+    ..client
+  };
+  let server = Connection {
+    rules: both_rules,
+    ..server
+  };
+  let (mut client_writer, mut client_reader) = client.into_split();
+  let (mut server_writer, mut server_reader) = server.into_split();
+
+  // Open round trip: client writes, server reads, server acks, client reads.
+  client_writer.send(0x10, b"open").await.unwrap();
+  let open = server_reader.receive().await.unwrap().unwrap();
+  assert_eq!(open.body, b"open");
+  server_writer.send(0x10, b"ack").await.unwrap();
+  let ack = client_reader.receive().await.unwrap().unwrap();
+  assert_eq!(ack.body, b"ack");
+
+  // Burst: three chunks plus end, exactly the packet data plane pattern.
+  for index in 0..3_u8 {
+    client_writer
+      .send(0x10, format!("chunk-{index}").as_bytes())
+      .await
+      .unwrap();
+  }
+  client_writer.send(0x10, b"end").await.unwrap();
+
+  for expected in ["chunk-0", "chunk-1", "chunk-2", "end"] {
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), server_reader.receive())
+      .await
+      .expect("reader must not stall")
+      .unwrap()
+      .unwrap();
+    assert_eq!(received.body, expected.as_bytes());
+  }
+}

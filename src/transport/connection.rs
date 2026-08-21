@@ -84,6 +84,11 @@ impl Connection {
   pub(crate) async fn accept(
     tcp: TcpStream, config: Arc<ServerConfig>, rules: FrameRules, hint: Option<&JoinHint>,
   ) -> Result<Self> {
+    // The packet data plane is ack-driven with small messages; the kernel
+    // Nagle + delayed-ACK interaction would stall every burst by the
+    // delayed-ACK window, so the transport owns low-latency sockets
+    // (ADR-0007 stream semantics require prompt delivery).
+    let tcp = low_latency(tcp, ProviderErrorContext::TransportAccept)?;
     tracing::debug!("tls connection accepted");
     let tls = TlsAcceptor::from(config)
       .accept(tcp)
@@ -107,6 +112,7 @@ impl Connection {
   pub(crate) async fn connect(
     tcp: TcpStream, config: Arc<ClientConfig>, server_name: ServerName<'static>, rules: FrameRules,
   ) -> Result<Self> {
+    let tcp = low_latency(tcp, ProviderErrorContext::TransportConnect)?;
     tracing::debug!("tls connection established");
     let authority = tcp
       .peer_addr()
@@ -308,6 +314,16 @@ impl ConnectionReader {
       }
     }
   }
+}
+
+/// Disables the kernel Nagle algorithm so ack-driven small-message bursts
+/// are not stalled by the delayed-ACK window (ADR-0007 packet streams are
+/// latency-sensitive and carry no bulk transfer that Nagle would help).
+fn low_latency(tcp: TcpStream, context: ProviderErrorContext) -> Result<TcpStream> {
+  tcp
+    .set_nodelay(true)
+    .map_err(|_| Error::provider(ProviderErrorKind::Io, context))?;
+  Ok(tcp)
 }
 
 /// Reads the RFC 9266 `tls-exporter` channel binding from the local TLS
