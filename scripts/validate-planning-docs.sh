@@ -62,7 +62,7 @@ verify_frozen_document docs/decision-register.toml 19058685bbcc5df01c7cd5f2a8556
 verify_frozen_document docs/scenario-catalog.toml 3c25ea75f8d6853daba0e9e76eed3b5a3b0d76736ca5f472b645c9464e050dd1
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml 33b983a532567d82876b60f503a0fd5c30faff8182ab49af2b78d27f18b97373
+verify_frozen_document docs/task-verification.toml 2144fa98d5018bdbe7330ec1df2eb47d216eea1a924eb66061200ddb39cf7141
 verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
 
 for file in "${TOML_FILES[@]}"; do
@@ -235,7 +235,7 @@ check_g3_entry_map() {
       {task: "T-G03-03", verification: "VERIFY-G03-03", state: "ready", argv: ["scripts/verify-g3-admission.sh"]},
       {task: "T-G03-04", verification: "VERIFY-G03-04", state: "ready", argv: ["scripts/verify-g3-selection.sh"]},
       {task: "T-G03-05", verification: "VERIFY-G03-05", state: "ready", argv: ["scripts/verify-g3-packet-streams.sh"]},
-      {task: "T-G03-06", verification: "VERIFY-G03-06", state: "planned", argv: []}
+      {task: "T-G03-06", verification: "VERIFY-G03-06", state: "ready", argv: ["scripts/verify-g3-hostile.sh"]}
     ] as $expected
     | [.task[] | select(.id | startswith("T-G03-"))]
       == [$expected[] | {id: .task, verification_id: .verification, state, include_quality: true}]
