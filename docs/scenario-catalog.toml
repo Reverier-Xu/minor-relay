@@ -432,7 +432,7 @@ cases = [
   { title = "complete a real exporter-bound WSS join", acceptance = "two loopback nodes complete TLS 1.3 with CertificateVerify validation, derive the same RFC 9266 exporter locally, authenticate both identities, and persist admission", rebaseline = "ADR-0007", threats = [
     "THR-003",
   ] },
-  { title = "stream a direct packet only after authentication", acceptance = "An exact-node packet obtains its core TraceId before body delivery, streams ordered bytes over the authenticated session, and is rejected before incoming-stream admission on unauthenticated or replacement connections.", rebaseline = "ADR-0007", threats = [
+  { title = "stream a direct packet only after authentication", acceptance = "An exact-node packet obtains its core TraceId before body delivery, streams ordered bytes over the authenticated session, and is rejected before incoming-stream admission on unauthenticated or replacement connections. Data-plane diagnostics use the approved tracing facade and exclude credentials, private keys, body bytes, paths, and addresses.", rebaseline = "ADR-0007", threats = [
     "THR-003",
     "THR-004",
   ] },

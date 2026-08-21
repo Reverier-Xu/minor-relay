@@ -10,6 +10,15 @@ amended:
       ephemeral self-signed listener certificates (defaults off, ring provider).
       The durable identity key remains separate; certificates are generated per
       listener, never persisted, and never derived from identity keys.
+  - date: 2026-08-22
+    summary: >-
+      Approve tracing 0.1 as the production diagnostics facade and tracing-subscriber 0.3
+      as a development-only subscriber for test diagnostics (T-G03-02 observability
+      baseline). The facade is a zero-cost no-op without a subscriber, so host
+      applications keep full subscriber choice; it is not feature-gated, keeps MSRV
+      1.97.1, and its exact resolution is pinned by the dependency-graph baseline.
+      From G3 onward every task instruments its owned paths through this facade with
+      secret-safe events (roadmap architecture rule 9).
 deciders: minor-relay maintainers
 ---
 

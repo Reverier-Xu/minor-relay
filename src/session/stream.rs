@@ -27,6 +27,7 @@ use tokio::{
   sync::{mpsc, oneshot, watch},
   task::JoinSet,
 };
+use tracing::{debug, instrument, trace, warn};
 
 use super::driver::EstablishedSession;
 use crate::{
@@ -102,6 +103,7 @@ impl SessionEntry {
 /// shuts down: spawns the writer task, registers the session in the table
 /// (retiring any previous session to the same peer), and serves incoming
 /// packet frames.
+#[instrument(name = "session", skip_all, fields(peer = %session.peer()))]
 pub(crate) async fn run_session(
   connection: Connection, session: EstablishedSession, context: Arc<SessionPacketContext>,
   table: SessionTable, shutdown: watch::Receiver<()>,
@@ -123,10 +125,12 @@ pub(crate) async fn run_session(
       .ok()
       .flatten();
     if let Some(previous) = replaced {
+      debug!("session replaced by a new connection to the same peer");
       retire(&previous);
     }
   }
 
+  debug!("session established; serving packet streams");
   let writer_task = tokio::spawn(run_writer(writer, frames_rx));
   tokio::select! {
     () = read_loop(
@@ -135,8 +139,12 @@ pub(crate) async fn run_session(
       &context,
       &frames,
       &pending_acks,
-    ) => {}
-    () = shutdown_observer(shutdown) => {}
+    ) => {
+      trace!("session reader ended");
+    }
+    () = shutdown_observer(shutdown) => {
+      trace!("session ended by shutdown signal");
+    }
   }
 
   alive.store(false, Ordering::SeqCst);
@@ -145,8 +153,12 @@ pub(crate) async fn run_session(
   // interruption explicitly: pending acks fail with StreamInterrupted and
   // dropped body channels close without an end marker.
   if let Ok(mut pending) = pending_acks.lock() {
+    let interrupted = pending.len();
     for (_, notify) in pending.drain() {
       let _ = notify.send(Err(ErrorKind::StreamInterrupted));
+    }
+    if interrupted > 0 {
+      debug!(interrupted, "session closed pending admissions");
     }
   }
 }
@@ -175,9 +187,12 @@ async fn run_writer(mut writer: ConnectionWriter, mut frames: mpsc::Receiver<Ses
       .await
       .is_err()
     {
+      warn!(kind = ?frame.kind, "session writer send failed");
       return;
     }
+    trace!(kind = ?frame.kind, "session frame sent");
   }
+  trace!("session writer channel closed");
 }
 
 /// Serves incoming packet frames until the connection closes or a frame
@@ -192,13 +207,26 @@ async fn read_loop(
   loop {
     let message = match reader.receive().await {
       Ok(Some(message)) => message,
-      Ok(None) | Err(_) => break,
+      Ok(None) => {
+        trace!("session read ended orderly");
+        break;
+      }
+      Err(error) => {
+        warn!(kind = ?error.kind(), "session receive failed");
+        break;
+      }
     };
     let Some(kind) = crate::protocol::wire::lookup_packet(message.schema_id, message.kind_id)
     else {
       // An established session carries packet kinds only.
+      warn!(
+        schema_id = message.schema_id,
+        kind_id = message.kind_id,
+        "unknown packet kind on session"
+      );
       break;
     };
+    trace!(kind = ?kind, "session frame received");
     match kind {
       PacketKind::Open => match wire::decode_open(&message.body) {
         Ok(open) => {
@@ -216,27 +244,41 @@ async fn read_loop(
             break;
           }
         }
-        Err(_) => break,
+        Err(_) => {
+          warn!("malformed packet open frame");
+          break;
+        }
       },
       PacketKind::Chunk => match wire::decode_chunk(&message.body) {
         Ok(chunk) => {
           if !forward_chunk(chunk, &mut incoming).await {
+            warn!("incoming chunk sequence violation; closing session");
             break;
           }
         }
-        Err(_) => break,
+        Err(_) => {
+          warn!("malformed packet chunk frame");
+          break;
+        }
       },
       PacketKind::End => match wire::decode_end(&message.body) {
         Ok(end) => {
+          trace!(trace_id = %end.trace_id, "incoming stream ended");
           if let Some((stream, _)) = incoming.remove(&end.trace_id) {
             let _ = stream.send(StreamItem::End).await;
           }
         }
-        Err(_) => break,
+        Err(_) => {
+          warn!("malformed packet end frame");
+          break;
+        }
       },
       PacketKind::Ack => match wire::decode_ack(&message.body) {
         Ok(ack) => resolve_ack(ack, pending_acks),
-        Err(_) => break,
+        Err(_) => {
+          warn!("malformed packet ack frame");
+          break;
+        }
       },
     }
   }
@@ -251,6 +293,7 @@ async fn admit_open(
   incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>, consumers: &mut JoinSet<()>,
 ) -> Result<()> {
   let trace_id = open.trace_id.clone();
+  let ack_protocol = open.protocol.clone();
   let status = if open.source != *session.peer() || open.destination != *context.local() {
     // Endpoints must match the session-authenticated identities exactly.
     AckStatus::Unsupported
@@ -277,8 +320,14 @@ async fn admit_open(
             ChannelBody::new(body),
           );
           let consumer = Arc::clone(&registration.consumer);
+          let consumer_trace = trace_id.clone();
           consumers.spawn(async move {
-            let _ = consumer.accept(packet).await;
+            let result = consumer.accept(packet).await;
+            debug!(
+              trace_id = %consumer_trace,
+              ok = result.is_ok(),
+              "packet consumer finished"
+            );
           });
           AckStatus::Admitted
         }
@@ -289,10 +338,16 @@ async fn admit_open(
     }
   };
   let ack = AckFrame {
-    trace_id,
+    trace_id: trace_id.clone(),
     status,
     admitted_at_millis: now_millis(),
   };
+  debug!(
+    trace_id = %ack.trace_id,
+    protocol = %ack_protocol,
+    ?ack.status,
+    "packet admission outcome"
+  );
   let body = wire::encode_ack(&ack)?;
   frames
     .send(SessionFrame {
@@ -316,6 +371,12 @@ async fn forward_chunk(
     return false;
   }
   *expected = expected.saturating_add(1);
+  trace!(
+    trace_id = %chunk.trace_id,
+    sequence = chunk.sequence,
+    bytes = chunk.bytes.len(),
+    "incoming chunk forwarded"
+  );
   let bytes: Arc<[u8]> = Arc::from(chunk.bytes.as_slice());
   if stream.send(StreamItem::Chunk(bytes)).await.is_err() {
     // The consumer is gone; terminate the incoming stream.
@@ -339,6 +400,7 @@ fn resolve_ack(
       AckStatus::Unsupported => Err(ErrorKind::Unsupported),
       AckStatus::Overloaded => Err(ErrorKind::Overloaded),
     };
+    trace!(trace_id = %ack.trace_id, ?ack.status, "admission ack resolved");
     let _ = notify.send(outcome);
   }
 }
@@ -347,12 +409,18 @@ fn resolve_ack(
 /// ordered chunks, end. Updates the in-memory route record and notifies
 /// the synchronous waiter of the admission outcome (ADR-0007: the ack
 /// proves current-process admission only).
+#[instrument(name = "packet", skip_all, fields(
+  trace_id = %request.trace_id,
+  destination = %request.destination,
+  local = %local,
+))]
 pub(crate) async fn run_outbound(
   entry: SessionEntry, local: NodeId, request: OutboundRequest, routes: RouteTable,
 ) {
   let trace_id = request.trace_id.clone();
   let (ack_tx, ack_rx) = oneshot::channel();
   if !entry.alive() {
+    debug!("packet rejected: session not alive");
     request.reject(ErrorKind::StreamInterrupted);
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
@@ -407,11 +475,13 @@ pub(crate) async fn run_outbound(
     });
     return;
   }
+  trace!("packet open queued");
 
   // Wait for the destination's current-process admission before streaming
   // body chunks; a dead session resolves the wait with StreamInterrupted.
   let outcome = ack_rx.await.unwrap_or(Err(ErrorKind::StreamInterrupted));
   let _ = request.ack_notify.send(outcome);
+  debug!(admitted = outcome.is_ok(), "packet admission acknowledged");
   if let Err(kind) = outcome {
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(kind));
@@ -463,6 +533,7 @@ pub(crate) async fn run_outbound(
           });
           return;
         }
+        trace!(sequence, bytes = forwarded, "packet chunk queued");
         update_route(&routes, &trace_id, |record| {
           record.forward(forwarded);
         });
@@ -503,6 +574,7 @@ pub(crate) async fn run_outbound(
       record.update(RouteState::Delivered);
     }
   });
+  debug!(interrupted, "packet stream finished");
 }
 
 /// Inserts one route record under the configured capacity, evicting the

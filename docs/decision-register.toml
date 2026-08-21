@@ -290,3 +290,24 @@ value = "1.97.1"
 unit = "Rust version"
 owner_task = "T-G00-04"
 source = "ADR-0004#rust-support-policy"
+
+[[constant]]
+id = "observability.diagnostics-facade"
+value = "tracing"
+unit = "crate"
+owner_task = "T-G03-02"
+source = "ADR-0004#observability-facade"
+
+[[constant]]
+id = "observability.default-level"
+value = "debug"
+unit = "level"
+owner_task = "T-G03-02"
+source = "implementation-plan#observability-discipline"
+
+[[constant]]
+id = "observability.excluded-classes"
+value = "credential,private-key,provider-handle,body,path,address"
+unit = "class"
+owner_task = "T-G03-02"
+source = "roadmap#architecture-rule-9"

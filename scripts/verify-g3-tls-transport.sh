@@ -31,3 +31,12 @@ cargo test --locked --lib tls_transport
 cargo test --locked --test secure_join secure_join -- --list > "$TMP/secure-join.list"
 require_nonempty_tests secure_join "$TMP/secure-join.list"
 cargo test --locked --test secure_join secure_join
+
+# Observability discipline (T-G03-02 baseline): production diagnostics flow
+# through the tracing facade, never ad-hoc console output. The JSON native
+# subprocess harness legitimately signals readiness on stdout and the build
+# script reports failures on stderr; everything else must use tracing.
+if rg -n 'eprintln!|println!' src/ | rg -v '^src/storage/json/native.rs'; then
+  printf 'ad-hoc console logging detected in src/ (use the tracing facade instead)\n' >&2
+  exit 1
+fi

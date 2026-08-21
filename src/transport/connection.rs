@@ -84,6 +84,7 @@ impl Connection {
   pub(crate) async fn accept(
     tcp: TcpStream, config: Arc<ServerConfig>, rules: FrameRules, hint: Option<&JoinHint>,
   ) -> Result<Self> {
+    tracing::debug!("tls connection accepted");
     let tls = TlsAcceptor::from(config)
       .accept(tcp)
       .await
@@ -106,6 +107,7 @@ impl Connection {
   pub(crate) async fn connect(
     tcp: TcpStream, config: Arc<ClientConfig>, server_name: ServerName<'static>, rules: FrameRules,
   ) -> Result<Self> {
+    tracing::debug!("tls connection established");
     let authority = tcp
       .peer_addr()
       .map_err(|_| {
@@ -250,6 +252,7 @@ impl ConnectionWriter {
     let mut frame = Vec::with_capacity(PRELUDE_LEN + body.len());
     frame.extend_from_slice(&Prelude::new(BASE_SCHEMA_ID, kind_id, 0, body_len).encode());
     frame.extend_from_slice(body);
+    tracing::trace!(kind_id, body_len, "wire message sent");
     self
       .sink
       .send(WsMessage::binary(frame))
@@ -284,6 +287,13 @@ impl ConnectionReader {
             rules.receive_limit,
             rules.is_declared,
           )?;
+          tracing::trace!(
+            schema_id = prelude.schema_id(),
+            kind_id = prelude.kind_id(),
+            flags = prelude.flags(),
+            body_len = body.len(),
+            "wire message received"
+          );
           return Ok(Some(Message {
             schema_id: prelude.schema_id(),
             kind_id: prelude.kind_id(),

@@ -21,6 +21,19 @@ minicbor owns deterministic CBOR; Rustls/Tungstenite provide TLS 1.3 WebSockets;
 is feature-gated production storage; test/evidence tools remain development-only. New dependencies
 require a plan amendment.
 
+Amendment (T-G03-02 observability baseline): `tracing` is an approved production diagnostics facade
+(zero-cost no-op without a subscriber; host applications own their subscriber) and
+`tracing-subscriber` remains development-only for test diagnostics. ADR-0004 records the rationale;
+the dependency-graph baseline pins the exact resolution.
+
+## Observability Discipline
+
+From G3 onward every task instruments its owned paths with the approved `tracing` facade and keeps
+diagnostics secret-safe (roadmap architecture rule 9): no credentials, private keys, provider
+handles, body bytes, or unredacted paths and addresses in any emitted event, span, or error context.
+Tests remain the primary evidence; tracing events support debugging and operational observability and
+never replace assertions. T-G10-05 still owns the bounded public observability API surface.
+
 ## Critical Path
 
 `G0 -> G1 -> G2 -> G3 -> G4 -> G5 -> G6 -> G7 -> G8 -> G9 -> G10`
@@ -61,7 +74,7 @@ require a plan amendment.
 | Task | Risk | Depends | Deliverable / exact API impact | Owned paths | Evidence | RB |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-G03-01 Authenticated handshake/vectors | P0/H | G2 PASS | Genesis receiver, protocol/feature definitions, exact intersection, canonical authentication vectors | identity/protocol fixtures | SC-G03-P0-01..04; registry/vector/state tests | R1 |
-| T-G03-02 Real TLS WebSocket packet | P0/H | 03-01 | Listen/join and exact-node outgoing/incoming packet streams over real TLS 1.3 WebSocket | transport/packet facade/E2E | SC-G03-P0-05..06; secure join/stream integration | R1 |
+| T-G03-02 Real TLS WebSocket packet | P0/H | 03-01 | Listen/join and exact-node outgoing/incoming packet streams over real TLS 1.3 WebSocket; approved secret-safe tracing observability baseline for the data plane (plan amendment, ADR-0004) | transport/packet facade/E2E | SC-G03-P0-05..06; secure join/stream integration | R1 |
 | T-G03-03 Atomic admission/reconciliation | P0/H | 03-02 | Commit binding/use/grant once and reconcile every indeterminate outcome without duplicate subject | identity/admission | SC-G03-P0-07..09; every commit/result boundary | R2 |
 | T-G03-04 Feature selection/reconnect | P0/H | 03-03 | Exact signed intersection/effective limits, required-feature refusal, credential-free reconnect | negotiation/session | SC-G03-P0-10..14, E2E-01; downgrade/reconnect matrix | R2 |
 | T-G03-05 Bidirectional packet streams | P0/H | 03-02,04 | Immediate core TraceId, ordered full-duplex streams, bounded incoming admission, explicit disconnect failure | packet/session | SC-G03-P0-15..17; order/backpressure/interruption suite | R2 |
