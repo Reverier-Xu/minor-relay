@@ -97,7 +97,13 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   let client = RuntimeClient::new(control_tx, state_rx, routes, packet_tx.clone());
   dependencies.packet_tx = Some(packet_tx);
 
-  runtime.spawn(supervise(dependencies, control_rx, packet_rx, state_tx, ready_tx));
+  runtime.spawn(supervise(
+    dependencies,
+    control_rx,
+    packet_rx,
+    state_tx,
+    ready_tx,
+  ));
 
   ready_rx
     .await
