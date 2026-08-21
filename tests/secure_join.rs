@@ -557,3 +557,400 @@ async fn secure_join_rotation_keeps_members_and_reconnect_is_credential_free() {
   restarted.handle.command(Shutdown::new()).await.unwrap();
   receiver.handle.command(Shutdown::new()).await.unwrap();
 }
+
+// ---- T-G03-05 bidirectional packet streams evidence (SC-G03-P0-15..17) ----
+
+use tokio::sync::Notify;
+
+/// A packet body that stalls on the first chunk until released, then ends.
+#[derive(Debug)]
+struct BlockingBody {
+  release: Arc<Notify>,
+  released: bool,
+}
+
+impl PacketBody for BlockingBody {
+  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+    if self.released {
+      return Box::pin(async move { Ok(None) });
+    }
+    self.released = true;
+    Box::pin(async move {
+      self.release.notified().await;
+      Ok(Some(Arc::from(&b"held"[..])))
+    })
+  }
+}
+
+/// A consumer that records packet traces, bodies, and terminal errors.
+#[derive(Debug, Default)]
+struct RecordingConsumer {
+  packets: StdMutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl minor_relay::PacketConsumer for RecordingConsumer {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, minor_relay::Result<()>> {
+    Box::pin(async move {
+      let mut body = Vec::new();
+      while let Some(chunk) = packet.body().next_chunk().await? {
+        body.extend_from_slice(&chunk);
+      }
+      self
+        .packets
+        .lock()
+        .unwrap()
+        .push((packet.trace_id().to_string(), body));
+      Ok(())
+    })
+  }
+}
+
+/// A consumer that derives a caller-owned return packet (endpoint swap,
+/// trace-id reuse) and sends it back to the authenticated source.
+#[derive(Debug, Default)]
+struct ReplyConsumer {
+  pings: StdMutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl minor_relay::PacketConsumer for ReplyConsumer {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, minor_relay::Result<()>> {
+    Box::pin(async move {
+      let mut body = Vec::new();
+      while let Some(chunk) = packet.body().next_chunk().await? {
+        body.extend_from_slice(&chunk);
+      }
+      let trace = packet.trace_id().clone();
+      self.pings.lock().unwrap().push((trace.to_string(), body));
+      let reply = packet
+        .derive_return_packet(
+          ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+          PacketMetadata::new(),
+        )
+        .unwrap();
+      assert_eq!(
+        reply.trace_id(),
+        &trace,
+        "derived reply reuses the trace id"
+      );
+      reply
+        .send_sync(Box::new(VecBody::new(vec![b"reply"])))
+        .await?;
+      Ok(())
+    })
+  }
+}
+
+async fn start_with_config<C: minor_relay::PacketConsumer + Send + Sync + 'static>(
+  storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
+  consumer: Arc<C>, config: minor_relay::NodeConfig,
+) -> NodeHandle {
+  let mut extensions = ExtensionRegistry::new();
+  extensions.register_protocol(definition, consumer).unwrap();
+  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  NodeBuilder::new(factory, keys)
+    .extensions(extensions)
+    .config(config)
+    .start()
+    .await
+    .unwrap()
+}
+
+async fn start_with_reply_consumer(
+  storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
+  consumer: Arc<ReplyConsumer>,
+) -> NodeHandle {
+  let mut extensions = ExtensionRegistry::new();
+  extensions.register_protocol(definition, consumer).unwrap();
+  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  NodeBuilder::new(factory, keys)
+    .extensions(extensions)
+    .start()
+    .await
+    .unwrap()
+}
+
+async fn round_trip_to(
+  sender: &NodeHandle, target: &minor_relay::NodeId, body: &[&'static [u8]],
+  collector: &Arc<Collector>,
+) -> minor_relay::TraceId {
+  let packet = sender
+    .create_packet(
+      PacketTarget::Exact(target.clone()),
+      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      policy(),
+      metadata(),
+    )
+    .unwrap();
+  let trace = packet.trace_id().clone();
+  packet
+    .send_sync(Box::new(VecBody::new(body.to_vec())))
+    .await
+    .unwrap();
+  for _ in 0..4096 {
+    if !collector.packets.lock().unwrap().is_empty() {
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
+  let packets = collector.packets.lock().unwrap().clone();
+  assert_eq!(packets.len(), 1, "one ordered packet must arrive");
+  trace
+}
+
+/// SC-G03-P0-15: both peers stream concurrent packets over one session;
+/// each incoming stream preserves its endpoints, trace id, metadata, and
+/// byte order.
+#[tokio::test]
+async fn secure_join_packets_flow_concurrently_in_both_directions() {
+  let receiver_collector = Arc::new(Collector::default());
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(100_000)),
+      protocol("test-echo"),
+      Arc::clone(&receiver_collector),
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  let collector = Arc::new(Collector::default());
+  let joiner_handle = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(101_000)),
+    protocol("test-echo"),
+    collector.clone(),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let admission = joiner_handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+  let joiner_id = admission.admitted_node().clone();
+
+  let (east_trace, west_trace) = tokio::join!(
+    async {
+      round_trip_to(
+        &receiver.handle,
+        &joiner_id,
+        &[b"east", b"bound"],
+        &collector,
+      )
+      .await
+    },
+    async {
+      round_trip_to(
+        &joiner_handle,
+        &receiver_id,
+        &[b"west", b"bound"],
+        &receiver_collector,
+      )
+      .await
+    }
+  );
+  assert_ne!(east_trace, west_trace);
+  assert_eq!(collector.packets.lock().unwrap().clone()[0].1, b"eastbound");
+  assert_eq!(
+    receiver_collector.packets.lock().unwrap().clone()[0].1,
+    b"westbound"
+  );
+
+  joiner_handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}
+
+/// SC-G03-P0-16: a caller derives a return packet by swapping endpoints
+/// and reusing the incoming trace id; core assigns no return meaning.
+#[tokio::test]
+async fn secure_join_derived_return_packet_reuses_trace_id() {
+  let reply_consumer = Arc::new(ReplyConsumer::default());
+  let reply_collector = Arc::new(Collector::default());
+  let receiver = Node {
+    handle: start_with_reply_consumer(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(110_000)),
+      protocol("test-echo"),
+      Arc::clone(&reply_consumer),
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  let joiner_handle = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(111_000)),
+    protocol("test-echo"),
+    reply_collector.clone(),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let admission = joiner_handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+  let _joiner_id = admission.admitted_node().clone();
+
+  let trace = round_trip_to(&joiner_handle, &receiver_id, &[b"ping"], &reply_collector).await;
+  let pings = reply_consumer.pings.lock().unwrap().clone();
+  assert_eq!(
+    pings.len(),
+    1,
+    "receiver consumer must see the original ping"
+  );
+  assert_eq!(pings[0].0, trace.to_string(), "trace id preserved inbound");
+  assert_eq!(pings[0].1, b"ping");
+  let replies = reply_collector.packets.lock().unwrap().clone();
+  assert_eq!(replies.len(), 1);
+  assert_eq!(
+    replies[0].0,
+    trace.to_string(),
+    "derived reply reuses the trace id"
+  );
+  assert_eq!(replies[0].1, b"reply");
+
+  joiner_handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}
+
+/// SC-G03-P0-17: bounded incoming-stream admission returns typed
+/// backpressure at the configured capacity, and release frees every slot.
+#[tokio::test]
+async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers() {
+  let config = minor_relay::NodeConfig::new()
+    .with_session_queue_limits(4, 65_536)
+    .unwrap();
+  let recorder = Arc::new(RecordingConsumer::default());
+  let receiver = Node {
+    handle: start_with_config(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(120_000)),
+      protocol("test-echo"),
+      Arc::clone(&recorder),
+      config,
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  let joiner_handle = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(121_000)),
+    protocol("test-echo"),
+    Arc::new(Collector::default()),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let admission = joiner_handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+  let _joiner_id = admission.admitted_node().clone();
+
+  let release = Arc::new(Notify::new());
+  let protocol_tag = ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap();
+  for _ in 0..4 {
+    let packet = joiner_handle
+      .create_packet(
+        PacketTarget::Exact(receiver_id.clone()),
+        protocol_tag.clone(),
+        policy(),
+        metadata(),
+      )
+      .unwrap();
+    packet
+      .send_sync(Box::new(BlockingBody {
+        release: release.clone(),
+        released: false,
+      }))
+      .await
+      .unwrap();
+  }
+
+  let packet = joiner_handle
+    .create_packet(
+      PacketTarget::Exact(receiver_id.clone()),
+      protocol_tag.clone(),
+      policy(),
+      metadata(),
+    )
+    .unwrap();
+  let error = packet
+    .send_sync(Box::new(VecBody::new(vec![b"overflow"])))
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::Overloaded);
+
+  release.notify_waiters();
+  for _ in 0..4096 {
+    if recorder.packets.lock().unwrap().len() >= 4 {
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
+  assert_eq!(recorder.packets.lock().unwrap().len(), 4);
+  let packet = joiner_handle
+    .create_packet(
+      PacketTarget::Exact(receiver_id.clone()),
+      protocol_tag,
+      policy(),
+      metadata(),
+    )
+    .unwrap();
+  packet
+    .send_sync(Box::new(VecBody::new(vec![b"after"])))
+    .await
+    .unwrap();
+  for _ in 0..4096 {
+    if recorder.packets.lock().unwrap().len() >= 5 {
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
+  assert_eq!(recorder.packets.lock().unwrap().len(), 5);
+
+  joiner_handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}

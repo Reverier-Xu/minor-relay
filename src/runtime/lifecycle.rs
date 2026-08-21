@@ -117,9 +117,7 @@ impl RuntimeClient {
   /// outbound packets but holds no node-command sender, so an admitted
   /// packet's reply capability never keeps the supervisor's command
   /// channel open after the last `NodeHandle` drops.
-  pub(crate) fn routing_only(
-    packet: mpsc::Sender<OutboundRequest>, routes: RouteTable,
-  ) -> Self {
+  pub(crate) fn routing_only(packet: mpsc::Sender<OutboundRequest>, routes: RouteTable) -> Self {
     Self {
       control: None,
       state: watch::channel(LifecycleSnapshot::running()).1,
@@ -227,21 +225,20 @@ impl RuntimeClient {
   /// acknowledgement channel and route records, never through the node
   /// command bus.
   pub(crate) async fn send_packet(&self, request: OutboundRequest) -> Result<()> {
-    self.packet.send(request).await.map_err(|_| {
-      Error::shutting_down("node routing")
-    })
+    self
+      .packet
+      .send(request)
+      .await
+      .map_err(|_| Error::shutting_down("node routing"))
   }
 
   /// The non-blocking variant behind `send_async`: queue saturation is a
   /// typed overload, never an unbounded queue.
   pub(crate) fn try_send_packet(&self, request: OutboundRequest) -> Result<()> {
-    self
-      .packet
-      .try_send(request)
-      .map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => Error::overloaded("node routing"),
-        mpsc::error::TrySendError::Closed(_) => Error::shutting_down("node routing"),
-      })
+    self.packet.try_send(request).map_err(|error| match error {
+      mpsc::error::TrySendError::Full(_) => Error::overloaded("node routing"),
+      mpsc::error::TrySendError::Closed(_) => Error::shutting_down("node routing"),
+    })
   }
 
   /// Reads one in-memory route record (ADR-0007: bounded trace metadata
