@@ -304,7 +304,9 @@ impl Handshake {
     self.transcript.as_deref().map(body_digest)
   }
 
-  /// The locally computed deterministic selection bytes.
+  /// The locally computed deterministic selection bytes (G3-04 exposes
+  /// them through session evidence).
+  #[allow(dead_code)]
   pub(crate) fn selection_bytes(&self) -> Option<&[u8]> {
     self.selection.as_ref().map(Selection::bytes)
   }
@@ -460,6 +462,14 @@ impl Handshake {
   /// The received admission grant bytes, once position six completed.
   pub(crate) fn grant_delivery(&self) -> Option<&[u8]> {
     self.grant.as_deref()
+  }
+
+  /// The peer's validated identity, once its hello was received.
+  pub(crate) fn peer_identity(&self) -> Option<(&NodeId, &PublicKey)> {
+    self
+      .peer_hello
+      .as_ref()
+      .map(|hello| (&hello.node_id, &hello.public_key))
   }
 
   /// Validates and consumes one inbound canonical message, rejecting
@@ -714,6 +724,49 @@ impl Handshake {
     self.grant = Some(wire.grant.to_vec());
     Ok(())
   }
+}
+
+/// A read-only structural view of a position-1 initiator hello.
+///
+/// The session driver peeks the first inbound message to resolve the
+/// authentication mode and the member-mode expected binding before the
+/// responder state machine exists. Peeking validates the canonical encoding
+/// but performs no state-machine checks; the same bytes must still be fed
+/// to [`Handshake::receive`], which revalidates everything.
+#[derive(Clone, Debug)]
+pub(crate) struct InitiatorHelloPeek {
+  pub(crate) mode: HandshakeMode,
+  pub(crate) generation: Option<[u8; GENERATION_LEN]>,
+  pub(crate) cluster: ClusterId,
+  pub(crate) node_id: NodeId,
+  pub(crate) public_key: PublicKey,
+}
+
+/// Decodes a position-1 initiator hello for pre-configuration inspection.
+pub(crate) fn peek_initiator_hello(bytes: &[u8]) -> Result<InitiatorHelloPeek, HandshakeError> {
+  validate_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
+  let wire: InitiatorHelloWire = decode_wire(bytes)?;
+  if wire.kind != KIND_INITIATOR_HELLO {
+    return Err(HandshakeError::Malformed {
+      context: "handshake message kind",
+    });
+  }
+  let mode = HandshakeMode::parse(&wire.mode)?;
+  let generation = optional_bytes::<GENERATION_LEN>(wire.generation, "handshake generation")?;
+  let cluster = ClusterId::parse(&wire.cluster).map_err(|_| HandshakeError::Malformed {
+    context: "handshake cluster",
+  })?;
+  let node_id = NodeId::parse(&wire.node_id).map_err(|_| HandshakeError::Malformed {
+    context: "handshake node id",
+  })?;
+  let public_key = fixed_bytes::<PUBLIC_KEY_LEN>(&wire.public_key, "handshake public key")?;
+  Ok(InitiatorHelloPeek {
+    mode,
+    generation,
+    cluster,
+    node_id,
+    public_key: PublicKey::from_bytes(public_key),
+  })
 }
 
 /// The exact ADR-0001 responder session-signature payload:

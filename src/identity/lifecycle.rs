@@ -66,10 +66,6 @@ impl LocalIdentityContext {
   pub(crate) const fn identity(&self) -> &LocalIdentityV1 {
     &self.identity
   }
-
-  pub(crate) fn into_parts(self) -> (MetadataStore, LocalIdentityV1) {
-    (self.store, self.identity)
-  }
 }
 
 /// Opens or creates the local node identity with exact crash recovery.
@@ -539,8 +535,6 @@ mod tests {
   enum CreateScript {
     Apply,
     ApplyReportUnknown,
-    ReportAbsent,
-    HangWithoutApply,
   }
 
   #[derive(Debug)]
@@ -661,8 +655,6 @@ mod tests {
             self.inner.apply_create(operation);
             Ok(KeyCreateState::Unknown)
           }
-          CreateScript::ReportAbsent => Ok(KeyCreateState::Absent),
-          CreateScript::HangWithoutApply => future::pending().await,
         }
       })
     }

@@ -69,10 +69,15 @@ pub(crate) struct Selection {
 }
 
 impl Selection {
+  /// The selected feature set; surfaced to callers by G3-04's selection
+  /// evidence.
+  #[allow(dead_code)]
   pub(crate) fn features(&self) -> &[FeatureTag] {
     &self.features
   }
 
+  /// The effective negotiated limits; surfaced by G3-04.
+  #[allow(dead_code)]
   pub(crate) fn limits(&self) -> &[(QualifiedTag, u64)] {
     &self.limits
   }
@@ -82,6 +87,8 @@ impl Selection {
     &self.bytes
   }
 
+  /// One effective limit by tag (G3-04 selection evidence).
+  #[allow(dead_code)]
   pub(crate) fn limit(&self, tag: &QualifiedTag) -> Option<u64> {
     self
       .limits

@@ -42,18 +42,30 @@ impl SequenceEntropy {
   pub(crate) fn fills(&self) -> u128 {
     *self.0.lock().unwrap()
   }
+
+  /// Starts the deterministic sequence at `offset` so two test nodes never
+  /// derive the same identities.
+  pub(crate) fn starting_at(offset: u128) -> Self {
+    Self(Mutex::new(offset))
+  }
 }
 
 impl Entropy for SequenceEntropy {
   fn fill(&self, output: &mut [u8]) -> Result<()> {
-    if output.len() != 16 {
-      return Err(Error::internal("sequence entropy length"));
+    // Deterministic per-call sequence: each fill draws sequential 16-byte
+    // blocks, so 16- and 32-byte requests both remain deterministic.
+    let mut offset = 0;
+    while offset < output.len() {
+      let mut next = self.0.lock().unwrap();
+      *next = next
+        .checked_add(1)
+        .ok_or_else(|| Error::internal("sequence entropy exhausted"))?;
+      let block = next.to_be_bytes();
+      drop(next);
+      let take = (output.len() - offset).min(16);
+      output[offset..offset + take].copy_from_slice(&block[..take]);
+      offset += take;
     }
-    let mut next = self.0.lock().unwrap();
-    *next = next
-      .checked_add(1)
-      .ok_or_else(|| Error::internal("sequence entropy exhausted"))?;
-    output.copy_from_slice(&next.to_be_bytes());
     Ok(())
   }
 }
@@ -112,6 +124,12 @@ pub(crate) fn scripted_signing(index: u64) -> SigningKey {
 
 impl ScriptedKeys {
   pub(crate) fn full() -> Arc<Self> {
+    Self::full_at(0)
+  }
+
+  /// Starts handle allocation at `base` so distinct test nodes never share
+  /// a key pair.
+  pub(crate) fn full_at(base: u64) -> Arc<Self> {
     Arc::new(Self {
       inner: Arc::new(ScriptedKeyInner {
         records: Mutex::new(BTreeMap::new()),
@@ -119,7 +137,7 @@ impl ScriptedKeys {
         calls: Mutex::new(Vec::new()),
         sign_script: Mutex::new(VecDeque::new()),
         delete_script: Mutex::new(VecDeque::new()),
-        next_handle: AtomicUsize::new(0),
+        next_handle: AtomicUsize::new(base as usize),
       }),
     })
   }

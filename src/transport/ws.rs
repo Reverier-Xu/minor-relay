@@ -20,15 +20,80 @@ use tokio_tungstenite::{
   WebSocketStream, accept_hdr_async_with_config, client_async_with_config,
   tungstenite::{
     handshake::server::{ErrorResponse, Request, Response},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     protocol::WebSocketConfig,
   },
 };
 
-use crate::{Error, Result, protocol::PRELUDE_LEN};
+use crate::{ClusterId, Error, Result, protocol::PRELUDE_LEN};
 
 /// The fixed WebSocket upgrade path.
 pub(crate) const WS_PATH: &str = "/mrly";
+
+/// The response header carrying the listener's non-secret cluster ID hint.
+pub(crate) const CLUSTER_HINT_HEADER: &str = "mrly-cluster";
+
+/// The response header carrying the listener's non-secret join credential
+/// generation ID hint (32 lowercase hexadecimal characters).
+pub(crate) const GENERATION_HINT_HEADER: &str = "mrly-generation";
+
+/// The non-secret join routing hints a listener publishes inside the TLS
+/// channel during the WebSocket upgrade.
+///
+/// Both values are ADR-0001 transcript inputs (cluster ID, non-secret
+/// credential generation ID) and are never trusted on receipt: the joiner
+/// uses them only to construct its hello, the state machine equality-checks
+/// them against the responder's own configuration, and the final signed
+/// admission grant is verified before any cluster adoption.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct JoinHint {
+  cluster: ClusterId,
+  generation: [u8; 16],
+}
+
+impl JoinHint {
+  pub(crate) const fn new(cluster: ClusterId, generation: [u8; 16]) -> Self {
+    Self {
+      cluster,
+      generation,
+    }
+  }
+
+  pub(crate) const fn cluster(&self) -> &ClusterId {
+    &self.cluster
+  }
+
+  pub(crate) const fn generation(&self) -> &[u8; 16] {
+    &self.generation
+  }
+}
+
+fn generation_hex(generation: &[u8; 16]) -> String {
+  let mut text = String::with_capacity(32);
+  for byte in generation {
+    text.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+    text.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
+  }
+  text
+}
+
+fn parse_generation_hex(text: &str) -> Result<[u8; 16]> {
+  let error = || Error::invalid_input("websocket hint");
+  if text.len() != 32 {
+    return Err(error());
+  }
+  let mut generation = [0_u8; 16];
+  for (index, byte) in generation.iter_mut().enumerate() {
+    let high = text.as_bytes()[index * 2];
+    let low = text.as_bytes()[index * 2 + 1];
+    let (Some(high), Some(low)) = (char::from(high).to_digit(16), char::from(low).to_digit(16))
+    else {
+      return Err(error());
+    };
+    *byte = u8::try_from((high << 4) | low).map_err(|_| error())?;
+  }
+  Ok(generation)
+}
 
 /// The aggregate WebSocket message limit: ADR-0002's 65,536-byte
 /// handshake/control body ceiling plus one 16-byte prelude.
@@ -42,27 +107,52 @@ fn config() -> WebSocketConfig {
 }
 
 /// Accepts the server half of a WebSocket upgrade over an established TLS
-/// stream. Only `GET /mrly` upgrades are accepted.
-pub(crate) async fn accept<Stream>(stream: Stream) -> Result<WebSocketStream<Stream>>
+/// stream. Only `GET /mrly` upgrades are accepted. When the listener can
+/// admit joiners, `hint` publishes the non-secret cluster and credential
+/// generation IDs as response headers inside the TLS channel.
+pub(crate) async fn accept<Stream>(
+  stream: Stream, hint: Option<&JoinHint>,
+) -> Result<WebSocketStream<Stream>>
 where
   Stream: AsyncRead + AsyncWrite + Unpin, {
-  accept_hdr_async_with_config(stream, check_path, Some(config()))
+  #[allow(clippy::result_large_err)]
+  let check = move |request: &Request, response: Response| check_path(request, response, hint);
+  accept_hdr_async_with_config(stream, check, Some(config()))
     .await
     .map_err(|_| Error::invalid_input("websocket accept"))
 }
 
 /// Runs the client half of a WebSocket upgrade over an established TLS
-/// stream, requesting the fixed `/mrly` path.
+/// stream, requesting the fixed `/mrly` path. Returns the stream and the
+/// listener's non-secret join hints, when it published any.
 pub(crate) async fn connect<Stream>(
   stream: Stream, authority: &str,
-) -> Result<WebSocketStream<Stream>>
+) -> Result<(WebSocketStream<Stream>, Option<JoinHint>)>
 where
   Stream: AsyncRead + AsyncWrite + Unpin, {
   let request = format!("wss://{authority}{WS_PATH}");
-  let (stream, _response) = client_async_with_config(request, stream, Some(config()))
+  let (stream, response) = client_async_with_config(request, stream, Some(config()))
     .await
     .map_err(|_| Error::invalid_input("websocket connect"))?;
-  Ok(stream)
+  Ok((stream, parse_hint(response.headers())?))
+}
+
+fn parse_hint(
+  headers: &tokio_tungstenite::tungstenite::http::HeaderMap,
+) -> Result<Option<JoinHint>> {
+  let error = || Error::invalid_input("websocket hint");
+  let clusters: Vec<_> = headers.get_all(CLUSTER_HINT_HEADER).iter().collect();
+  let generations: Vec<_> = headers.get_all(GENERATION_HINT_HEADER).iter().collect();
+  if clusters.is_empty() && generations.is_empty() {
+    return Ok(None);
+  }
+  if clusters.len() != 1 || generations.len() != 1 {
+    return Err(error());
+  }
+  let cluster =
+    ClusterId::parse(clusters[0].to_str().map_err(|_| error())?).map_err(|_| error())?;
+  let generation = parse_generation_hex(generations[0].to_str().map_err(|_| error())?)?;
+  Ok(Some(JoinHint::new(cluster, generation)))
 }
 
 // The tungstenite callback signature fixes the error type; the response
@@ -70,9 +160,25 @@ where
 // contract and not a result channel for secrets.
 #[allow(clippy::result_large_err)]
 fn check_path(
-  request: &Request, response: Response,
+  request: &Request, mut response: Response, hint: Option<&JoinHint>,
 ) -> std::result::Result<Response, ErrorResponse> {
   if request.uri().path() == WS_PATH {
+    if let Some(hint) = hint {
+      // Both hint values are canonical ASCII by construction; a failure to
+      // encode them is an internal bug and rejects the upgrade outright
+      // rather than emitting a partial hint.
+      let (Ok(cluster), Ok(generation)) = (
+        HeaderValue::from_str(hint.cluster().as_str()),
+        HeaderValue::from_str(&generation_hex(hint.generation())),
+      ) else {
+        let mut rejection = ErrorResponse::new(Some("invalid join hint".to_owned()));
+        *rejection.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+        return Err(rejection);
+      };
+      let headers = response.headers_mut();
+      headers.insert(CLUSTER_HINT_HEADER, cluster);
+      headers.insert(GENERATION_HINT_HEADER, generation);
+    }
     return Ok(response);
   }
 

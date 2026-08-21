@@ -1,8 +1,9 @@
 use std::any::{Any, TypeId};
 
 use crate::{
-  Command, Error, Event, EventOptions, EventSubscription, GetNodeStatus, NodeStatus, Query, Result,
-  Shutdown, WaitForShutdown, runtime::RuntimeClient,
+  Command, CreateCluster, Error, Event, EventOptions, EventSubscription, GetLocalNode,
+  GetNodeStatus, JoinCluster, Listen, NodeStatus, Query, Result, RotateJoinCredential, Shutdown,
+  StopListener, WaitForShutdown, runtime::RuntimeClient,
 };
 
 #[derive(Clone)]
@@ -16,9 +17,31 @@ impl NodeHandle {
   }
 
   pub async fn command<C: Command>(&self, command: C) -> Result<C::Output> {
-    if TypeId::of::<C>() == TypeId::of::<Shutdown>() {
+    let id = TypeId::of::<C>();
+    if id == TypeId::of::<Shutdown>() {
       drop(command);
       return cast_output(self.runtime.shutdown().await?);
+    }
+    if id == TypeId::of::<CreateCluster>() {
+      drop(command);
+      return cast_output(self.runtime.create_cluster().await?);
+    }
+    if id == TypeId::of::<RotateJoinCredential>() {
+      drop(command);
+      return cast_output(self.runtime.rotate_join_credential().await?);
+    }
+    if id == TypeId::of::<Listen>() {
+      let command = downcast_input::<C, Listen>(command)?;
+      return cast_output(self.runtime.listen(command.into_endpoint()).await?);
+    }
+    if id == TypeId::of::<StopListener>() {
+      let command = downcast_input::<C, StopListener>(command)?;
+      return cast_output(self.runtime.stop_listener(command.into_listener()).await?);
+    }
+    if id == TypeId::of::<JoinCluster>() {
+      let command = downcast_input::<C, JoinCluster>(command)?;
+      let (receiver, credential) = command.into_parts();
+      return cast_output(self.runtime.join_cluster(receiver, credential).await?);
     }
 
     drop(command);
@@ -34,6 +57,10 @@ impl NodeHandle {
       drop(query);
       return cast_output(self.runtime.wait_for_shutdown().await?);
     }
+    if TypeId::of::<Q>() == TypeId::of::<GetLocalNode>() {
+      drop(query);
+      return cast_output(self.runtime.local_node().await?);
+    }
 
     drop(query);
     Err(Error::unsupported("node query"))
@@ -46,6 +73,17 @@ impl NodeHandle {
     }
     Err(Error::unsupported("node events"))
   }
+}
+
+fn downcast_input<Input, Target>(input: Input) -> Result<Target>
+where
+  Input: Send + 'static,
+  Target: Send + 'static, {
+  let erased: Box<dyn Any + Send> = Box::new(input);
+  erased
+    .downcast::<Target>()
+    .map(|output| *output)
+    .map_err(|_| Error::internal("typed bus input"))
 }
 
 fn cast_output<Output, Value>(value: Value) -> Result<Output>

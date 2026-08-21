@@ -26,7 +26,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 
-use super::ws;
+use super::{ws, ws::JoinHint};
 use crate::{
   Error, ProviderErrorContext, ProviderErrorKind, Result,
   protocol::{PRELUDE_LEN, Prelude, split_message},
@@ -69,30 +69,37 @@ pub(crate) struct Connection {
   stream: WebSocketStream<TlsStream<TcpStream>>,
   rules: FrameRules,
   channel_binding: [u8; CHANNEL_BINDING_LEN],
+  join_hint: Option<JoinHint>,
 }
 
 impl Connection {
   /// Accepts one connection: TLS 1.3 handshake, exporter derivation, then
   /// the WebSocket upgrade. No application frame is read before the TLS
-  /// handshake completes.
+  /// handshake completes. When the listener can admit joiners, `hint`
+  /// publishes the non-secret cluster and credential generation IDs as
+  /// upgrade response headers inside the TLS channel.
   pub(crate) async fn accept(
-    tcp: TcpStream, config: Arc<ServerConfig>, rules: FrameRules,
+    tcp: TcpStream, config: Arc<ServerConfig>, rules: FrameRules, hint: Option<&JoinHint>,
   ) -> Result<Self> {
     let tls = TlsAcceptor::from(config)
       .accept(tcp)
       .await
       .map_err(|_| Error::authentication_failed("tls accept"))?;
     let channel_binding = exporter_channel_binding(tls.get_ref().1)?;
-    let stream = ws::accept(TlsStream::from(tls)).await?;
+    let stream = ws::accept(TlsStream::from(tls), hint).await?;
     Ok(Self {
       stream,
       rules,
       channel_binding,
+      join_hint: None,
     })
   }
 
   /// Connects to one listener: TLS 1.3 handshake, exporter derivation, then
-  /// the WebSocket upgrade on the fixed `/mrly` path.
+  /// the WebSocket upgrade on the fixed `/mrly` path. The listener's
+  /// non-secret join hint headers, when present, are retained for the
+  /// session driver and are never trusted without the handshake and signed
+  /// grant checks.
   pub(crate) async fn connect(
     tcp: TcpStream, config: Arc<ClientConfig>, server_name: ServerName<'static>, rules: FrameRules,
   ) -> Result<Self> {
@@ -110,12 +117,19 @@ impl Connection {
       .await
       .map_err(|_| Error::authentication_failed("tls connect"))?;
     let channel_binding = exporter_channel_binding(tls.get_ref().1)?;
-    let stream = ws::connect(TlsStream::from(tls), &authority).await?;
+    let (stream, join_hint) = ws::connect(TlsStream::from(tls), &authority).await?;
     Ok(Self {
       stream,
       rules,
       channel_binding,
+      join_hint,
     })
+  }
+
+  /// The listener's non-secret join hints captured during the WebSocket
+  /// upgrade (client side only).
+  pub(crate) const fn join_hint(&self) -> Option<&JoinHint> {
+    self.join_hint.as_ref()
   }
 
   /// The locally derived RFC 9266 channel binding.

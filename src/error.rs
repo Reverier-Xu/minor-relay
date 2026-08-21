@@ -108,6 +108,13 @@ impl Error {
     }
   }
 
+  pub(crate) const fn not_found(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::NotFound,
+      context,
+    }
+  }
+
   pub(crate) const fn not_trusted(context: &'static str) -> Self {
     Self {
       kind: ErrorKind::NotTrusted,

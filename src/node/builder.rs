@@ -37,9 +37,8 @@ impl NodeBuilder {
   pub async fn start(self) -> Result<NodeHandle> {
     let client = spawn_runtime(RuntimeDependencies {
       storage_factory: self.storage,
-      metadata: None,
+      context: None,
       keys: self.keys,
-      identity: None,
       config: self.config,
       entropy: self.entropy,
       _runtime_seed: None,

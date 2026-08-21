@@ -70,6 +70,10 @@ pub(crate) fn join_client_config() -> Result<Arc<ClientConfig>> {
 /// Builds the member-mode client configuration: the join-mode relaxation
 /// plus an exact expected leaf SubjectPublicKeyInfo binding. The durable
 /// Ed25519 identity check happens at the application proof layer.
+///
+/// Production wiring arrives with the G3-04 reconnect path, which needs
+/// endpoint-to-NodeId resolution; covered by loopback tests until then.
+#[allow(dead_code)]
 pub(crate) fn member_client_config(
   expected_spki: SubjectPublicKeyInfoDer<'static>,
 ) -> Result<Arc<ClientConfig>> {

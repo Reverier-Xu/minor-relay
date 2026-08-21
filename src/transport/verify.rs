@@ -49,6 +49,7 @@ pub(crate) enum TrustMode {
   /// SubjectPublicKeyInfo binding. The durable Ed25519 identity binding is
   /// still established by the application proof layer, not by this
   /// verifier.
+  #[allow(dead_code)] // G3-04 production wiring; loopback tests construct it.
   Member {
     /// The exact expected leaf SubjectPublicKeyInfo.
     expected_spki: SubjectPublicKeyInfoDer<'static>,

@@ -17,12 +17,12 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 
 use super::{CHANNEL_BINDING_LEN, Connection, EXPORTER_LABEL, FrameRules};
 use crate::{
-  ErrorKind, Result,
+  ClusterId, ErrorKind, Result,
   api::Entropy,
   transport::{
     cert::EphemeralCertificate,
     tls::{crypto_provider, join_client_config, member_client_config, server_config},
-    ws::{self, MAX_MESSAGE_BYTES},
+    ws::{self, JoinHint, MAX_MESSAGE_BYTES},
   },
 };
 
@@ -65,6 +65,36 @@ async fn loopback_pair() -> (Connection, Connection) {
   loopback_pair_with(join_client_config().unwrap(), certificate(11)).await
 }
 
+#[tokio::test]
+async fn tls_transport_join_hint_round_trips_inside_the_tls_channel() {
+  let hint = JoinHint::new(
+    ClusterId::parse("cluster_100000000000000000000").unwrap(),
+    [0x5A; 16],
+  );
+  let config = server_config(&certificate(23)).unwrap();
+  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  let server = tokio::spawn({
+    let hint = hint.clone();
+    async move {
+      let (tcp, _) = listener.accept().await.unwrap();
+      Connection::accept(tcp, config, rules(), Some(&hint)).await
+    }
+  });
+
+  let tcp = TcpStream::connect(address).await.unwrap();
+  let client = Connection::connect(tcp, join_client_config().unwrap(), server_name(), rules())
+    .await
+    .unwrap();
+  assert_eq!(client.join_hint(), Some(&hint));
+  let server = server.await.unwrap().unwrap();
+  assert_eq!(server.join_hint(), None);
+
+  // A listener without join capability publishes no hint headers.
+  let (client, _server) = loopback_pair().await;
+  assert_eq!(client.join_hint(), None);
+}
+
 async fn loopback_pair_with(
   client_config: Arc<rustls::ClientConfig>, certificate: EphemeralCertificate,
 ) -> (Connection, Connection) {
@@ -73,7 +103,7 @@ async fn loopback_pair_with(
   let address = listener.local_addr().unwrap();
   let server = tokio::spawn(async move {
     let (tcp, _) = listener.accept().await.unwrap();
-    Connection::accept(tcp, config, rules()).await
+    Connection::accept(tcp, config, rules(), None).await
   });
 
   let tcp = TcpStream::connect(address).await.unwrap();
@@ -96,7 +126,7 @@ async fn raw_loopback() -> (
   let server = tokio::spawn(async move {
     let (tcp, _) = listener.accept().await.unwrap();
     let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
-    ws::accept(TlsStream::from(tls)).await.unwrap()
+    ws::accept(TlsStream::from(tls), None).await.unwrap()
   });
 
   let tcp = TcpStream::connect(address).await.unwrap();
@@ -105,7 +135,8 @@ async fn raw_loopback() -> (
     .connect(server_name(), tcp)
     .await
     .unwrap();
-  let client = ws::connect(TlsStream::from(tls), &authority).await.unwrap();
+  let (client, hint) = ws::connect(TlsStream::from(tls), &authority).await.unwrap();
+  assert_eq!(hint, None);
   (client, server.await.unwrap())
 }
 
@@ -114,6 +145,7 @@ fn framed(stream: WebSocketStream<TlsStream<TcpStream>>) -> Connection {
     stream,
     rules: rules(),
     channel_binding: [0; CHANNEL_BINDING_LEN],
+    join_hint: None,
   }
 }
 
@@ -442,7 +474,7 @@ async fn tls_transport_member_mode_binds_expected_leaf_key() {
   let address = listener.local_addr().unwrap();
   let server = tokio::spawn(async move {
     let (tcp, _) = listener.accept().await.unwrap();
-    Connection::accept(tcp, config, rules()).await
+    Connection::accept(tcp, config, rules(), None).await
   });
   let tcp = TcpStream::connect(address).await.unwrap();
   let result = Connection::connect(

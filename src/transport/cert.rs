@@ -77,6 +77,7 @@ impl EphemeralCertificate {
   }
 
   /// The leaf certificate bytes.
+  #[allow(dead_code)] // verifier tests and G3-04 SPKI pinning.
   pub(crate) fn end_entity(&self) -> &CertificateDer<'static> {
     &self.cert
   }

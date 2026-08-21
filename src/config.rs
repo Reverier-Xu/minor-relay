@@ -58,6 +58,10 @@ impl NodeConfig {
     self.receipt_retention
   }
 
+  pub(crate) const fn required_features(&self) -> &BTreeSet<FeatureTag> {
+    &self.required_features
+  }
+
   pub fn require_feature(mut self, value: FeatureTag) -> Result<Self> {
     if !self.required_features.insert(value) {
       return Err(Error::conflict("required feature"));

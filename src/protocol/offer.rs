@@ -8,13 +8,13 @@
 //! subset of `supported`, and the exact mandatory limit set with every
 //! value inside its legal registry range.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use minicbor::{Decode, Encode};
 
 use super::{
   CborLimits, FeatureTag, QualifiedTag, decode_canonical, encode_canonical,
-  feature::{FeatureRegistry, LimitDefinition},
+  feature::{FeatureRegistry, LimitDefinition, required_session_features},
 };
 use crate::{Digest, Error, Result};
 
@@ -101,6 +101,8 @@ impl FeatureOffer {
     &self.required
   }
 
+  /// The offered numeric limit map (used by selection and G3-04 evidence).
+  #[allow(dead_code)]
   pub(crate) fn limits(&self) -> &[(QualifiedTag, u64)] {
     &self.limits
   }
@@ -278,6 +280,36 @@ struct FeatureOfferWire {
   required: Vec<String>,
   #[n(2)]
   limits: Vec<LimitEntryWire>,
+}
+
+/// Builds the node's production offer: every registry feature supported at
+/// its exact definition digest, the mandatory session features plus every
+/// caller-required feature required, and every mandatory limit at its
+/// registry default value. Caller-required labels outside the registry are
+/// rejected before any offer exists.
+pub(crate) fn node_offer(
+  registry: &FeatureRegistry, caller_required: &BTreeSet<FeatureTag>,
+) -> Result<FeatureOffer> {
+  let mut supported = Vec::new();
+  let mut limits = Vec::new();
+  for (tag, definition) in registry.iter() {
+    supported.push((tag.clone(), definition.definition_digest()?));
+    for limit in definition.limits() {
+      if limit.mandatory() {
+        limits.push((limit.tag().clone(), limit.default()));
+      }
+    }
+  }
+  let mut required = caller_required.clone();
+  for tag in required_session_features()? {
+    required.insert(tag);
+  }
+  for tag in &required {
+    if !supported.iter().any(|(candidate, _)| candidate == tag) {
+      return Err(Error::invalid_input("required feature"));
+    }
+  }
+  FeatureOffer::new(supported, required.into_iter().collect(), limits)
 }
 
 #[cfg(test)]

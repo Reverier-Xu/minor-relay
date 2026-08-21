@@ -11,9 +11,9 @@
 //! whitespace) instead of normalizing it, matching the crate's other
 //! canonical value types.
 //!
-//! This type is crate-private until the G3-04 facade re-exports it; the
-//! shape already matches `docs/api-manifest.md` (`parse`/`as_str` plus the
-//! canonical value traits).
+//! The type is re-exported at the crate root; the shape matches
+//! `docs/api-manifest.md` (`parse`/`as_str` plus the canonical value
+//! traits).
 
 use std::{fmt, str::FromStr};
 
@@ -154,7 +154,10 @@ fn parse_port(text: &str) -> Result<u16> {
     return Err(error());
   }
   let port: u16 = text.parse().map_err(|_| error())?;
-  if port == 0 { Err(error()) } else { Ok(port) }
+  // Port zero is the listen-only ephemeral wildcard; the bound listener
+  // reports its real port in the returned ListenerView. Dialing port zero
+  // fails at connect time like any unreachable address.
+  Ok(port)
 }
 
 fn validate_host(host: &str) -> Result<()> {
@@ -256,7 +259,6 @@ mod tests {
       "wss://user@relay.example.com",
       "wss://relay.example.com?",
       "wss://relay.example.com#x",
-      "wss://relay.example.com:0",
       "wss://relay.example.com:0443",
       "wss://relay.example.com:65536",
       "wss://relay.example.com:443x",

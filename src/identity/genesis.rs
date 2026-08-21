@@ -187,6 +187,23 @@ pub(crate) async fn create_cluster(
   }
 }
 
+/// Loads the local cluster pointer, if any.
+///
+/// Unlike [`existing_cluster`], this works for both cluster creators (full
+/// genesis record) and adopters (pointer + verified grant): both paths
+/// commit the pointer with an exact verified digest.
+pub(crate) async fn local_cluster(
+  context: &LocalIdentityContext,
+) -> Result<Option<LocalClusterPointerV1>> {
+  let snapshot = context.store().snapshot().await?;
+  let (pointer_namespace, pointer_key) = local_cluster_pointer_key()?;
+  let Some(value) = snapshot.get(&pointer_namespace, &pointer_key).await? else {
+    return Ok(None);
+  };
+  let pointer = LocalClusterPointerV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+  Ok(Some(pointer))
+}
+
 /// Loads the exact existing cluster state, if any.
 ///
 /// A complete state has the singleton pointer, the referenced signed
@@ -242,7 +259,7 @@ pub(crate) async fn existing_cluster(
   Ok(Some(genesis))
 }
 
-async fn require_empty_namespace(
+pub(crate) async fn require_empty_namespace(
   snapshot: &dyn StoreSnapshot, namespace: &crate::StoreNamespace,
 ) -> Result<()> {
   let mut scan = snapshot.scan(namespace, &[]).await?;

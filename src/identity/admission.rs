@@ -10,20 +10,21 @@
 use std::sync::Arc;
 
 use super::{
-  genesis::existing_cluster,
+  genesis::{existing_cluster, require_empty_namespace},
   lifecycle::{
     LocalIdentityContext, cleanup_pending_exact, discover_local_identity, discovery_corrupt,
     reconcile_corrupt, reconcile_recovered_journal, reconcile_unknown,
   },
   records::{
     AdmissionGrantV1, AdmissionId, CredentialUseV1, GenerationId, IdentityBindingV1,
-    admission_grant_key, credential_use_key, identity_binding_key, local_cluster_pointer_key,
-    local_identity_key,
+    LocalClusterPointerV1, admission_grant_key, admission_grant_namespace,
+    cluster_genesis_namespace, credential_use_key, credential_use_namespace, identity_binding_key,
+    identity_binding_namespace, local_cluster_pointer_key, local_identity_key,
   },
   signature::{ADMISSION_GRANT_V1_DOMAIN, signature_message},
 };
 use crate::{
-  CommitOutcome, Error, NodeId, PublicKey, ReconcileOutcome, Result, StoreExpectation,
+  CommitOutcome, Digest, Error, NodeId, PublicKey, ReconcileOutcome, Result, StoreExpectation,
   StoreOperation, StoreValue, TransactionId,
   api::Entropy,
   provider::KeyProvider,
@@ -245,6 +246,215 @@ pub(crate) async fn commit_admission(
       }
     }
   }
+}
+
+/// Adopts a verified issuer-signed admission grant on the joining node.
+///
+/// The joiner receives the grant over the authenticated session; this
+/// function is the only persistence boundary for it. Before any storage
+/// write the grant is strictly validated: the subject must be exactly the
+/// local identity (a node never adopts a grant for another subject), a
+/// self-issued grant is rejected, and the issuer signature must verify
+/// against the authenticated peer's public key. One journaled transaction
+/// then commits the issuer's `IdentityBinding`, the `AdmissionGrant`, and
+/// the local cluster pointer, mirroring [`commit_admission`]'s atomicity.
+///
+/// The node must be standalone: with an existing cluster, only the exact
+/// replay of the identical adoption is accepted (idempotent completion
+/// after an unknown commit outcome); any other grant conflicts without
+/// mutation. A recovered pending journal reconciles to the exact committed
+/// state before classification.
+///
+/// `genesis_digest` is the receiver-supplied digest of the cluster genesis
+/// record the pointer binds to; the joiner cannot verify it against the
+/// genesis record until a later trust sync, so it is stored exactly as
+/// delivered over the authenticated session.
+pub(crate) async fn adopt_admission(
+  context: &LocalIdentityContext, entropy: &dyn Entropy, grant: &AdmissionGrantV1,
+  issuer_key: &PublicKey, genesis_digest: &Digest,
+) -> Result<()> {
+  let store = context.store();
+  let purpose = adoption_purpose(grant.admission());
+  if store.recover_pending(&purpose).await?.is_some() {
+    reconcile_recovered_journal(store).await?;
+    cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
+    return match adoption_state(context, grant, issuer_key, genesis_digest).await? {
+      AdoptionState::Adopted => Ok(()),
+      AdoptionState::Absent => Err(discovery_corrupt()),
+    };
+  }
+  store.reconcile_if_frozen().await?;
+
+  let identity = context.identity();
+  if grant.subject() != identity.node()
+    || grant.subject_key() != identity.public_key()
+    || grant.issuer() == identity.node()
+  {
+    return Err(Error::authentication_failed("adoption grant subject"));
+  }
+  grant.verify(issuer_key)?;
+
+  if existing_cluster(context).await?.is_some() {
+    return match adoption_state(context, grant, issuer_key, genesis_digest).await? {
+      AdoptionState::Adopted => Ok(()),
+      AdoptionState::Absent => Err(Error::conflict("local cluster")),
+    };
+  }
+
+  let snapshot = store.snapshot().await?;
+  let local = discover_local_identity(snapshot.as_ref())
+    .await?
+    .ok_or_else(discovery_corrupt)?;
+  if local.1 != *identity {
+    return Err(discovery_corrupt());
+  }
+  require_empty_namespace(snapshot.as_ref(), &cluster_genesis_namespace()?).await?;
+  require_empty_namespace(snapshot.as_ref(), &identity_binding_namespace()?).await?;
+  require_empty_namespace(snapshot.as_ref(), &credential_use_namespace()?).await?;
+  require_empty_namespace(snapshot.as_ref(), &admission_grant_namespace()?).await?;
+
+  let binding = IdentityBindingV1::new(grant.issuer().clone(), issuer_key.clone());
+  let pointer = LocalClusterPointerV1::new(grant.cluster().clone(), genesis_digest.clone());
+
+  let (local_namespace, local_key) = local_identity_key()?;
+  let (binding_namespace, binding_key) = identity_binding_key(grant.issuer())?;
+  let (grant_namespace, grant_key) = admission_grant_key(grant.admission())?;
+  let (pointer_namespace, pointer_key) = local_cluster_pointer_key()?;
+  let caller_operations = vec![
+    StoreOperation::Check {
+      namespace: local_namespace,
+      key: local_key,
+      expected: StoreExpectation::Exact(local.0.digest().clone()),
+    },
+    StoreOperation::Put {
+      namespace: binding_namespace.clone(),
+      key: binding_key.clone(),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(binding.encode()?)),
+    },
+    StoreOperation::Put {
+      namespace: grant_namespace.clone(),
+      key: grant_key.clone(),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(grant.encode()?)),
+    },
+    StoreOperation::Put {
+      namespace: pointer_namespace.clone(),
+      key: pointer_key.clone(),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(pointer.encode()?)),
+    },
+  ];
+  let tokens = vec![
+    ReceiptReferenceToken::for_record(&binding_namespace, &binding_key),
+    ReceiptReferenceToken::for_record(&grant_namespace, &grant_key),
+    ReceiptReferenceToken::for_record(&pointer_namespace, &pointer_key),
+  ];
+  let transaction = TransactionId::generate(entropy)?;
+  let prepared = store
+    .prepare_journaled_transaction(
+      snapshot.as_ref(),
+      transaction,
+      &purpose,
+      caller_operations,
+      vec![ReceiptReferenceChange::AddSelf(tokens)],
+    )
+    .await?;
+  drop(snapshot);
+
+  match store.commit(prepared).await? {
+    CommitOutcome::Committed(_) => {
+      cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
+      Ok(())
+    }
+    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
+      ReconcileOutcome::Committed(_) => {
+        cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
+        Ok(())
+      }
+      ReconcileOutcome::Aborted => Err(Error::conflict("adoption commit")),
+      ReconcileOutcome::DigestConflict => Err(reconcile_corrupt()),
+      ReconcileOutcome::Unknown => Err(reconcile_unknown()),
+    },
+    CommitOutcome::Aborted | CommitOutcome::Conflict => {
+      match adoption_state(context, grant, issuer_key, genesis_digest).await? {
+        AdoptionState::Adopted => {
+          cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
+          Ok(())
+        }
+        AdoptionState::Absent => Err(Error::conflict("adoption commit")),
+      }
+    }
+  }
+}
+
+/// The durable outcome of an adoption attempt: the exact issuer binding,
+/// grant, and cluster pointer triple is either complete or fully absent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdoptionState {
+  Adopted,
+  Absent,
+}
+
+async fn adoption_state(
+  context: &LocalIdentityContext, grant: &AdmissionGrantV1, issuer_key: &PublicKey,
+  genesis_digest: &Digest,
+) -> Result<AdoptionState> {
+  let snapshot = context.store().snapshot().await?;
+  let (binding_namespace, binding_key) = identity_binding_key(grant.issuer())?;
+  let (grant_namespace, grant_key) = admission_grant_key(grant.admission())?;
+  let (pointer_namespace, pointer_key) = local_cluster_pointer_key()?;
+  let binding = snapshot.get(&binding_namespace, &binding_key).await?;
+  let stored_grant = snapshot.get(&grant_namespace, &grant_key).await?;
+  let pointer = snapshot.get(&pointer_namespace, &pointer_key).await?;
+
+  let binding = binding
+    .map(|value| {
+      let record = IdentityBindingV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+      if record.node() != grant.issuer() || record.public_key() != issuer_key {
+        return Err(Error::conflict("adoption record"));
+      }
+      Ok(record)
+    })
+    .transpose()?;
+  let stored_grant = stored_grant
+    .map(|value| {
+      let record = AdmissionGrantV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+      if &record != grant {
+        return Err(Error::conflict("adoption grant"));
+      }
+      record
+        .verify(issuer_key)
+        .map_err(|_| Error::conflict("adoption grant"))?;
+      Ok(record)
+    })
+    .transpose()?;
+  let pointer = pointer
+    .map(|value| {
+      let record =
+        LocalClusterPointerV1::decode(value.as_bytes()).map_err(|_| discovery_corrupt())?;
+      if record.cluster() != grant.cluster() || record.genesis_digest() != genesis_digest {
+        return Err(Error::conflict("adoption pointer"));
+      }
+      Ok(record)
+    })
+    .transpose()?;
+
+  match (binding, stored_grant, pointer) {
+    (Some(_), Some(_), Some(_)) => Ok(AdoptionState::Adopted),
+    (None, None, None) => Ok(AdoptionState::Absent),
+    _ => Err(discovery_corrupt()),
+  }
+}
+
+fn adoption_purpose(admission: &AdmissionId) -> String {
+  let mut purpose = String::with_capacity(9 + admission.as_bytes().len() * 2);
+  purpose.push_str("adoption-");
+  for byte in admission.as_bytes() {
+    purpose.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+    purpose.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
+  }
+  purpose
 }
 
 /// Classifies the durable outcome of an admission attempt.

@@ -40,6 +40,7 @@ mod operation;
 mod protocol;
 mod provider;
 mod runtime;
+mod session;
 mod storage;
 mod transport;
 mod view;
@@ -51,11 +52,14 @@ pub use api::BoxFuture;
 pub use config::{NodeConfig, ParserLimits, RecoveryConfig, TraceMetadataLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
 pub use identity::{
-  ClusterId, Digest, IssuedJoinCredential, JoinCredential, NodeId, OperationId, PublicKey,
-  Signature, TraceId, TransactionId,
+  ClusterId, Digest, IssuedJoinCredential, JoinCredential, ListenerId, NodeId, OperationId,
+  PublicKey, SessionId, Signature, TraceId, TransactionId,
 };
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
-pub use operation::{Command, Event, GetNodeStatus, Query, Shutdown, WaitForShutdown};
+pub use operation::{
+  Command, CreateCluster, Event, GetLocalNode, GetNodeStatus, JoinCluster, Listen, Query,
+  RotateJoinCredential, Shutdown, StopListener, WaitForShutdown,
+};
 pub use protocol::{
   DiscoveryTag, FeatureDefinition, FeatureTag, ProtocolTag, QualifiedTag, TransportTag,
 };
@@ -65,7 +69,11 @@ pub use provider::{
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
   StoreTransaction, StoreValue,
 };
-pub use view::{NodeStatus, ShutdownOutcome, ShutdownReason};
+pub use transport::Endpoint;
+pub use view::{
+  AdmissionView, ClusterView, ListenerView, LocalNodeView, NodeStatus, ShutdownOutcome,
+  ShutdownReason,
+};
 
 pub mod extension {
   pub use crate::{

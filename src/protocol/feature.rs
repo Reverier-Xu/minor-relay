@@ -151,6 +151,9 @@ impl FeatureDefinition {
     &self.tag
   }
 
+  /// The immutable contract fingerprint (definition content input; G3-04
+  /// exposes it through negotiated evidence).
+  #[allow(dead_code)]
   pub(crate) const fn fingerprint(&self) -> &Digest {
     &self.fingerprint
   }
@@ -204,6 +207,9 @@ impl FeatureDefinition {
 pub(crate) enum LimitWidth {
   U16,
   U32,
+  /// No built-in limit uses a 64-bit width yet; reserved by the limit
+  /// definition schema for extension limits.
+  #[allow(dead_code)]
   U64,
 }
 
@@ -407,6 +413,20 @@ impl FeatureRegistry {
   pub(crate) fn get(&self, tag: &FeatureTag) -> Option<&FeatureDefinition> {
     self.definitions.get(tag)
   }
+
+  /// Iterates every registered definition in canonical tag order.
+  pub(crate) fn iter(&self) -> impl Iterator<Item = (&FeatureTag, &FeatureDefinition)> {
+    self.definitions.iter()
+  }
+}
+
+/// The built-in features every session requires: the ADR-0001 Ed25519
+/// session authentication and the session core it anchors.
+pub(crate) fn required_session_features() -> Result<[FeatureTag; 2]> {
+  Ok([
+    feature_tag(AUTH_ED25519_SESSION)?,
+    feature_tag(SESSION_CORE)?,
+  ])
 }
 
 fn check_reserved_namespace(definition: &FeatureDefinition) -> Result<()> {

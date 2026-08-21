@@ -88,19 +88,16 @@ canonical_id!(NodeId, "node_", "node id");
 canonical_id!(ClusterId, "cluster_", "cluster id");
 canonical_id!(TraceId, "trace_", "trace id");
 canonical_id!(TransactionId, "txn_", "transaction id");
-// Wired to the public facade by the G3-04 session driver; the canonical
-// forms are fixed now so transport records can rely on them.
 canonical_id!(ListenerId, "listener_", "listener id");
 canonical_id!(SessionId, "session_", "session id");
 
+// The canonical text form is exercised by the facade tests in later gates;
+// keep the accessor referenced so dead-code analysis does not flag the
+// generated impls before that wiring lands.
 #[allow(dead_code)]
-mod g3_id_wiring {
-  #[allow(unused_imports)]
-  use super::{ListenerId, SessionId};
-
-  const _: fn(&ListenerId) -> &str = |id| id.as_str();
-  const _: fn(&SessionId) -> &str = |id| id.as_str();
-}
+const _: fn(&ListenerId) -> &str = ListenerId::as_str;
+#[allow(dead_code)]
+const _: fn(&SessionId) -> &str = SessionId::as_str;
 
 macro_rules! generated_id {
   ($name:ident, $prefix:literal) => {

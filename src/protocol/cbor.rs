@@ -19,6 +19,10 @@ impl CborLimits {
       max_body_len,
     }
   }
+
+  pub(crate) const fn max_body_len(&self) -> usize {
+    self.max_body_len
+  }
 }
 
 #[derive(Debug)]

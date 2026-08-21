@@ -755,12 +755,22 @@ impl ScriptedKeys {
   }
 
   pub fn full() -> Self {
-    Self::new(
+    Self::full_at(0)
+  }
+
+  /// Full capabilities with handle allocation starting at `base`, so two
+  /// nodes never derive the same identity key.
+  pub fn full_at(base: u64) -> Self {
+    let mut keys = Self::new(
       KeyCapabilities::new()
         .ed25519(true)
         .reconciliation(true)
         .deletion(true),
-    )
+    );
+    Arc::get_mut(&mut keys.inner)
+      .expect("scripted keys must be uniquely owned")
+      .next_handle = AtomicUsize::new(base as usize);
+    keys
   }
 
   pub fn with_events(mut self, events: Arc<EventLog>) -> Self {
