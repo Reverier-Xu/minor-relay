@@ -48,12 +48,17 @@ tokio = { version = "1.53", features = [
   "time",
   "net",
   "io-util",
+  "macros",
 ] }
 tokio-rustls = { version = "0.26", default-features = false, features = [
   "ring",
 ] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
   "handshake",
+] }
+tracing = { version = "0.1", default-features = false, features = [
+  "std",
+  "attributes",
 ] }
 zeroize = "1.9"
 
@@ -75,6 +80,7 @@ tokio = { version = "1.53", features = [
   "test-util",
   "time",
 ] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wait-timeout = "0.2"
 
 [lints.rust]
