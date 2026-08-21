@@ -139,9 +139,14 @@ impl SessionDriver {
 
   /// The current non-secret join hint for accepted connections: the local
   /// cluster ID plus the active credential generation ID. `None` (no
-  /// cluster or no active generation) means the listener publishes no hint
+  /// cluster, no active generation, or an indeterminate metadata store
+  /// awaiting authoritative reopen) means the listener publishes no hint
   /// and cannot admit joiners.
   pub(crate) async fn join_hint(&self) -> Result<Option<JoinHint>> {
+    if self.context.store().is_blocked()? {
+      tracing::debug!("join hint withheld: metadata store awaiting reconciliation");
+      return Ok(None);
+    }
     let Some(pointer) = crate::identity::genesis::local_cluster(&self.context).await? else {
       return Ok(None);
     };
@@ -177,6 +182,7 @@ impl SessionDriver {
   }
 
   async fn respond_inner(&self, connection: &mut Connection) -> Result<EstablishedSession> {
+    self.require_unblocked()?;
     let first = receive_kind(connection, HandshakeKind::InitiatorHello).await?;
     let peek = peek_initiator_hello(&first.body)?;
 
@@ -349,6 +355,7 @@ impl SessionDriver {
   async fn join_inner(
     &self, connection: &mut Connection, hint: &JoinHint, credential: CredentialSecret,
   ) -> Result<(EstablishedSession, AdmissionView)> {
+    self.require_unblocked()?;
     if crate::identity::genesis::local_cluster(&self.context)
       .await?
       .is_some()
@@ -450,6 +457,7 @@ impl SessionDriver {
   async fn member_inner(
     &self, connection: &mut Connection, peer: &NodeId,
   ) -> Result<EstablishedSession> {
+    self.require_unblocked()?;
     let pointer = crate::identity::genesis::local_cluster(&self.context)
       .await?
       .ok_or_else(|| Error::not_ready("local cluster"))?;
@@ -501,6 +509,16 @@ impl SessionDriver {
     let confirmation = receive_kind(connection, HandshakeKind::SelectionConfirmation).await?;
     handshake.receive(&confirmation.body)?;
     established(&handshake)
+  }
+  /// Blocks new session establishment while the local metadata store is
+  /// frozen on an indeterminate outcome (THR-015): the node refuses to
+  /// sign or admit until an authoritative reopen reconciles the exact
+  /// transaction or proves absence.
+  fn require_unblocked(&self) -> Result<()> {
+    if self.context.store().is_blocked()? {
+      return Err(Error::not_ready("metadata storage reconciliation"));
+    }
+    Ok(())
   }
 }
 
