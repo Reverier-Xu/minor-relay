@@ -71,6 +71,7 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) extensions: Arc<ExtensionRegistry>,
   pub(crate) sessions: SessionTable,
   pub(crate) routes: RouteTable,
+  pub(crate) packet_tx: Option<mpsc::Sender<crate::packet::OutboundRequest>>,
   pub(crate) _runtime_seed: Option<[u8; 32]>,
 }
 
@@ -90,19 +91,23 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   dependencies.context = Some(Arc::new(context));
   let routes = dependencies.routes.clone();
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
+  let (packet_tx, packet_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();
+  let client = RuntimeClient::new(control_tx, state_rx, routes, packet_tx.clone());
+  dependencies.packet_tx = Some(packet_tx);
 
-  runtime.spawn(supervise(dependencies, control_rx, state_tx, ready_tx));
+  runtime.spawn(supervise(dependencies, control_rx, packet_rx, state_tx, ready_tx));
 
   ready_rx
     .await
     .map_err(|_| Error::internal("node runtime startup"))?;
-  Ok(RuntimeClient::new(control_tx, state_rx, routes))
+  Ok(client)
 }
 
 async fn supervise(
   dependencies: RuntimeDependencies, mut control: mpsc::Receiver<Control>,
+  mut packets: mpsc::Receiver<crate::packet::OutboundRequest>,
   state: watch::Sender<LifecycleSnapshot>, ready: oneshot::Sender<()>,
 ) {
   let mut tasks = JoinSet::<()>::new();
@@ -115,10 +120,12 @@ async fn supervise(
 
   let mut supervisor = Supervisor::new(dependencies);
   loop {
-    let Some(message) = control.recv().await else {
-      break;
-    };
-    match message {
+    tokio::select! {
+      message = control.recv() => {
+        let Some(message) = message else {
+          break;
+        };
+        match message {
       Control::Shutdown { reply } => {
         finish_shutdown(
           control,
@@ -168,9 +175,13 @@ async fn supervise(
         let result = supervisor.local_node().await;
         let _ = reply.send(result);
       }
-      Control::SendPacket { request, reply } => {
-        let result = supervisor.send_packet(request, &mut tasks);
-        let _ = reply.send(result);
+        }
+      }
+      request = packets.recv() => {
+        let Some(request) = request else {
+          continue;
+        };
+        let _ = supervisor.send_packet(request, &mut tasks);
       }
     }
   }
@@ -232,6 +243,13 @@ impl Supervisor {
       context.identity().node().clone(),
       dependencies.extensions.clone(),
       dependencies.config.session_queue_messages(),
+      crate::runtime::RuntimeClient::routing_only(
+        dependencies
+          .packet_tx
+          .clone()
+          .unwrap_or_else(|| unreachable!("packet channel is provisioned at startup")),
+        dependencies.routes.clone(),
+      ),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let driver = SessionDriver::new(

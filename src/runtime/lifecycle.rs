@@ -90,27 +90,41 @@ pub(crate) enum Control {
   GetLocalNode {
     reply: oneshot::Sender<Result<LocalNodeView>>,
   },
-  SendPacket {
-    request: OutboundRequest,
-    reply: oneshot::Sender<Result<()>>,
-  },
 }
 
 #[derive(Clone)]
 pub(crate) struct RuntimeClient {
-  control: mpsc::Sender<Control>,
+  control: Option<mpsc::Sender<Control>>,
   state: watch::Receiver<LifecycleSnapshot>,
   routes: RouteTable,
+  packet: mpsc::Sender<OutboundRequest>,
 }
 
 impl RuntimeClient {
   pub(crate) fn new(
     control: mpsc::Sender<Control>, state: watch::Receiver<LifecycleSnapshot>, routes: RouteTable,
+    packet: mpsc::Sender<OutboundRequest>,
   ) -> Self {
     Self {
-      control,
+      control: Some(control),
       state,
       routes,
+      packet,
+    }
+  }
+
+  /// A routing-only client for the packet session context: it can route
+  /// outbound packets but holds no node-command sender, so an admitted
+  /// packet's reply capability never keeps the supervisor's command
+  /// channel open after the last `NodeHandle` drops.
+  pub(crate) fn routing_only(
+    packet: mpsc::Sender<OutboundRequest>, routes: RouteTable,
+  ) -> Self {
+    Self {
+      control: None,
+      state: watch::channel(LifecycleSnapshot::running()).1,
+      routes,
+      packet,
     }
   }
 
@@ -124,12 +138,10 @@ impl RuntimeClient {
     }
 
     let (reply, response) = oneshot::channel();
-    if self
-      .control
-      .send(Control::Shutdown { reply })
-      .await
-      .is_err()
-    {
+    let Some(control) = self.control.as_ref() else {
+      return Err(Error::not_ready("node command channel"));
+    };
+    if control.send(Control::Shutdown { reply }).await.is_err() {
       return self.wait_for_shutdown().await.map(ShutdownOutcome::new);
     }
 
@@ -144,8 +156,11 @@ impl RuntimeClient {
     Build: FnOnce(oneshot::Sender<Result<Output>>) -> Control,
     Output: Send + 'static, {
     let (reply, response) = oneshot::channel();
-    self
+    let control = self
       .control
+      .as_ref()
+      .ok_or_else(|| Error::not_ready("node command channel"))?;
+    control
       .send(build(reply))
       .await
       .map_err(|_| Error::shutting_down("node control"))?;
@@ -207,27 +222,25 @@ impl RuntimeClient {
       .await
   }
 
-  /// Hands one outbound packet to the supervisor for routing; the returned
-  /// result reports routing acceptance only (admission flows through the
-  /// request's acknowledgement channel).
+  /// Hands one outbound packet to the supervisor over the dedicated packet
+  /// routing channel; routing outcomes flow back through the request's
+  /// acknowledgement channel and route records, never through the node
+  /// command bus.
   pub(crate) async fn send_packet(&self, request: OutboundRequest) -> Result<()> {
-    self
-      .send_command(|reply| Control::SendPacket { request, reply })
-      .await
+    self.packet.send(request).await.map_err(|_| {
+      Error::shutting_down("node routing")
+    })
   }
 
   /// The non-blocking variant behind `send_async`: queue saturation is a
   /// typed overload, never an unbounded queue.
   pub(crate) fn try_send_packet(&self, request: OutboundRequest) -> Result<()> {
-    let (reply, response) = oneshot::channel();
-    // Asynchronous delivery observes routing outcomes through route status.
-    drop(response);
     self
-      .control
-      .try_send(Control::SendPacket { request, reply })
+      .packet
+      .try_send(request)
       .map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => Error::overloaded("node control"),
-        mpsc::error::TrySendError::Closed(_) => Error::shutting_down("node control"),
+        mpsc::error::TrySendError::Full(_) => Error::overloaded("node routing"),
+        mpsc::error::TrySendError::Closed(_) => Error::shutting_down("node routing"),
       })
   }
 

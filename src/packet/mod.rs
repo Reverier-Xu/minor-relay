@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
   Error, ErrorKind, NodeId, ProtocolTag, QualifiedTag, Result, TraceId, api::BoxFuture,
-  runtime::RuntimeClient,
+  extension_registry::ExtensionRegistry, runtime::RuntimeClient,
 };
 
 /// The built-in direct routing policy tag: the only routing policy this
@@ -253,6 +253,21 @@ struct SendRequest {
 /// An admitted incoming packet stream handed to the registered
 /// [`crate::PacketConsumer`]. Endpoints are the session-authenticated node
 /// IDs; the body preserves wire order.
+/// The reply context an admitted incoming packet needs to derive a
+/// caller-owned return packet: the registry that gates protocol labels and
+/// the runtime client that routes outbound packets.
+#[derive(Clone)]
+pub(crate) struct PacketReplyContext {
+  registry: Arc<ExtensionRegistry>,
+  runtime: RuntimeClient,
+}
+
+impl PacketReplyContext {
+  pub(crate) const fn new(registry: Arc<ExtensionRegistry>, runtime: RuntimeClient) -> Self {
+    Self { registry, runtime }
+  }
+}
+
 pub struct IncomingPacket {
   source: NodeId,
   destination: NodeId,
@@ -260,12 +275,13 @@ pub struct IncomingPacket {
   protocol: ProtocolTag,
   metadata: PacketMetadata,
   body: ChannelBody,
+  reply: PacketReplyContext,
 }
 
 impl IncomingPacket {
   pub(crate) fn new(
     source: NodeId, destination: NodeId, trace_id: TraceId, protocol: ProtocolTag,
-    metadata: PacketMetadata, body: ChannelBody,
+    metadata: PacketMetadata, body: ChannelBody, reply: PacketReplyContext,
   ) -> Self {
     Self {
       source,
@@ -274,6 +290,7 @@ impl IncomingPacket {
       protocol,
       metadata,
       body,
+      reply,
     }
   }
 
@@ -299,6 +316,27 @@ impl IncomingPacket {
 
   pub fn body(&mut self) -> &mut dyn PacketBody {
     &mut self.body
+  }
+
+  /// Derives a caller-owned return packet to the authenticated source:
+  /// the endpoints are swapped and the incoming `TraceId` is reused. Core
+  /// assigns no return meaning, never completes another stream by
+  /// correlation, and the derived packet follows the exact-node direct
+  /// policy with the caller-supplied protocol and metadata (ADR-0007,
+  /// SC-G03-P0-16).
+  pub fn derive_return_packet(
+    &self, protocol: ProtocolTag, metadata: PacketMetadata,
+  ) -> Result<OutboundPacket> {
+    if !self.reply.registry.has_protocol(&protocol) {
+      return Err(Error::unsupported("packet protocol"));
+    }
+    Ok(OutboundPacket::new(
+      self.trace_id.clone(),
+      PacketTarget::Exact(self.source.clone()),
+      protocol,
+      metadata,
+      self.reply.runtime.clone(),
+    ))
   }
 }
 
