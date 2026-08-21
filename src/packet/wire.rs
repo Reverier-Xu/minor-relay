@@ -154,11 +154,7 @@ pub(crate) fn encode_open(frame: &OpenFrame) -> Result<Vec<u8>> {
 /// canonical metadata ordering, and the bounded metadata map.
 pub(crate) fn decode_open(body: &[u8]) -> Result<OpenFrame> {
   let wire: OpenWire = decode_checked(body)?;
-  if !wire
-    .metadata
-    .windows(2)
-    .all(|pair| pair[0].0 < pair[1].0)
-  {
+  if !wire.metadata.windows(2).all(|pair| pair[0].0 < pair[1].0) {
     return Err(Error::invalid_input("packet metadata order"));
   }
   let mut metadata = PacketMetadata::new();
@@ -236,8 +232,8 @@ pub(crate) fn encode_ack(frame: &AckFrame) -> Result<Vec<u8>> {
 /// Decodes one packet-ack frame body. Unknown outcome codes fail closed.
 pub(crate) fn decode_ack(body: &[u8]) -> Result<AckFrame> {
   let wire: AckWire = decode_checked(body)?;
-  let status = AckStatus::from_code(wire.outcome)
-    .ok_or_else(|| Error::invalid_input("packet ack outcome"))?;
+  let status =
+    AckStatus::from_code(wire.outcome).ok_or_else(|| Error::invalid_input("packet ack outcome"))?;
   Ok(AckFrame {
     trace_id: wire.trace_id.parse()?,
     status,
@@ -352,7 +348,7 @@ mod tests {
 
   #[test]
   fn tls_transport_packet_chunk_frame_round_trips_and_enforces_quantum() {
-    let (trace_id, _, _) = ids();
+    let (trace_id, ..) = ids();
     let frame = ChunkFrame {
       trace_id: trace_id.clone(),
       sequence: 7,
@@ -384,14 +380,18 @@ mod tests {
 
   #[test]
   fn tls_transport_packet_end_and_ack_frames_round_trip() {
-    let (trace_id, _, _) = ids();
+    let (trace_id, ..) = ids();
     let end = EndFrame {
       trace_id: trace_id.clone(),
     };
     let decoded = decode_end(&encode_end(&end).unwrap()).unwrap();
     assert_eq!(decoded, end);
 
-    for status in [AckStatus::Admitted, AckStatus::Unsupported, AckStatus::Overloaded] {
+    for status in [
+      AckStatus::Admitted,
+      AckStatus::Unsupported,
+      AckStatus::Overloaded,
+    ] {
       let ack = AckFrame {
         trace_id: trace_id.clone(),
         status,
@@ -404,7 +404,7 @@ mod tests {
 
   #[test]
   fn tls_transport_packet_ack_rejects_unknown_outcome() {
-    let (trace_id, _, _) = ids();
+    let (trace_id, ..) = ids();
     let wire = super::AckWire {
       trace_id: trace_id.to_string(),
       outcome: 9,
@@ -439,7 +439,7 @@ mod tests {
   #[test]
   fn tls_transport_decode_checked_rejects_wrong_type() {
     // A chunk body is not a valid end frame even though both are arrays.
-    let (trace_id, _, _) = ids();
+    let (trace_id, ..) = ids();
     let chunk = ChunkFrame {
       trace_id,
       sequence: 0,

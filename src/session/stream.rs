@@ -170,7 +170,11 @@ fn retire(entry: &SessionEntry) {
 /// connection fails.
 async fn run_writer(mut writer: ConnectionWriter, mut frames: mpsc::Receiver<SessionFrame>) {
   while let Some(frame) = frames.recv().await {
-    if writer.send(frame.kind.kind_id(), &frame.body).await.is_err() {
+    if writer
+      .send(frame.kind.kind_id(), &frame.body)
+      .await
+      .is_err()
+    {
       return;
     }
   }
@@ -179,8 +183,8 @@ async fn run_writer(mut writer: ConnectionWriter, mut frames: mpsc::Receiver<Ses
 /// Serves incoming packet frames until the connection closes or a frame
 /// violates the wire contract (fail closed).
 async fn read_loop(
-  reader: &mut ConnectionReader, session: &EstablishedSession,
-  context: &SessionPacketContext, frames: &mpsc::Sender<SessionFrame>,
+  reader: &mut ConnectionReader, session: &EstablishedSession, context: &SessionPacketContext,
+  frames: &mpsc::Sender<SessionFrame>,
   pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
 ) {
   let mut incoming: HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)> = HashMap::new();
@@ -198,9 +202,16 @@ async fn read_loop(
     match kind {
       PacketKind::Open => match wire::decode_open(&message.body) {
         Ok(open) => {
-          if admit_open(open, session, context, frames, &mut incoming, &mut consumers)
-            .await
-            .is_err()
+          if admit_open(
+            open,
+            session,
+            context,
+            frames,
+            &mut incoming,
+            &mut consumers,
+          )
+          .await
+          .is_err()
           {
             break;
           }
@@ -237,8 +248,7 @@ async fn read_loop(
 async fn admit_open(
   open: OpenFrame, session: &EstablishedSession, context: &SessionPacketContext,
   frames: &mpsc::Sender<SessionFrame>,
-  incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>,
-  consumers: &mut JoinSet<()>,
+  incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>, consumers: &mut JoinSet<()>,
 ) -> Result<()> {
   let trace_id = open.trace_id.clone();
   let status = if open.source != *session.peer() || open.destination != *context.local() {
@@ -497,19 +507,16 @@ pub(crate) async fn run_outbound(
 
 /// Inserts one route record under the configured capacity, evicting the
 /// oldest terminal record when full. Active records are never evicted.
-pub(crate) fn insert_route(routes: &RouteTable, capacity: usize, record: RouteRecord) -> Result<()> {
+pub(crate) fn insert_route(
+  routes: &RouteTable, capacity: usize, record: RouteRecord,
+) -> Result<()> {
   let mut table = routes
     .lock()
     .map_err(|_| Error::internal("route records"))?;
   if !table.contains_key(&record.trace_id) && table.len() >= capacity {
     let oldest = table
       .iter()
-      .filter(|(_, entry)| {
-        matches!(
-          entry.state,
-          RouteState::Delivered | RouteState::Failed(_)
-        )
-      })
+      .filter(|(_, entry)| matches!(entry.state, RouteState::Delivered | RouteState::Failed(_)))
       .min_by_key(|(_, entry)| entry.updated_at)
       .map(|(trace_id, _)| trace_id.clone());
     match oldest {

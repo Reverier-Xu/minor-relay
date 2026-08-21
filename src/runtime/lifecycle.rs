@@ -100,8 +100,7 @@ pub(crate) struct RuntimeClient {
 
 impl RuntimeClient {
   pub(crate) fn new(
-    control: mpsc::Sender<Control>, state: watch::Receiver<LifecycleSnapshot>,
-    routes: RouteTable,
+    control: mpsc::Sender<Control>, state: watch::Receiver<LifecycleSnapshot>, routes: RouteTable,
   ) -> Self {
     Self {
       control,

@@ -201,7 +201,10 @@ mod tests {
     }
     for kind_id in [0x0000, 0x0007, 0x000F, 0x0014, 0x00FF, 0xFFFF] {
       assert_eq!(lookup_packet(BASE_SCHEMA_ID, kind_id), None);
-      assert!(!is_declared(BASE_SCHEMA_ID, kind_id), "kind: {kind_id:#06x}");
+      assert!(
+        !is_declared(BASE_SCHEMA_ID, kind_id),
+        "kind: {kind_id:#06x}"
+      );
     }
     assert!(!is_declared(0x0000, 0x0010));
     assert!(!is_declared(0x0002, 0x0010));

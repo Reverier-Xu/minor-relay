@@ -22,7 +22,10 @@ pub struct ProtocolDefinition {
 
 impl ProtocolDefinition {
   pub fn new(tag: ProtocolTag, owning_feature: FeatureTag) -> Self {
-    Self { tag, owning_feature }
+    Self {
+      tag,
+      owning_feature,
+    }
   }
 
   pub(crate) const fn owning_feature(&self) -> &FeatureTag {
@@ -124,9 +127,9 @@ mod tests {
     registry
       .register_protocol(definition("alpha"), Arc::new(NoopConsumer))
       .unwrap();
-    assert!(registry.has_protocol(
-      &ProtocolTag::parse("relay.woooo.tech/protocols/alpha").unwrap()
-    ));
+    assert!(
+      registry.has_protocol(&ProtocolTag::parse("relay.woooo.tech/protocols/alpha").unwrap())
+    );
 
     let error = registry
       .register_protocol(definition("alpha"), Arc::new(NoopConsumer))
@@ -137,11 +140,9 @@ mod tests {
     registry
       .register_protocol(definition("beta"), Arc::new(NoopConsumer))
       .unwrap();
-    assert!(registry.has_protocol(
-      &ProtocolTag::parse("relay.woooo.tech/protocols/beta").unwrap()
-    ));
-    assert!(!registry.has_protocol(
-      &ProtocolTag::parse("relay.woooo.tech/protocols/gamma").unwrap()
-    ));
+    assert!(registry.has_protocol(&ProtocolTag::parse("relay.woooo.tech/protocols/beta").unwrap()));
+    assert!(
+      !registry.has_protocol(&ProtocolTag::parse("relay.woooo.tech/protocols/gamma").unwrap())
+    );
   }
 }

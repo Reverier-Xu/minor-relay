@@ -151,7 +151,9 @@ async fn supervise(
         credential,
         reply,
       } => {
-        let result = supervisor.join_cluster(receiver, credential, &mut tasks).await;
+        let result = supervisor
+          .join_cluster(receiver, credential, &mut tasks)
+          .await;
         let _ = reply.send(result);
       }
       Control::GetLocalNode { reply } => {

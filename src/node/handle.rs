@@ -1,14 +1,14 @@
-use std::{any::{Any, TypeId}, sync::Arc};
+use std::{
+  any::{Any, TypeId},
+  sync::Arc,
+};
 
 use crate::{
   Command, CreateCluster, Error, Event, EventOptions, EventSubscription, GetLocalNode,
   GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus, OutboundPacket, PacketMetadata,
   PacketPolicy, PacketTarget, ProtocolTag, Query, Result, RotateJoinCredential, Shutdown,
-  StopListener, TraceId, WaitForShutdown,
-  api::Entropy,
-  extension_registry::ExtensionRegistry,
-  packet::DIRECT_ROUTING_POLICY,
-  runtime::RuntimeClient,
+  StopListener, TraceId, WaitForShutdown, api::Entropy, extension_registry::ExtensionRegistry,
+  packet::DIRECT_ROUTING_POLICY, runtime::RuntimeClient,
 };
 
 #[derive(Clone)]

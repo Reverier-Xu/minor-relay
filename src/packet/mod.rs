@@ -16,12 +16,7 @@
 
 pub(crate) mod wire;
 
-use std::{
-  collections::BTreeMap,
-  fmt,
-  sync::Arc,
-  time::SystemTime,
-};
+use std::{collections::BTreeMap, fmt, sync::Arc, time::SystemTime};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -118,9 +113,7 @@ impl PacketMetadata {
       return Err(Error::conflict("packet metadata"));
     }
     let added = key.as_str().len() + value.len();
-    if self.entries.len() >= METADATA_MAX_ENTRIES
-      || self.total_bytes + added > METADATA_MAX_BYTES
-    {
+    if self.entries.len() >= METADATA_MAX_ENTRIES || self.total_bytes + added > METADATA_MAX_BYTES {
       return Err(Error::resource_exhausted("packet metadata"));
     }
     self.total_bytes += added;
@@ -133,7 +126,10 @@ impl PacketMetadata {
   }
 
   pub fn entries(&self) -> impl ExactSizeIterator<Item = (&QualifiedTag, &[u8])> {
-    self.entries.iter().map(|(key, value)| (key, value.as_ref()))
+    self
+      .entries
+      .iter()
+      .map(|(key, value)| (key, value.as_ref()))
   }
 }
 
@@ -545,9 +541,7 @@ mod tests {
   fn tls_transport_packet_metadata_insert_enforces_byte_bound() {
     let metadata = PacketMetadata::new();
     let value: Arc<[u8]> = Arc::from(vec![0_u8; METADATA_MAX_BYTES]);
-    let error = metadata
-      .insert(key("oversize"), value)
-      .unwrap_err();
+    let error = metadata.insert(key("oversize"), value).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
 
     let metadata = PacketMetadata::new()
