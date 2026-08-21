@@ -11,7 +11,7 @@ use minor_relay::{
   CreateCluster, Endpoint, ErrorKind, GetLocalNode, JoinCluster, JoinCredential, Listen,
   NodeBuilder, NodeHandle, RotateJoinCredential, Shutdown,
 };
-#[cfg(feature = "json")]
+#[cfg(all(unix, feature = "json"))]
 use tempfile::TempDir;
 
 mod common;
@@ -32,7 +32,7 @@ async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> N
   }
 }
 
-#[cfg(feature = "json")]
+#[cfg(all(unix, feature = "json"))]
 async fn start_json(dir: &TempDir, keys: Arc<ScriptedKeys>) -> Node {
   let handle = NodeBuilder::new(
     minor_relay::adapters::json_store(dir.path().to_path_buf()),
@@ -96,7 +96,10 @@ async fn secure_join_completes_exporter_bound_join_and_persists_admission() {
   joiner.handle.command(Shutdown::new()).await.unwrap();
 }
 
-#[cfg(feature = "json")]
+// The json backend provides OsCrashDurable only where the directory
+// barrier is available (unix); elsewhere the runtime requirement is
+// refused with a typed error, matching json_runtime's non-unix lane.
+#[cfg(all(unix, feature = "json"))]
 #[tokio::test]
 async fn secure_join_json_backend_round_trips_the_same_join() {
   let receiver_dir = tempfile::tempdir().unwrap();
