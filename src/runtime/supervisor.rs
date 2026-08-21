@@ -259,6 +259,7 @@ impl Supervisor {
   }
 
   async fn create_cluster(&mut self) -> Result<ClusterView> {
+    self.require_unblocked()?;
     let context = self.context()?;
     let genesis = create_cluster(
       &context,
@@ -273,6 +274,7 @@ impl Supervisor {
   }
 
   fn rotate_join_credential(&mut self) -> Result<IssuedJoinCredential> {
+    self.require_unblocked()?;
     self
       .driver
       .issuer()
@@ -282,6 +284,7 @@ impl Supervisor {
   }
 
   async fn listen(&mut self, endpoint: Endpoint, tasks: &mut JoinSet<()>) -> Result<ListenerView> {
+    self.require_unblocked()?;
     let address = format!("{}:{}", endpoint.host(), endpoint.port());
     let listener = tokio::net::TcpListener::bind(&address).await.map_err(|_| {
       Error::provider(
@@ -317,12 +320,17 @@ impl Supervisor {
         let packet = packet.clone();
         let shutdown = shutdown.clone();
         let task = tokio::spawn(async move {
-          if let Ok(mut connection) = Connection::accept(tcp, config, rules, hint.as_ref()).await
-            && let Ok(session) = driver.respond(&mut connection).await
-          {
-            // Keep the authenticated session open: it serves packet streams
-            // until the connection closes (ADR-0007).
-            run_session(connection, session, packet, sessions, shutdown).await;
+          if let Ok(mut connection) = Connection::accept(tcp, config, rules, hint.as_ref()).await {
+            match driver.respond(&mut connection).await {
+              Ok(session) => {
+                // Keep the authenticated session open: it serves packet
+                // streams until the connection closes (ADR-0007).
+                run_session(connection, session, packet, sessions, shutdown).await;
+              }
+              Err(error) => {
+                tracing::warn!(kind = ?error.kind(), context = %error, "session establishment failed");
+              }
+            }
           }
         });
         if let Ok(mut tasks) = connection_tasks.lock() {
@@ -347,6 +355,7 @@ impl Supervisor {
     &mut self, receiver: Endpoint, credential: crate::identity::credential::JoinCredential,
     tasks: &mut JoinSet<()>,
   ) -> Result<AdmissionView> {
+    self.require_unblocked()?;
     let tcp = tokio::net::TcpStream::connect(receiver.authority())
       .await
       .map_err(|_| {
@@ -445,5 +454,18 @@ impl Supervisor {
       .context
       .clone()
       .ok_or_else(|| Error::internal("runtime context"))
+  }
+
+  /// Blocks admission-sensitive operations while the metadata store is
+  /// frozen on an indeterminate outcome (ADR-0007, THR-015): credential
+  /// reuse, rotation, signing, and new networking stay unavailable until
+  /// an authoritative reopen reconciles the exact transaction or proves
+  /// absence. Established authenticated sessions are unaffected.
+  fn require_unblocked(&self) -> Result<()> {
+    let context = self.context()?;
+    if context.store().is_blocked()? {
+      return Err(Error::not_ready("metadata storage reconciliation"));
+    }
+    Ok(())
   }
 }

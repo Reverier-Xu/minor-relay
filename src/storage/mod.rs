@@ -359,6 +359,14 @@ impl MetadataStore {
     }
   }
 
+  /// Whether the store is frozen on an indeterminate outcome and the
+  /// runtime must block new admission-sensitive operations (credential
+  /// rotation, reuse, signing, and networking) until an authoritative
+  /// reopen reconciles the exact transaction or proves absence.
+  pub(crate) fn is_blocked(&self) -> Result<bool> {
+    Ok(matches!(*self.lock_state()?, CommitState::Frozen { .. }))
+  }
+
   fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, CommitState>> {
     self
       .state
