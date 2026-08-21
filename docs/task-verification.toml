@@ -281,14 +281,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G03-03"
 verification_id = "VERIFY-G03-03"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G03-03"
 owner_task = "T-G03-03"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g3-admission.sh"]
 timeout_seconds = 1800
 
 [[task]]

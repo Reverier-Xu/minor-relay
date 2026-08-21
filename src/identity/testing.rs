@@ -358,8 +358,17 @@ impl KeyProvider for ScriptedKeys {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommitFault {
   Pass,
+  /// Returns `Aborted` after applying: the caller observes an equivocated
+  /// pre-commit rejection while the records actually committed.
   Aborted,
+  /// Returns `Conflict` after applying: equivocated pre-commit conflict.
   Conflict,
+  /// Returns `Aborted` without touching the provider: a genuine pre-commit
+  /// rejection that leaves every record absent.
+  PureAborted,
+  /// Returns `Conflict` without touching the provider: a genuine
+  /// pre-commit conflict that leaves every record absent.
+  PureConflict,
   UnknownApplied,
   UnknownNotApplied,
   HangApplied,
@@ -496,6 +505,8 @@ impl Storage for FaultingStorage {
           ));
           Ok(CommitOutcome::Conflict)
         }
+        CommitFault::PureAborted => Ok(CommitOutcome::Aborted),
+        CommitFault::PureConflict => Ok(CommitOutcome::Conflict),
         CommitFault::UnknownNotApplied => Ok(CommitOutcome::Unknown {
           transaction: id,
           operation_digest: digest,
