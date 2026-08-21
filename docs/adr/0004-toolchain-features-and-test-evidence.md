@@ -16,9 +16,15 @@ amended:
       as a development-only subscriber for test diagnostics (T-G03-02 observability
       baseline). The facade is a zero-cost no-op without a subscriber, so host
       applications keep full subscriber choice; it is not feature-gated, keeps MSRV
-      1.97.1, and its exact resolution is pinned by the dependency-graph baseline.
+      1.98.0, and its exact resolution is pinned by the dependency-graph baseline.
       From G3 onward every task instruments its owned paths through this facade with
       secret-safe events (roadmap architecture rule 9).
+  - date: 2026-08-22
+    summary: >-
+      Raise the fixed MSRV from 1.97.1 to 1.98.0 (T-G03-03 toolchain alignment).
+      The workspace builds, clippy -D warnings, and tests all pass on 1.98.0, and the
+      stable CI job already runs the same compiler, so the floor and the forward
+      detection lane coincide until the next stable release.
 deciders: minor-relay maintainers
 ---
 
@@ -35,7 +41,7 @@ claims. Those claims need one fixed compiler baseline, additive Cargo features, 
 choices, bounded test cadences, owned regression corpora, secret-safe failure evidence, and a release
 barrier that cannot confuse the placeholder package version with the functional `0.1.0` milestone.
 
-The current development compiler is Rust 1.97.1. The package already says `0.1.0`, but no functional
+The current development compiler is Rust 1.98.0. The package already says `0.1.0`, but no functional
 release is eligible until G10 passes on the exact commit to be tagged and published.
 
 Scenarios `SC-G00-P1-01` and `SC-G00-P1-02` are ratified by
@@ -57,20 +63,20 @@ Scenarios `SC-G00-P1-01` and `SC-G00-P1-02` are ratified by
 
 ### Fixed MSRV
 
-The functional `0.1.0` MSRV is exactly Rust 1.97.1. `Cargo.toml` declares:
+The functional `0.1.0` MSRV is exactly Rust 1.98.0. `Cargo.toml` declares:
 
 ```toml
-rust-version = "1.97.1"
+rust-version = "1.98.0"
 ```
 
 Production code, build scripts, examples, tests required by an MSRV job, and all enabled dependencies
-must compile with Rust 1.97.1. Stable CI also runs the current stable compiler to detect forward
+must compile with Rust 1.98.0. Stable CI also runs the current stable compiler to detect forward
 regressions. Nightly is used only for repository rustfmt and fuzzing; it is never a production compile
 requirement.
 
 Dependency updates must pass the fixed-MSRV job before merge. After functional `0.1.0`, an MSRV
 increase requires an ADR amendment, changelog entry, compatibility review, full feature matrix, and a
-minor release at minimum. A patch release never raises MSRV. Rust 1.97.1 remains fixed until that
+minor release at minimum. A patch release never raises MSRV. Rust 1.98.0 remains fixed until that
 explicit change; this is not a rolling `stable-N` policy.
 
 ### Cargo Feature Policy
@@ -411,7 +417,7 @@ T-G00-04 is documentation and metadata policy. Later tasks own executable eviden
 
 ### Rust 1.85.0 or Rolling MSRV
 
-Rejected by explicit maintainer decision. Rust 1.97.1 is the fixed functional-release floor. Rolling
+Rejected by explicit maintainer decision. Rust 1.98.0 is the fixed functional-release floor. Rolling
 stable policies make downstream requirements change without an intentional compatibility decision.
 
 ### TLS or Security Cargo Features
@@ -466,7 +472,7 @@ publication and tagging.
 - Filesystems and hardware may violate documented durability despite a reported capability.
 - A seven-day CI artifact can expose allowed metadata such as commit, platform, scenario, and feature set.
 - Sanitizer and fuzz coverage differ across CPUs and toolchain implementations.
-- Fixed Rust 1.97.1 may reduce downstream adoption and require older compatible dependency pins later.
+- Fixed Rust 1.98.0 may reduce downstream adoption and require older compatible dependency pins later.
 - Manual corpus and dependency review can miss novel secret formats or supply-chain compromise.
 - CI parallelism and hosted-runner variance can threaten the ten-minute merge target without changing
   correctness budgets.
@@ -474,7 +480,7 @@ publication and tagging.
 ## References
 
 - Cargo Reference: `rust-version`, features, package publication, and lockfiles.
-- Rust 1.97.1 release toolchain.
+- Rust 1.98.0 release toolchain.
 - cargo-hack, cargo-fuzz, cargo-semver-checks, and cargo-deny documentation.
 - ADR-0001, Bind Node Identity and Admission to a TLS 1.3 Channel.
 - ADR-0002, Negotiate Feature Labels and Provide Bounded Durable Delivery.
