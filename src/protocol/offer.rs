@@ -571,4 +571,20 @@ mod tests {
     noncanonical[0] = 0x9F;
     assert!(FeatureOffer::decode(&noncanonical, &registry).is_err());
   }
+
+  #[test]
+  fn handshake_offer_duplicate_limit_entries_reject_at_decode() {
+    let registry = FeatureRegistry::builtin().unwrap();
+    let initiator = fixtures::initiator_offer(&registry);
+    let mut wire = initiator.wire();
+    let entry = wire.limits[0].clone();
+    wire.limits.push(entry);
+    let bytes = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    assert!(FeatureOffer::decode(&bytes, &registry).is_err());
+
+    let mut unsorted = initiator.wire();
+    unsorted.limits.reverse();
+    let bytes = encode_canonical(&unsorted, OFFER_CBOR_LIMITS).unwrap();
+    assert!(FeatureOffer::decode(&bytes, &registry).is_err());
+  }
 }

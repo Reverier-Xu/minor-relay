@@ -418,3 +418,65 @@ async fn session_adoption_result_loss_recovers_via_member_reconnect() {
   assert_eq!(session.peer(), &peer_return_marker(&receiver));
   assert_eq!(member_responder.await.unwrap().unwrap().peer(), &joiner_id);
 }
+
+/// SC-G03-P0-14: a credential-free member reconnect negotiates the exact
+/// same feature policy as the original join — byte-identical feature
+/// selection, never a weakened offer — and never consults a join
+/// credential.
+#[tokio::test]
+async fn session_member_reconnect_preserves_exact_feature_selection() {
+  let receiver = clustered_node().await;
+  let joiner = node().await;
+  let issued = receiver
+    .issuer
+    .lock()
+    .unwrap()
+    .rotate(receiver.entropy.as_ref(), std::time::SystemTime::now())
+    .unwrap();
+
+  let (address, first_responder) = listen(&receiver, true).await;
+  let mut connection = connect(address).await;
+  let hint = connection.join_hint().unwrap().clone();
+  let (join_session, _) = joiner
+    .driver
+    .join(
+      &mut connection,
+      &hint,
+      CredentialSecret::from_credential(issued.credential()),
+    )
+    .await
+    .unwrap();
+  let issuer_id = join_session.peer().clone();
+  let join_features = join_session.selected_features().to_vec();
+  first_responder.await.unwrap().unwrap();
+
+  // Member reconnect: key trust only, no credential, same feature policy.
+  let (address, member_responder) = listen(&receiver, false).await;
+  let mut connection = connect(address).await;
+  let reconnect = joiner
+    .driver
+    .initiate_member(&mut connection, &issuer_id)
+    .await
+    .unwrap();
+  assert_eq!(reconnect.peer(), &issuer_id);
+  assert_eq!(
+    reconnect.selected_features(),
+    &join_features[..],
+    "reconnect must reproduce the prior exact feature selection"
+  );
+  assert!(!reconnect.selected_features().is_empty());
+  assert_eq!(
+    member_responder.await.unwrap().unwrap().peer(),
+    &peer_return_marker(&joiner)
+  );
+
+  // The responder side of the reconnect observed the identical selection.
+  let (address, _) = listen(&receiver, false).await;
+  let mut connection = connect(address).await;
+  let responder_side = joiner
+    .driver
+    .initiate_member(&mut connection, &issuer_id)
+    .await
+    .unwrap();
+  assert_eq!(responder_side.selected_features(), &join_features[..]);
+}

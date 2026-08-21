@@ -430,3 +430,130 @@ async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
   receiver.handle.command(Shutdown::new()).await.unwrap();
   joiner_handle.command(Shutdown::new()).await.unwrap();
 }
+
+// ---- T-G03-04 feature selection / credential-free reconnect evidence (E2E-01)
+// ----
+
+use minor_relay::ConnectMember;
+
+/// Sends one two-chunk packet from `sender` to `target` and waits for the
+/// receiver-side collector to observe it in order.
+async fn packet_round_trip(
+  sender: &NodeHandle, target: &minor_relay::NodeId, collector: &Arc<Collector>,
+) -> minor_relay::NodeId {
+  let packet = sender
+    .create_packet(
+      PacketTarget::Exact(target.clone()),
+      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      policy(),
+      metadata(),
+    )
+    .unwrap();
+  let ack = packet
+    .send_sync(Box::new(VecBody::new(vec![b"a", b"b"])))
+    .await
+    .unwrap();
+  assert_eq!(ack.destination(), target);
+  for _ in 0..4096 {
+    if !collector.packets.lock().unwrap().is_empty() {
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
+  let packets = collector.packets.lock().unwrap().clone();
+  assert_eq!(packets.len(), 1, "one ordered packet must arrive");
+  assert_eq!(packets[0].1, b"ab");
+  ack.destination().clone()
+}
+
+#[tokio::test]
+async fn secure_join_rotation_keeps_members_and_reconnect_is_credential_free() {
+  let receiver_keys = Arc::new(ScriptedKeys::full_at(90_000));
+  let receiver_collector = Arc::new(Collector::default());
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      receiver_keys.clone(),
+      protocol("test-echo"),
+      Arc::clone(&receiver_collector),
+    )
+    .await,
+    _keys: receiver_keys.clone(),
+  };
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+
+  let joiner_keys = Arc::new(ScriptedKeys::full_at(95_000));
+  let joiner_storage = Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
+  let joiner_collector = Arc::new(Collector::default());
+  let joiner = Node {
+    handle: start_with_protocol(
+      Arc::clone(&joiner_storage),
+      joiner_keys.clone(),
+      protocol("test-echo"),
+      Arc::clone(&joiner_collector),
+    )
+    .await,
+    _keys: joiner_keys.clone(),
+  };
+  let admission = joiner
+    .handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+  let _admitted = admission.admitted_node().clone();
+
+  // E2E-01: the joined member streams packets; credential rotation does
+  // not disconnect it.
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+  packet_round_trip(&joiner.handle, &receiver_id, &receiver_collector).await;
+  receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  receiver_collector.packets.lock().unwrap().clear();
+  packet_round_trip(&joiner.handle, &receiver_id, &receiver_collector).await;
+
+  // Disconnect by shutting the joiner down, then reconnect with key trust
+  // only: no credential exists on this node, the trusted binding gates the
+  // handshake, and packets flow again.
+  joiner.handle.command(Shutdown::new()).await.unwrap();
+  let restarted = Node {
+    handle: start_with_protocol(
+      joiner_storage,
+      joiner_keys.clone(),
+      protocol("test-echo"),
+      Arc::clone(&joiner_collector),
+    )
+    .await,
+    _keys: joiner_keys.clone(),
+  };
+  let authenticated = restarted
+    .handle
+    .command(ConnectMember::new(
+      listener.endpoint().clone(),
+      receiver_id.clone(),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(authenticated, receiver_id.clone());
+  receiver_collector.packets.lock().unwrap().clear();
+  packet_round_trip(&restarted.handle, &receiver_id, &receiver_collector).await;
+
+  restarted.handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}

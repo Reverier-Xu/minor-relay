@@ -576,4 +576,122 @@ mod tests {
     )
     .unwrap()
   }
+
+  // ---- T-G03-04 feature selection evidence ----
+
+  #[test]
+  fn handshake_selection_required_order_permutations_are_identical() {
+    let registry = FeatureRegistry::builtin().unwrap();
+    let initiator = initiator_offer(&registry);
+    let responder = responder_offer(&registry);
+
+    // Every ordering of the required union yields the same selection bytes.
+    let mut required = initiator.required().to_vec();
+    let baseline = select(
+      &registry,
+      &initiator,
+      &responder,
+      initiator.required(),
+      responder.required(),
+    )
+    .unwrap();
+    for _ in 0..required.len() {
+      required.rotate_left(1);
+      let permuted = FeatureOffer::new(
+        initiator.supported().to_vec(),
+        required.clone(),
+        initiator.limits().to_vec(),
+      )
+      .unwrap();
+      let selection = select(
+        &registry,
+        &permuted,
+        &responder,
+        permuted.required(),
+        responder.required(),
+      )
+      .unwrap();
+      assert_eq!(selection.bytes(), baseline.bytes());
+    }
+  }
+
+  #[test]
+  fn handshake_selection_unknown_optional_label_stays_transcript_bound_and_unselected() {
+    let registry = FeatureRegistry::builtin().unwrap();
+    let initiator = initiator_offer(&registry);
+    // An unknown optional label in one offer: not in the registry, so it can
+    // never be selected, but it remains part of this peer's transcript bytes.
+    let unknown = FeatureTag::parse("testing.example/features/future-optional").unwrap();
+    let unknown_digest = Digest::from_bytes([0xEE; 32]);
+    let mut supported = initiator.supported().to_vec();
+    supported.push((unknown.clone(), unknown_digest));
+    let with_unknown = FeatureOffer::new(
+      supported,
+      initiator.required().to_vec(),
+      initiator.limits().to_vec(),
+    )
+    .unwrap();
+
+    let selection = select(
+      &registry,
+      &with_unknown,
+      &responder_offer(&registry),
+      with_unknown.required(),
+      responder_offer(&registry).required(),
+    )
+    .unwrap();
+    assert!(
+      !selection.features().iter().any(|tag| tag == &unknown),
+      "unknown optional must never be selected"
+    );
+    assert!(
+      with_unknown
+        .encode()
+        .unwrap()
+        .windows(unknown.as_str().len())
+        .any(|window| window == unknown.as_str().as_bytes()),
+      "unknown optional must remain in the transcript offer"
+    );
+  }
+
+  #[test]
+  fn handshake_offer_rejects_missing_duplicate_and_unknown_mandatory_limits() {
+    let registry = FeatureRegistry::builtin().unwrap();
+    let initiator = initiator_offer(&registry);
+
+    // Missing a mandatory limit.
+    let missing = FeatureOffer::new(
+      initiator.supported().to_vec(),
+      initiator.required().to_vec(),
+      vec![(fixtures::limit("data-body-bytes"), 1_048_576)],
+    )
+    .unwrap();
+    let error = missing.validate_limits(&registry).unwrap_err();
+    assert_eq!(error.context(), "feature offer mandatory limits");
+
+    // Duplicate limit entries reject at decode (ordering) and validation.
+    let mut duplicates = initiator.limits().to_vec();
+    duplicates.push(duplicates[0].clone());
+    let duplicate_offer = FeatureOffer::new(
+      initiator.supported().to_vec(),
+      initiator.required().to_vec(),
+      duplicates,
+    );
+    assert!(duplicate_offer.is_err());
+    // Unknown mandatory limit: not owned by any offered label.
+    let unknown = FeatureOffer::new(
+      initiator.supported().to_vec(),
+      initiator.required().to_vec(),
+      vec![
+        (fixtures::limit("data-body-bytes"), 1_048_576),
+        (
+          QualifiedTag::parse("relay.woooo.tech/limits/not-owned").unwrap(),
+          1,
+        ),
+      ],
+    )
+    .unwrap();
+    let error = unknown.validate_limits(&registry).unwrap_err();
+    assert_eq!(error.context(), "feature offer unknown limit");
+  }
 }
