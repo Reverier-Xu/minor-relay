@@ -954,3 +954,75 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
   joiner_handle.command(Shutdown::new()).await.unwrap();
   receiver.handle.command(Shutdown::new()).await.unwrap();
 }
+
+// ---- T-G03-06 hostile / admission-input closure evidence (SC-G03-P0-22) ----
+
+/// SC-G03-P0-22: a source exhausting its fixed admission rate window is
+/// refused before any handshake or signing work; the refusal consumes no
+/// credential and performs no signature.
+#[tokio::test]
+async fn secure_join_admission_rate_window_refuses_before_signing() {
+  let receiver_keys = Arc::new(ScriptedKeys::full_at(130_000));
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      receiver_keys.clone(),
+      protocol("test-echo"),
+      Arc::new(Collector::default()),
+    )
+    .await,
+    _keys: receiver_keys.clone(),
+  };
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+
+  // A syntactically valid but cryptographically wrong credential fails at
+  // proof verification; every attempt still counts against the fixed
+  // per-source admission rate window (16 per 60 seconds).
+  let hostile = JoinCredential::parse("join_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
+  let attacker = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(131_000)),
+    protocol("test-echo"),
+    Arc::new(Collector::default()),
+  )
+  .await;
+  for _ in 0..16 {
+    let error = attacker
+      .command(JoinCluster::new(
+        listener.endpoint().clone(),
+        JoinCredential::parse("join_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+      ))
+      .await
+      .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::AuthenticationFailed);
+  }
+  assert!(
+    !receiver_keys.take_calls().is_empty(),
+    "authenticated attempts reach the handshake and sign"
+  );
+
+  // The seventeenth attempt from the same source (all loopback reconnects
+  // normalize to one source) is refused before any signing work.
+  let error = attacker
+    .command(JoinCluster::new(listener.endpoint().clone(), hostile))
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::AuthenticationFailed);
+  assert!(
+    receiver_keys.take_calls().is_empty(),
+    "a rate-refused attempt must perform no signing and consume no credential"
+  );
+
+  attacker.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}

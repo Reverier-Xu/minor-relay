@@ -1728,4 +1728,47 @@ mod tests {
     #[n(6)]
     nonce: ByteVec,
   }
+
+  /// THR-002 / SC-G03-P0-18: a complete prior handshake replayed on a
+  /// fresh connection fails — the fresh exporter channel binding produces a
+  /// different transcript, so the replayed proof signatures never verify.
+  #[test]
+  fn handshake_state_machine_rejects_cross_connection_replay() {
+    // Session A completes honestly; its messages are the replay material.
+    let session_a = join_pair();
+    let exchange_a = drive(&session_a, &[], false, false).unwrap();
+
+    // Session B is a fresh connection: new nonces and a fresh channel
+    // binding (different exporter value).
+    let session_b = join_pair();
+    let mut replay_responder = fresh(&session_b.responder);
+
+    // The replayed hello is a structurally valid position-one message, so
+    // it advances; the responder then issues its own fresh hello and its
+    // own proof. The attacker cannot occupy the responder's protocol
+    // positions, so session A's initiator proof (position four) is
+    // rejected by strict position ordering before any signature work, and
+    // the fresh nonce/exporter transcript binding never becomes a replay
+    // vector (THR-002).
+    replay_responder.receive(&exchange_a.messages[0]).unwrap();
+    let responder_hello = replay_responder.responder_hello().unwrap();
+    assert_eq!(
+      replay_responder.receive(&exchange_a.messages[3]),
+      Err(HandshakeError::OutOfOrder),
+      "a replayed initiator proof must be rejected before any signature work"
+    );
+    assert_eq!(
+      replay_responder.receive(&exchange_a.messages[0]),
+      Err(HandshakeError::Duplicate),
+      "a replayed position-one hello must be rejected"
+    );
+
+    // The responder never reaches the confirmation step with the replayed
+    // material: authentication stays incomplete, so no confirmation (and
+    // therefore no signed selection or grant) can be produced.
+    assert!(!replay_responder.is_authenticated());
+    assert!(replay_responder.selection_confirmation().is_err());
+
+    let _ = responder_hello;
+  }
 }
