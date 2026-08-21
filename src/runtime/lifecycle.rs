@@ -2,7 +2,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
   AdmissionView, ClusterView, Endpoint, Error, IssuedJoinCredential, ListenerView, LocalNodeView,
-  NodeStatus, Result, RouteStatusView, ShutdownOutcome, ShutdownReason,
+  NodeId, NodeStatus, Result, RouteStatusView, ShutdownOutcome, ShutdownReason,
   identity::{ListenerId, credential::JoinCredential},
   packet::{OutboundRequest, RouteHandle},
   session::stream::RouteTable,
@@ -81,6 +81,11 @@ pub(crate) enum Control {
     receiver: Endpoint,
     credential: JoinCredential,
     reply: oneshot::Sender<Result<AdmissionView>>,
+  },
+  ConnectMember {
+    receiver: Endpoint,
+    peer: NodeId,
+    reply: oneshot::Sender<Result<NodeId>>,
   },
   GetLocalNode {
     reply: oneshot::Sender<Result<LocalNodeView>>,
@@ -180,6 +185,17 @@ impl RuntimeClient {
       .send_command(|reply| Control::JoinCluster {
         receiver,
         credential,
+        reply,
+      })
+      .await
+  }
+
+  /// Connects to an already-admitted peer with key trust only (G3-04).
+  pub(crate) async fn connect_member(&self, receiver: Endpoint, peer: NodeId) -> Result<NodeId> {
+    self
+      .send_command(|reply| Control::ConnectMember {
+        receiver,
+        peer,
         reply,
       })
       .await

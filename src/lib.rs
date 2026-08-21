@@ -55,8 +55,8 @@ pub use identity::{
 };
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{
-  Command, CreateCluster, Event, GetLocalNode, GetNodeStatus, GetRoute, JoinCluster, Listen, Query,
-  RotateJoinCredential, Shutdown, StopListener, WaitForShutdown,
+  Command, ConnectMember, CreateCluster, Event, GetLocalNode, GetNodeStatus, GetRoute, JoinCluster,
+  Listen, Query, RotateJoinCredential, Shutdown, StopListener, WaitForShutdown,
 };
 pub use packet::{
   DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,

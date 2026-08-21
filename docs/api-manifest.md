@@ -327,6 +327,10 @@ pub struct JoinCluster { /* private */ }
 impl JoinCluster { pub fn new(receiver: Endpoint, credential: JoinCredential) -> Self; }
 impl Command for JoinCluster { type Output = AdmissionView; }
 
+pub struct ConnectMember { /* private */ }
+impl ConnectMember { pub fn new(receiver: Endpoint, peer: NodeId) -> Self; }
+impl Command for ConnectMember { type Output = NodeId; }
+
 pub struct DisconnectPeer { /* private */ }
 impl DisconnectPeer { pub fn new(peer: NodeId) -> Self; }
 impl Command for DisconnectPeer { type Output = (); }
