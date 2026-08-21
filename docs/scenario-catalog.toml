@@ -79,7 +79,7 @@ first = 1
 verification_id = "VERIFY-G00-04"
 kind = "documentation"
 cases = [
-  { title = "Ratify toolchain feature and dependency policy", acceptance = "Accepted ADR and Cargo metadata fix Rust 1.97.1, publish=false during development, additive json and redb features, unconditional security behavior, approved package families, locked resolutions, and one TLS provider.", rebaseline = "ADR-0007", threats = [
+  { title = "Ratify toolchain feature and dependency policy", acceptance = "Accepted ADR and Cargo metadata fix Rust 1.98.0, publish=false during development, additive json and redb features, unconditional security behavior, approved package families, locked resolutions, and one TLS provider.", rebaseline = "ADR-0007", threats = [
     "THR-027",
     "THR-029",
   ] },
@@ -261,7 +261,7 @@ kind = "closure"
 cases = [
   { title = "Close the public foundation and provider facade", acceptance = "G1 freezes the complete externally implementable KeyProvider, StorageFactory, Storage, StoreSnapshot, and StoreScan SPI shape, validation, canonical transaction/operation digest helper, and boundary constructors/accessors. An external-crate test uses only manifest reexports to implement those traits, construct and inspect every key/storage boundary value in both directions, and construct and shut down a node. Executing semantic contract suites, provider calls, the transaction engine and reconciliation cleanup, and JSON/redb and real-backend semantics remain owned by G2. Private protocol, runtime, backend, and simulator modules remain inaccessible.", rebaseline = "ADR-0007", threats = [
   ] },
-  { title = "Close MSRV stable dependency and lint gates", acceptance = "Rust 1.97.1 and current stable pass locked Q with zero warnings, cargo-deny accepts the reviewed graph, production unwrap and expect are denied, and CI rejects unlocked or policy-violating dependencies.", rebaseline = "ADR-0007", threats = [
+  { title = "Close MSRV stable dependency and lint gates", acceptance = "Rust 1.98.0 and current stable pass locked Q with zero warnings, cargo-deny accepts the reviewed graph, production unwrap and expect are denied, and CI rejects unlocked or policy-violating dependencies.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-029",
   ] },
@@ -1629,7 +1629,7 @@ first = 20
 verification_id = "VERIFY-G10-07"
 kind = "native-ci"
 cases = [
-  { title = "Pass MSRV and stable quality matrices", acceptance = "Rust 1.97.1 and current stable complete Q with all targets, all features, locked dependencies, zero warnings, and attestations bound to the tested commit.", rebaseline = "ADR-0007", threats = [
+  { title = "Pass MSRV and stable quality matrices", acceptance = "Rust 1.98.0 and current stable complete Q with all targets, all features, locked dependencies, zero warnings, and attestations bound to the tested commit.", rebaseline = "ADR-0007", threats = [
     "THR-025",
     "THR-029",
   ] },

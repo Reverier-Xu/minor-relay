@@ -100,20 +100,20 @@ jobs:
       - name: install MSRV toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           components: clippy
 
       - name: verify MSRV
-        run: test "$(rustc +1.97.1 --version --verbose | awk '$1 == "release:" { print $2 }')" = "1.97.1"
+        run: test "$(rustc +1.98.0 --version --verbose | awk '$1 == "release:" { print $2 }')" = "1.98.0"
 
       - name: cargo check
-        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
+        run: cargo +1.98.0 check --workspace --all-targets --all-features --locked
 
       - name: cargo clippy
-        run: cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo +1.98.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        run: cargo +1.97.1 test --workspace --all-features --locked
+        run: cargo +1.98.0 test --workspace --all-features --locked
 
   stable:
     name: stable
@@ -160,20 +160,20 @@ jobs:
       - name: install MSRV toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           components: clippy
 
       - name: cargo check
-        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
+        run: cargo +1.98.0 check --workspace --all-targets --all-features --locked
 
       - name: cargo clippy
-        run: cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo +1.98.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        run: cargo +1.97.1 test --workspace --all-features --locked
+        run: cargo +1.98.0 test --workspace --all-features --locked
 
       - name: fixed simulator gate
-        run: cargo +1.97.1 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
+        run: cargo +1.98.0 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
 
   windows:
     name: windows
@@ -190,20 +190,20 @@ jobs:
       - name: install MSRV toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           components: clippy
 
       - name: cargo check
-        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
+        run: cargo +1.98.0 check --workspace --all-targets --all-features --locked
 
       - name: cargo clippy
-        run: cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo +1.98.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        run: cargo +1.97.1 test --workspace --all-features --locked
+        run: cargo +1.98.0 test --workspace --all-features --locked
 
       - name: fixed simulator gate
-        run: cargo +1.97.1 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
+        run: cargo +1.98.0 test --locked --lib simulation::network::tests::simulation_network_fault_matrix_gate -- --ignored --exact
 
   features:
     name: features
@@ -220,7 +220,7 @@ jobs:
       - name: install MSRV toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
 
       - name: install cargo-hack
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
@@ -231,10 +231,10 @@ jobs:
         run: test "$(cargo hack --version)" = "cargo-hack 0.6.45"
 
       - name: feature powerset check
-        run: cargo +1.97.1 hack check --feature-powerset --depth 1 --locked
+        run: cargo +1.98.0 hack check --feature-powerset --depth 1 --locked
 
       - name: feature powerset test
-        run: cargo +1.97.1 hack test --feature-powerset --depth 1 --locked
+        run: cargo +1.98.0 hack test --feature-powerset --depth 1 --locked
 
   container:
     name: container

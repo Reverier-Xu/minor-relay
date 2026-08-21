@@ -11,9 +11,9 @@ if (($# != 0)); then
   exit 2
 fi
 
-MSRV=$(rustc +1.97.1 --version --verbose | awk '$1 == "release:" { print $2 }')
-[[ $MSRV == 1.97.1 ]] || {
-  printf 'expected rustc 1.97.1, found %s\n' "$MSRV" >&2
+MSRV=$(rustc +1.98.0 --version --verbose | awk '$1 == "release:" { print $2 }')
+[[ $MSRV == 1.98.0 ]] || {
+  printf 'expected rustc 1.98.0, found %s\n' "$MSRV" >&2
   exit 2
 }
 
@@ -33,7 +33,7 @@ run_rust_lane() {
     cargo "+${toolchain}" test --workspace --all-features --locked
 }
 
-run_rust_lane 1.97.1
+run_rust_lane 1.98.0
 run_rust_lane stable
 cargo test --locked --test foundation_public
 cargo test \

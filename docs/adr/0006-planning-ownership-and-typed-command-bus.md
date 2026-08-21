@@ -25,7 +25,7 @@ G0 also exposed three unresolved decisions:
 - admission concurrency and rate limits had no accepted numerical owner; and
 - revocation did not define how previously signed replicated content behaves.
 
-The public API must be general-purpose, Rust 1.97.1 compatible, free of Lycoris-specific types, and
+The public API must be general-purpose, Rust 1.98.0 compatible, free of Lycoris-specific types, and
 small enough to evolve after functional `0.1.0`. Three designs were compared: one large typed
 `NodeHandle`, capability sub-handles, and a typed command/query/event bus. The maintainer selected the
 typed bus.
