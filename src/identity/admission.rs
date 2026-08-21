@@ -566,7 +566,7 @@ mod tests {
         credential_use_key, identity_binding_key,
       },
       testing::{
-        CommitFault, FaultingFactory, ScriptedKeys, SequenceEntropy, SignScript,
+        CommitFault, CommitFault::Pass, FaultingFactory, ScriptedKeys, SequenceEntropy, SignScript,
         assert_never_deleted, commit_calls, entry, fresh_reference, node, open_context,
         pending_keys, remove_entry, scripted_signing,
       },
@@ -970,6 +970,128 @@ mod tests {
       ErrorKind::StorageCorrupt,
     );
     assert_never_deleted(&fixture.keys);
+  }
+
+  // ---- T-G03-03 atomic admission/reconciliation evidence ----
+
+  /// SC-G03-P0-07: faulting every pre-commit boundary of the admission
+  /// commit (genuine abort, genuine conflict, or crash before apply)
+  /// leaves binding, use, and grant all absent and releases the
+  /// still-valid credential generation for exactly one later attempt.
+  #[tokio::test]
+  async fn identity_records_admission_precommit_rejections_leave_all_absent_and_release_generation()
+  {
+    for fault in [
+      CommitFault::PureAborted,
+      CommitFault::PureConflict,
+      CommitFault::UnknownNotApplied,
+    ] {
+      let (reference, _factory) = fresh_reference();
+      // Positions: identity(3) + genesis(2) pass; the admission triple
+      // commit at position six fails before applying.
+      let faulting = FaultingFactory::new(
+        &reference,
+        vec![Pass; 5].into_iter().chain([fault]).collect(),
+      );
+      let keys = ScriptedKeys::full();
+      let entropy = Arc::new(SequenceEntropy::default());
+      let context = open_context(&faulting.as_factory(), &keys, &entropy)
+        .await
+        .unwrap();
+      create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+        .await
+        .unwrap();
+      let first = proposal(41, &entropy);
+
+      let error = commit_admission(&context, &provider_of(&keys), entropy.as_ref(), &first)
+        .await
+        .unwrap_err();
+      assert_eq!(error.kind(), ErrorKind::Conflict, "fault: {fault:?}");
+      assert!(
+        matches!(
+          admission_state(&context, &first).await.unwrap(),
+          AdmissionState::Aborted
+        ),
+        "fault: {fault:?} must leave every record absent"
+      );
+      assert!(pending_keys(&reference).is_empty(), "fault: {fault:?}");
+      assert_never_deleted(&keys);
+
+      // One later attempt with the same generation (a fresh admission id)
+      // commits exactly one subject.
+      let mut later = proposal(43, &entropy);
+      set_generation(&mut later, proposal_generation(&first).clone());
+      let grant = commit_admission(&context, &provider_of(&keys), entropy.as_ref(), &later)
+        .await
+        .unwrap();
+      grant.verify(context.identity().public_key()).unwrap();
+      assert!(
+        matches!(
+          admission_state(&context, &later).await.unwrap(),
+          AdmissionState::Consumed(..)
+        ),
+        "fault: {fault:?} later attempt must consume the generation"
+      );
+
+      // A second subject for the same generation is refused: one issuer
+      // generation never commits two subjects.
+      let mut another = proposal(47, &entropy);
+      set_generation(&mut another, proposal_generation(&first).clone());
+      assert_eq!(
+        commit_admission(&context, &provider_of(&keys), entropy.as_ref(), &another)
+          .await
+          .unwrap_err()
+          .kind(),
+        ErrorKind::Conflict,
+        "fault: {fault:?}"
+      );
+      assert_never_deleted(&keys);
+    }
+  }
+
+  /// SC-G03-P0-09: a crash after apply at every pre-admission commit
+  /// boundary never yields a partial triple, and reopen resolves to
+  /// exactly the applied admission (at most one subject per generation).
+  #[tokio::test]
+  async fn identity_records_admission_unknown_applied_schedule_reconciles_after_reopen() {
+    for position in 1..=6_u32 {
+      let (reference, _factory) = fresh_reference();
+      let mut script = vec![Pass; (position - 1) as usize];
+      script.push(CommitFault::UnknownApplied);
+      let faulting = FaultingFactory::new(&reference, script);
+      let keys = ScriptedKeys::full();
+      let entropy = Arc::new(SequenceEntropy::default());
+      let context = open_context(&faulting.as_factory(), &keys, &entropy)
+        .await
+        .unwrap();
+      create_cluster(&context, &provider_of(&keys), entropy.as_ref())
+        .await
+        .unwrap();
+      let first = proposal(53, &entropy);
+      let _ = commit_admission(&context, &provider_of(&keys), entropy.as_ref(), &first).await;
+
+      // Authoritative reopen on the same provider reconciles the journal
+      // to the exact outcome; a partial triple fails closed.
+      drop(context);
+      let reopened = open_context(&faulting.as_factory(), &keys, &entropy)
+        .await
+        .unwrap();
+      match admission_state(&reopened, &first).await {
+        Ok(AdmissionState::Consumed(_, grant)) => {
+          grant.verify(reopened.identity().public_key()).unwrap();
+        }
+        Ok(AdmissionState::Aborted) => {
+          // The admission never applied; the generation stays reusable.
+          let grant = commit_admission(&reopened, &provider_of(&keys), entropy.as_ref(), &first)
+            .await
+            .unwrap();
+          grant.verify(reopened.identity().public_key()).unwrap();
+        }
+        Err(error) => panic!("position {position}: partial admission after reopen: {error:?}"),
+      }
+      assert!(pending_keys(&reference).is_empty(), "position {position}");
+      assert_never_deleted(&keys);
+    }
   }
 
   fn proposal_subject(proposal: &AdmissionProposal) -> &crate::NodeId {

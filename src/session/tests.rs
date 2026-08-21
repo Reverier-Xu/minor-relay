@@ -15,9 +15,12 @@ use crate::{
     credential::JoinCredentialIssuer,
     genesis::create_cluster,
     lifecycle::LocalIdentityContext,
-    testing::{ScriptedKeys, SequenceEntropy, fresh_reference, open_context},
+    testing::{
+      CommitFault, FaultingFactory, ScriptedKeys, SequenceEntropy, fresh_reference, open_context,
+    },
   },
   protocol::credential::CredentialSecret,
+  provider::ReconcileOutcome,
   transport::{
     cert::EphemeralCertificate,
     connection::Connection,
@@ -37,10 +40,30 @@ static NODE_OFFSET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 async fn node() -> Node {
   let (_reference, factory) = fresh_reference();
+  node_with_factory(factory).await
+}
+
+async fn node_with_factory(factory: Arc<dyn crate::provider::StorageFactory>) -> Node {
   let ordinal = NODE_OFFSET.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
   let keys = ScriptedKeys::full_at(ordinal * 1_000);
   let offset = u128::from(ordinal) << 32;
   let entropy = Arc::new(SequenceEntropy::starting_at(offset));
+  node_from(keys, entropy, factory).await
+}
+
+/// Reopens a node on the same provider with the same keys and entropy so
+/// the persisted identity binding matches (authoritative reopen).
+async fn reopen_node(
+  keys: Arc<ScriptedKeys>, entropy: Arc<SequenceEntropy>,
+  factory: Arc<dyn crate::provider::StorageFactory>,
+) -> Node {
+  node_from(keys, entropy, factory).await
+}
+
+async fn node_from(
+  keys: Arc<ScriptedKeys>, entropy: Arc<SequenceEntropy>,
+  factory: Arc<dyn crate::provider::StorageFactory>,
+) -> Node {
   let context = Arc::new(open_context(&factory, &keys, &entropy).await.unwrap());
   let issuer = Arc::new(Mutex::new(JoinCredentialIssuer::new()));
   let offer = crate::protocol::offer::node_offer(
@@ -261,4 +284,137 @@ async fn session_join_rejects_hint_cluster_mismatch_fail_closed() {
 
 fn peer_return_marker(node: &Node) -> crate::NodeId {
   node.context.identity().node().clone()
+}
+
+// ---- T-G03-03 atomic admission/reconciliation evidence ----
+
+/// SC-G03-P0-07: a genuine pre-commit rejection of the admission commit
+/// leaves the issuer credential generation released, so one later attempt
+/// with the same still-valid credential succeeds.
+#[tokio::test]
+async fn session_admission_precommit_abort_releases_generation_for_same_credential_retry() {
+  let (reference, _factory) = fresh_reference();
+  // Identity creation (3) and genesis (2) pass; the admission triple
+  // commit at position six is rejected before applying.
+  let faulting = FaultingFactory::new(
+    &reference,
+    vec![
+      CommitFault::Pass,
+      CommitFault::Pass,
+      CommitFault::Pass,
+      CommitFault::Pass,
+      CommitFault::Pass,
+      CommitFault::UnknownNotApplied,
+    ],
+  );
+  let receiver = node_with_factory(faulting.as_factory()).await;
+  create_cluster(
+    &receiver.context,
+    &receiver.keys.as_provider(),
+    receiver.entropy.as_ref(),
+  )
+  .await
+  .unwrap();
+  let joiner = node().await;
+  receiver
+    .issuer
+    .lock()
+    .unwrap()
+    .rotate(receiver.entropy.as_ref(), std::time::SystemTime::now())
+    .unwrap();
+
+  let (address, first_responder) = listen(&receiver, true).await;
+  let mut connection = connect(address).await;
+  let hint = connection.join_hint().unwrap().clone();
+  let secret = credential_secret(&receiver.issuer);
+  let error = joiner
+    .driver
+    .join(&mut connection, &hint, secret.clone())
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::AuthenticationFailed);
+  assert!(first_responder.await.unwrap().is_err());
+
+  // The generation was released, not consumed: the same credential is
+  // still valid for exactly one later attempt.
+  let (address, second_responder) = listen(&receiver, true).await;
+  let mut connection = connect(address).await;
+  let hint = connection.join_hint().unwrap().clone();
+  let (session, view) = joiner
+    .driver
+    .join(&mut connection, &hint, secret)
+    .await
+    .unwrap();
+  assert_eq!(view.issuer(), session.peer());
+  second_responder.await.unwrap().unwrap();
+}
+
+/// SC-G03-P0-09: dropping the final adoption result still permits the
+/// same identity to recover its stored grant through member
+/// authentication after an authoritative reopen.
+#[tokio::test]
+async fn session_adoption_result_loss_recovers_via_member_reconnect() {
+  let receiver = clustered_node().await;
+  receiver
+    .issuer
+    .lock()
+    .unwrap()
+    .rotate(receiver.entropy.as_ref(), std::time::SystemTime::now())
+    .unwrap();
+
+  // The joiner's adoption commit applies but reports unknown, and the
+  // in-process reconcile also stays unknown: the join result is lost.
+  let (reference, _factory) = fresh_reference();
+  let faulting = FaultingFactory::new(
+    &reference,
+    vec![
+      CommitFault::Pass,
+      CommitFault::Pass,
+      CommitFault::Pass,
+      CommitFault::UnknownApplied,
+    ],
+  );
+  faulting.push_reconcile_fault(ReconcileOutcome::Unknown);
+  let joiner = node_with_factory(faulting.as_factory()).await;
+  let joiner_id = peer_return_marker(&joiner);
+
+  let (address, responder) = listen(&receiver, true).await;
+  let mut connection = connect(address).await;
+  let hint = connection.join_hint().unwrap().clone();
+  let secret = credential_secret(&receiver.issuer);
+  let error = joiner
+    .driver
+    .join(&mut connection, &hint, secret)
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::CommitUnknown);
+  // The receiver committed and delivered the grant; only the joiner lost
+  // the final adoption result.
+  assert!(responder.await.unwrap().is_ok());
+
+  // Authoritative reopen on the same provider with the same identity
+  // reconciles the pending adoption journal to committed: the joiner now
+  // owns its stored grant.
+  let keys = joiner.keys.clone();
+  let entropy = joiner.entropy.clone();
+  drop(joiner);
+  let joiner = reopen_node(keys, entropy, faulting.as_factory()).await;
+  assert!(
+    crate::identity::genesis::local_cluster(&joiner.context)
+      .await
+      .unwrap()
+      .is_some()
+  );
+
+  // The recovered identity authenticates in member mode without any
+  // credential, proving its stored grant is usable.
+  let (address, member_responder) = listen(&receiver, false).await;
+  let mut connection = connect(address).await;
+  let session = joiner
+    .driver
+    .initiate_member(&mut connection, &peer_return_marker(&receiver))
+    .await
+    .unwrap();
+  assert_eq!(session.peer(), &peer_return_marker(&receiver));
+  assert_eq!(member_responder.await.unwrap().unwrap().peer(), &joiner_id);
 }
