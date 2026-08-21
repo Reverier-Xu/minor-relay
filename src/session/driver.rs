@@ -445,7 +445,6 @@ impl SessionDriver {
   /// the expected peer's trusted binding must already exist from an earlier
   /// join or sync, and both sides prove their identity keys over the fresh
   /// transcript. Returns the authenticated session.
-  #[allow(dead_code)] // G3-04 reconnect command wiring; session tests cover it.
   pub(crate) async fn initiate_member(
     &self, connection: &mut Connection, peer: &NodeId,
   ) -> Result<EstablishedSession> {

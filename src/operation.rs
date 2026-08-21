@@ -2,7 +2,7 @@ pub(crate) mod private {
   pub trait Sealed {}
 }
 
-use crate::{Endpoint, JoinCredential, identity::ListenerId, packet::RouteHandle};
+use crate::{Endpoint, JoinCredential, NodeId, identity::ListenerId, packet::RouteHandle};
 
 #[allow(private_bounds)]
 pub trait Command: private::Sealed + Send + 'static {
@@ -130,6 +130,34 @@ impl private::Sealed for JoinCluster {}
 
 impl Command for JoinCluster {
   type Output = crate::AdmissionView;
+}
+
+/// Connects to an already-admitted peer using key trust only (G3-04): no
+/// join credential is consulted or required, the expected peer's trusted
+/// identity binding gates the handshake, and the negotiated feature policy
+/// is the same exact offer/selection machinery as a join.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectMember {
+  receiver: Endpoint,
+  peer: NodeId,
+}
+
+impl ConnectMember {
+  /// `receiver` is the peer's listen endpoint; `peer` is the expected
+  /// node identity whose trusted binding must already exist.
+  pub fn new(receiver: Endpoint, peer: NodeId) -> Self {
+    Self { receiver, peer }
+  }
+
+  pub(crate) fn into_parts(self) -> (Endpoint, NodeId) {
+    (self.receiver, self.peer)
+  }
+}
+
+impl private::Sealed for ConnectMember {}
+
+impl Command for ConnectMember {
+  type Output = crate::NodeId;
 }
 
 pub struct GetNodeStatus {

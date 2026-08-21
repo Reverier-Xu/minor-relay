@@ -8,7 +8,7 @@ use tokio::{
 
 use crate::{
   AdmissionView, ClusterView, Endpoint, Error, ErrorKind, IssuedJoinCredential, ListenerView,
-  LocalNodeView, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
+  LocalNodeView, NodeConfig, NodeId, Result, ShutdownOutcome, ShutdownReason,
   api::Entropy,
   extension_registry::ExtensionRegistry,
   identity::{
@@ -154,6 +154,14 @@ async fn supervise(
         let result = supervisor
           .join_cluster(receiver, credential, &mut tasks)
           .await;
+        let _ = reply.send(result);
+      }
+      Control::ConnectMember {
+        receiver,
+        peer,
+        reply,
+      } => {
+        let result = supervisor.connect_member(receiver, peer, &mut tasks).await;
         let _ = reply.send(result);
       }
       Control::GetLocalNode { reply } => {
@@ -382,6 +390,37 @@ impl Supervisor {
       run_session(connection, session, packet, sessions, shutdown).await;
     });
     Ok(view)
+  }
+
+  /// Reconnects to an already-admitted peer with key trust only (G3-04,
+  /// THR-002): the member-mode handshake proves both identities over a
+  /// fresh transcript and exporter binding without consulting any join
+  /// credential, then keeps the session open for packet streams.
+  async fn connect_member(
+    &mut self, receiver: Endpoint, peer: NodeId, tasks: &mut JoinSet<()>,
+  ) -> Result<NodeId> {
+    self.require_unblocked()?;
+    let tcp = tokio::net::TcpStream::connect(receiver.authority())
+      .await
+      .map_err(|_| {
+        Error::provider(
+          crate::ProviderErrorKind::Io,
+          crate::ProviderErrorContext::TransportConnect,
+        )
+      })?;
+    let config = tls::join_client_config()?;
+    let server_name = receiver.server_name()?;
+    let rules = crate::session::handshake_frame_rules()?;
+    let mut connection = Connection::connect(tcp, config, server_name, rules).await?;
+    let session = self.driver.initiate_member(&mut connection, &peer).await?;
+    let authenticated = session.peer().clone();
+    let sessions = self.dependencies.sessions.clone();
+    let packet = self.packet.clone();
+    let shutdown = self.shutdown_tx.subscribe();
+    tasks.spawn(async move {
+      run_session(connection, session, packet, sessions, shutdown).await;
+    });
+    Ok(authenticated)
   }
 
   /// Routes one outbound packet over the established session to its exact

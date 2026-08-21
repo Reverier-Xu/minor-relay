@@ -4,11 +4,11 @@ use std::{
 };
 
 use crate::{
-  Command, CreateCluster, Error, Event, EventOptions, EventSubscription, GetLocalNode,
-  GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus, OutboundPacket, PacketMetadata,
-  PacketPolicy, PacketTarget, ProtocolTag, Query, Result, RotateJoinCredential, Shutdown,
-  StopListener, TraceId, WaitForShutdown, api::Entropy, extension_registry::ExtensionRegistry,
-  packet::DIRECT_ROUTING_POLICY, runtime::RuntimeClient,
+  Command, ConnectMember, CreateCluster, Error, Event, EventOptions, EventSubscription,
+  GetLocalNode, GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus, OutboundPacket,
+  PacketMetadata, PacketPolicy, PacketTarget, ProtocolTag, Query, Result, RotateJoinCredential,
+  Shutdown, StopListener, TraceId, WaitForShutdown, api::Entropy,
+  extension_registry::ExtensionRegistry, packet::DIRECT_ROUTING_POLICY, runtime::RuntimeClient,
 };
 
 #[derive(Clone)]
@@ -87,6 +87,11 @@ impl NodeHandle {
       let command = downcast_input::<C, JoinCluster>(command)?;
       let (receiver, credential) = command.into_parts();
       return cast_output(self.runtime.join_cluster(receiver, credential).await?);
+    }
+    if id == TypeId::of::<ConnectMember>() {
+      let command = downcast_input::<C, ConnectMember>(command)?;
+      let (receiver, peer) = command.into_parts();
+      return cast_output(self.runtime.connect_member(receiver, peer).await?);
     }
 
     drop(command);
