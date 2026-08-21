@@ -62,7 +62,7 @@ verify_frozen_document docs/decision-register.toml 19058685bbcc5df01c7cd5f2a8556
 verify_frozen_document docs/scenario-catalog.toml 3c25ea75f8d6853daba0e9e76eed3b5a3b0d76736ca5f472b645c9464e050dd1
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml af4b7f60387e1e6bbc989ddbc39e0830e5cb8994e7b95413736b346ccce05828
+verify_frozen_document docs/task-verification.toml b65ac86933eca22095be466c2f0c5b1f3cc1e0cbed47d26c313069e2b34afdb7
 verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
 
 for file in "${TOML_FILES[@]}"; do
@@ -233,7 +233,7 @@ check_g3_entry_map() {
       {task: "T-G03-01", verification: "VERIFY-G03-01", state: "ready", argv: ["scripts/verify-g3-handshake.sh"]},
       {task: "T-G03-02", verification: "VERIFY-G03-02", state: "ready", argv: ["scripts/verify-g3-tls-transport.sh"]},
       {task: "T-G03-03", verification: "VERIFY-G03-03", state: "ready", argv: ["scripts/verify-g3-admission.sh"]},
-      {task: "T-G03-04", verification: "VERIFY-G03-04", state: "planned", argv: []},
+      {task: "T-G03-04", verification: "VERIFY-G03-04", state: "ready", argv: ["scripts/verify-g3-selection.sh"]},
       {task: "T-G03-05", verification: "VERIFY-G03-05", state: "planned", argv: []},
       {task: "T-G03-06", verification: "VERIFY-G03-06", state: "planned", argv: []}
     ] as $expected
