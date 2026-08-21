@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 pub(crate) mod admission;
+pub(crate) mod admission_rate;
 #[allow(dead_code)]
 pub(crate) mod credential;
 #[allow(dead_code)]

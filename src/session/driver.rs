@@ -117,6 +117,7 @@ pub(crate) struct SessionDriver {
   entropy: Arc<dyn Entropy>,
   issuer: Arc<Mutex<JoinCredentialIssuer>>,
   offer: FeatureOffer,
+  limiter: crate::identity::admission_rate::AdmissionLimiter,
 }
 
 impl SessionDriver {
@@ -130,6 +131,7 @@ impl SessionDriver {
       entropy,
       issuer,
       offer,
+      limiter: crate::identity::admission_rate::AdmissionLimiter::new(),
     }
   }
 
@@ -183,6 +185,12 @@ impl SessionDriver {
 
   async fn respond_inner(&self, connection: &mut Connection) -> Result<EstablishedSession> {
     self.require_unblocked()?;
+    // Fixed admission rate limiting precedes every handshake and signing
+    // step; a rejected attempt consumes no credential (THR-001).
+    let source = connection
+      .peer_source()
+      .ok_or_else(|| Error::authentication_failed("admission source"))?;
+    let _slot = self.limiter.begin(source)?;
     let first = receive_kind(connection, HandshakeKind::InitiatorHello).await?;
     let peek = peek_initiator_hello(&first.body)?;
 

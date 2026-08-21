@@ -73,6 +73,7 @@ pub(crate) struct Connection {
   rules: FrameRules,
   channel_binding: [u8; CHANNEL_BINDING_LEN],
   join_hint: Option<JoinHint>,
+  source: Option<crate::identity::admission_rate::AdmissionSource>,
 }
 
 impl Connection {
@@ -89,6 +90,10 @@ impl Connection {
     // delayed-ACK window, so the transport owns low-latency sockets
     // (ADR-0007 stream semantics require prompt delivery).
     let tcp = low_latency(tcp, ProviderErrorContext::TransportAccept)?;
+    let source = tcp
+      .peer_addr()
+      .ok()
+      .map(crate::identity::admission_rate::AdmissionSource::normalize);
     tracing::debug!("tls connection accepted");
     let tls = TlsAcceptor::from(config)
       .accept(tcp)
@@ -101,6 +106,7 @@ impl Connection {
       rules,
       channel_binding,
       join_hint: None,
+      source,
     })
   }
 
@@ -134,6 +140,7 @@ impl Connection {
       rules,
       channel_binding,
       join_hint,
+      source: None,
     })
   }
 
@@ -146,6 +153,15 @@ impl Connection {
   /// The locally derived RFC 9266 channel binding.
   pub(crate) fn channel_binding(&self) -> &[u8; CHANNEL_BINDING_LEN] {
     &self.channel_binding
+  }
+
+  /// The canonical admission source of the accepted connection; the
+  /// initiator side carries none (its own node rate-limits inbound
+  /// attempts).
+  pub(crate) const fn peer_source(
+    &self,
+  ) -> Option<crate::identity::admission_rate::AdmissionSource> {
+    self.source
   }
 
   /// Sends one wire message. The message is checked against the local rules
