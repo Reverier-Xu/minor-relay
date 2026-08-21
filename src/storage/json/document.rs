@@ -257,7 +257,7 @@ pub(super) fn hex_decode_bytes(value: &str, context: &'static str) -> Result<Vec
     return Err(Error::invalid_input(context));
   }
   let mut output = Vec::with_capacity(value.len() / 2);
-  for pair in value.as_bytes().chunks_exact(2) {
+  for pair in value.as_bytes().as_chunks::<2>().0 {
     let high = hex_digit(pair[0], context)?;
     let low = hex_digit(pair[1], context)?;
     output.push(high << 4 | low);
