@@ -34,8 +34,8 @@ use crate::{
   Error, ErrorKind, NodeId, Result, TraceId,
   extension_registry::ExtensionRegistry,
   packet::{
-    AckOutcome, ChannelBody, IncomingPacket, MAX_CHUNK_BYTES, OutboundRequest, RouteRecord,
-    RouteState, StreamItem,
+    AckOutcome, ChannelBody, IncomingPacket, MAX_CHUNK_BYTES, OutboundRequest, PacketReplyContext,
+    RouteRecord, RouteState, StreamItem,
     wire::{self, AckFrame, AckStatus, ChunkFrame, EndFrame, OpenFrame},
   },
   protocol::wire::PacketKind,
@@ -60,16 +60,19 @@ pub(crate) struct SessionPacketContext {
   local: NodeId,
   registry: Arc<ExtensionRegistry>,
   queue_messages: usize,
+  runtime: crate::runtime::RuntimeClient,
 }
 
 impl SessionPacketContext {
   pub(crate) fn new(
     local: NodeId, registry: Arc<ExtensionRegistry>, queue_messages: usize,
+    runtime: crate::runtime::RuntimeClient,
   ) -> Self {
     Self {
       local,
       registry,
       queue_messages,
+      runtime,
     }
   }
 
@@ -318,6 +321,7 @@ async fn admit_open(
             open.protocol,
             open.metadata,
             ChannelBody::new(body),
+            PacketReplyContext::new(context.registry.clone(), context.runtime.clone()),
           );
           let consumer = Arc::clone(&registration.consumer);
           let consumer_trace = trace_id.clone();
