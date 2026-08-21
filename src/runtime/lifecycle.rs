@@ -2,8 +2,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
   AdmissionView, ClusterView, Endpoint, Error, IssuedJoinCredential, ListenerView, LocalNodeView,
-  NodeStatus, Result, ShutdownOutcome, ShutdownReason,
+  NodeStatus, Result, RouteStatusView, ShutdownOutcome, ShutdownReason,
   identity::{ListenerId, credential::JoinCredential},
+  packet::{OutboundRequest, RouteHandle},
+  session::stream::RouteTable,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,19 +85,29 @@ pub(crate) enum Control {
   GetLocalNode {
     reply: oneshot::Sender<Result<LocalNodeView>>,
   },
+  SendPacket {
+    request: OutboundRequest,
+    reply: oneshot::Sender<Result<()>>,
+  },
 }
 
 #[derive(Clone)]
 pub(crate) struct RuntimeClient {
   control: mpsc::Sender<Control>,
   state: watch::Receiver<LifecycleSnapshot>,
+  routes: RouteTable,
 }
 
 impl RuntimeClient {
   pub(crate) fn new(
     control: mpsc::Sender<Control>, state: watch::Receiver<LifecycleSnapshot>,
+    routes: RouteTable,
   ) -> Self {
-    Self { control, state }
+    Self {
+      control,
+      state,
+      routes,
+    }
   }
 
   pub(crate) fn status(&self) -> NodeStatus {
@@ -178,6 +190,43 @@ impl RuntimeClient {
     self
       .send_command(|reply| Control::GetLocalNode { reply })
       .await
+  }
+
+  /// Hands one outbound packet to the supervisor for routing; the returned
+  /// result reports routing acceptance only (admission flows through the
+  /// request's acknowledgement channel).
+  pub(crate) async fn send_packet(&self, request: OutboundRequest) -> Result<()> {
+    self
+      .send_command(|reply| Control::SendPacket { request, reply })
+      .await
+  }
+
+  /// The non-blocking variant behind `send_async`: queue saturation is a
+  /// typed overload, never an unbounded queue.
+  pub(crate) fn try_send_packet(&self, request: OutboundRequest) -> Result<()> {
+    let (reply, response) = oneshot::channel();
+    // Asynchronous delivery observes routing outcomes through route status.
+    drop(response);
+    self
+      .control
+      .try_send(Control::SendPacket { request, reply })
+      .map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => Error::overloaded("node control"),
+        mpsc::error::TrySendError::Closed(_) => Error::shutting_down("node control"),
+      })
+  }
+
+  /// Reads one in-memory route record (ADR-0007: bounded trace metadata
+  /// only, no durability claim).
+  pub(crate) fn route_status(&self, handle: &RouteHandle) -> Result<RouteStatusView> {
+    let routes = self
+      .routes
+      .lock()
+      .map_err(|_| Error::internal("route records"))?;
+    let record = routes
+      .get(handle.trace_id())
+      .ok_or_else(|| Error::not_found("route"))?;
+    Ok(record.view())
   }
 
   pub(crate) async fn wait_for_shutdown(&self) -> Result<ShutdownReason> {

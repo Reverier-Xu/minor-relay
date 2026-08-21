@@ -2,7 +2,7 @@ pub(crate) mod private {
   pub trait Sealed {}
 }
 
-use crate::{Endpoint, JoinCredential, identity::ListenerId};
+use crate::{Endpoint, JoinCredential, identity::ListenerId, packet::RouteHandle};
 
 #[allow(private_bounds)]
 pub trait Command: private::Sealed + Send + 'static {
@@ -181,4 +181,26 @@ impl private::Sealed for WaitForShutdown {}
 
 impl Query for WaitForShutdown {
   type Output = crate::ShutdownReason;
+}
+
+/// Queries the in-memory route status of one packet route handle
+/// (ADR-0007: bounded trace metadata only, no durability claim).
+pub struct GetRoute {
+  handle: RouteHandle,
+}
+
+impl GetRoute {
+  pub fn new(handle: RouteHandle) -> Self {
+    Self { handle }
+  }
+
+  pub(crate) const fn handle(&self) -> &RouteHandle {
+    &self.handle
+  }
+}
+
+impl private::Sealed for GetRoute {}
+
+impl Query for GetRoute {
+  type Output = crate::RouteStatusView;
 }

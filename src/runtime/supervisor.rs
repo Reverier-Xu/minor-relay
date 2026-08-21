@@ -7,18 +7,25 @@ use tokio::{
 };
 
 use crate::{
-  AdmissionView, ClusterView, Endpoint, Error, IssuedJoinCredential, ListenerView, LocalNodeView,
-  NodeConfig, Result, ShutdownOutcome, ShutdownReason,
+  AdmissionView, ClusterView, Endpoint, Error, ErrorKind, IssuedJoinCredential, ListenerView,
+  LocalNodeView, NodeConfig, Result, ShutdownOutcome, ShutdownReason,
   api::Entropy,
+  extension_registry::ExtensionRegistry,
   identity::{
     credential::JoinCredentialIssuer,
     genesis::create_cluster,
     lifecycle::{LocalIdentityContext, open_local_identity},
   },
+  packet::{OutboundRequest, RouteRecord, RouteState},
   protocol::{feature::FeatureRegistry, offer::node_offer},
   provider::{KeyProvider, StorageFactory},
   runtime::{Control, LifecycleSnapshot, RuntimeClient},
-  session::SessionDriver,
+  session::{
+    SessionDriver,
+    stream::{
+      RouteTable, SessionPacketContext, SessionTable, insert_route, run_outbound, run_session,
+    },
+  },
   transport::{cert::EphemeralCertificate, connection::Connection, tls},
 };
 
@@ -61,6 +68,9 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) keys: Arc<dyn KeyProvider>,
   pub(crate) config: NodeConfig,
   pub(crate) entropy: Arc<dyn Entropy>,
+  pub(crate) extensions: Arc<ExtensionRegistry>,
+  pub(crate) sessions: SessionTable,
+  pub(crate) routes: RouteTable,
   pub(crate) _runtime_seed: Option<[u8; 32]>,
 }
 
@@ -78,6 +88,7 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   )
   .await?;
   dependencies.context = Some(Arc::new(context));
+  let routes = dependencies.routes.clone();
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();
@@ -87,7 +98,7 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   ready_rx
     .await
     .map_err(|_| Error::internal("node runtime startup"))?;
-  Ok(RuntimeClient::new(control_tx, state_rx))
+  Ok(RuntimeClient::new(control_tx, state_rx, routes))
 }
 
 async fn supervise(
@@ -140,11 +151,15 @@ async fn supervise(
         credential,
         reply,
       } => {
-        let result = supervisor.join_cluster(receiver, credential).await;
+        let result = supervisor.join_cluster(receiver, credential, &mut tasks).await;
         let _ = reply.send(result);
       }
       Control::GetLocalNode { reply } => {
         let result = supervisor.local_node().await;
+        let _ = reply.send(result);
+      }
+      Control::SendPacket { request, reply } => {
+        let result = supervisor.send_packet(request, &mut tasks);
         let _ = reply.send(result);
       }
     }
@@ -185,7 +200,10 @@ async fn finish_shutdown(
 
 struct Supervisor {
   dependencies: RuntimeDependencies,
+  shutdown_tx: watch::Sender<()>,
   driver: SessionDriver,
+  packet: Arc<SessionPacketContext>,
+  route_capacity: usize,
   listeners: BTreeMap<crate::identity::ListenerId, (Endpoint, AbortHandle)>,
 }
 
@@ -199,6 +217,12 @@ impl Supervisor {
       .unwrap_or_else(|_| unreachable!("builtin feature registry is valid"));
     let offer = node_offer(&registry, dependencies.config.required_features())
       .unwrap_or_else(|_| unreachable!("local feature offer is valid"));
+    let packet = Arc::new(SessionPacketContext::new(
+      context.identity().node().clone(),
+      dependencies.extensions.clone(),
+      dependencies.config.session_queue_messages(),
+    ));
+    let route_capacity = dependencies.config.trace_metadata_limits().active();
     let driver = SessionDriver::new(
       context,
       dependencies.keys.clone(),
@@ -206,14 +230,21 @@ impl Supervisor {
       Arc::new(std::sync::Mutex::new(JoinCredentialIssuer::new())),
       offer,
     );
+    let (shutdown_tx, _) = watch::channel(());
     Self {
       dependencies,
+      shutdown_tx,
       driver,
+      packet,
+      route_capacity,
       listeners: BTreeMap::new(),
     }
   }
 
   fn into_dependencies(self) -> RuntimeDependencies {
+    // Every open session task observes the shutdown signal and closes its
+    // connection instead of being orphaned when the supervisor exits.
+    let _ = self.shutdown_tx.send(());
     self.dependencies
   }
 
@@ -256,6 +287,9 @@ impl Supervisor {
     let config = tls::server_config(&certificate)?;
     let rules = crate::session::handshake_frame_rules()?;
     let driver = self.driver.clone();
+    let sessions = self.dependencies.sessions.clone();
+    let packet = self.packet.clone();
+    let shutdown = self.shutdown_tx.subscribe();
     let abort = tasks.spawn(async move {
       loop {
         let Ok((tcp, _)) = listener.accept().await else {
@@ -267,9 +301,16 @@ impl Supervisor {
         };
         let config = config.clone();
         let driver = driver.clone();
+        let sessions = sessions.clone();
+        let packet = packet.clone();
+        let shutdown = shutdown.clone();
         tokio::spawn(async move {
-          if let Ok(mut connection) = Connection::accept(tcp, config, rules, hint.as_ref()).await {
-            let _ = driver.respond(&mut connection).await;
+          if let Ok(mut connection) = Connection::accept(tcp, config, rules, hint.as_ref()).await
+            && let Ok(session) = driver.respond(&mut connection).await
+          {
+            // Keep the authenticated session open: it serves packet streams
+            // until the connection closes (ADR-0007).
+            run_session(connection, session, packet, sessions, shutdown).await;
           }
         });
       }
@@ -289,6 +330,7 @@ impl Supervisor {
 
   async fn join_cluster(
     &mut self, receiver: Endpoint, credential: crate::identity::credential::JoinCredential,
+    tasks: &mut JoinSet<()>,
   ) -> Result<AdmissionView> {
     let tcp = tokio::net::TcpStream::connect(receiver.authority())
       .await
@@ -307,9 +349,67 @@ impl Supervisor {
       .cloned()
       .ok_or_else(|| Error::authentication_failed("join hint"))?;
     let secret = crate::protocol::credential::CredentialSecret::from_credential(&credential);
-    let (_, view) = self.driver.join(&mut connection, &hint, secret).await?;
-    let _ = connection.close().await;
+    let (session, view) = self.driver.join(&mut connection, &hint, secret).await?;
+    // Keep the join session open so both sides can stream packets over it.
+    let sessions = self.dependencies.sessions.clone();
+    let packet = self.packet.clone();
+    let shutdown = self.shutdown_tx.subscribe();
+    tasks.spawn(async move {
+      run_session(connection, session, packet, sessions, shutdown).await;
+    });
     Ok(view)
+  }
+
+  /// Routes one outbound packet over the established session to its exact
+  /// destination. Failure paths still record the terminal route state so
+  /// asynchronous senders can observe them through `GetRoute`.
+  fn send_packet(&mut self, request: OutboundRequest, tasks: &mut JoinSet<()>) -> Result<()> {
+    let trace_id = request.trace_id.clone();
+    let destination = request.destination.clone();
+    if let Err(error) = insert_route(
+      &self.dependencies.routes,
+      self.route_capacity,
+      RouteRecord::new(trace_id.clone(), destination.clone()),
+    ) {
+      request.reject(error.kind());
+      return Err(error);
+    }
+    let fail = |request: OutboundRequest, kind: ErrorKind, error: Error| {
+      if let Ok(mut routes) = self.dependencies.routes.lock()
+        && let Some(record) = routes.get_mut(&trace_id)
+      {
+        record.update(RouteState::Failed(kind));
+      }
+      request.reject(kind);
+      error
+    };
+    let entry = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .get(&destination)
+      .cloned();
+    let Some(entry) = entry else {
+      return Err(fail(
+        request,
+        ErrorKind::RouteUnavailable,
+        Error::route_unavailable("packet session"),
+      ));
+    };
+    if !entry.alive() {
+      return Err(fail(
+        request,
+        ErrorKind::StreamInterrupted,
+        Error::stream_interrupted("packet session"),
+      ));
+    }
+    let local = self.packet.local().clone();
+    let routes = self.dependencies.routes.clone();
+    tasks.spawn(async move {
+      run_outbound(entry, local, request, routes).await;
+    });
+    Ok(())
   }
 
   async fn local_node(&mut self) -> Result<LocalNodeView> {

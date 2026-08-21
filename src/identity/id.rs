@@ -113,6 +113,7 @@ macro_rules! generated_id {
 
 generated_id!(NodeId, "node_");
 generated_id!(ClusterId, "cluster_");
+generated_id!(TraceId, "trace_");
 generated_id!(TransactionId, "txn_");
 generated_id!(ListenerId, "listener_");
 generated_id!(SessionId, "session_");

@@ -20,7 +20,10 @@
 
 use std::sync::Arc;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{
+  SinkExt, StreamExt,
+  stream::{SplitSink, SplitStream},
+};
 use rustls::{ClientConfig, ConnectionCommon, ServerConfig, pki_types::ServerName};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
@@ -29,7 +32,7 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 use super::{ws, ws::JoinHint};
 use crate::{
   Error, ProviderErrorContext, ProviderErrorKind, Result,
-  protocol::{PRELUDE_LEN, Prelude, split_message},
+  protocol::{PRELUDE_LEN, Prelude, split_message, wire::BASE_SCHEMA_ID},
 };
 
 /// The exact RFC 9266 exporter label (ADR-0001).
@@ -205,11 +208,95 @@ impl Connection {
       .await
       .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportClose))
   }
+
+  /// Splits the connection into independent writer and reader halves for
+  /// the post-authentication session phase (ADR-0007 packet streams).
+  pub(crate) fn into_split(self) -> (ConnectionWriter, ConnectionReader) {
+    let (sink, stream) = self.stream.split();
+    (
+      ConnectionWriter {
+        sink,
+        rules: self.rules,
+      },
+      ConnectionReader {
+        stream,
+        rules: self.rules,
+      },
+    )
+  }
 }
 
 impl core::fmt::Debug for Connection {
   fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     formatter.write_str("Connection(..)")
+  }
+}
+
+/// The write half of a split session-phase connection. Each send is one
+/// wire message checked against the local frame rules before encoding.
+pub(crate) struct ConnectionWriter {
+  sink: SplitSink<WebSocketStream<TlsStream<TcpStream>>, WsMessage>,
+  rules: FrameRules,
+}
+
+impl ConnectionWriter {
+  /// Sends one base-schema wire message of `kind_id` with no flags.
+  pub(crate) async fn send(&mut self, kind_id: u16, body: &[u8]) -> Result<()> {
+    let body_len =
+      u32::try_from(body.len()).map_err(|_| Error::invalid_input("wire body length"))?;
+    if !(self.rules.is_declared)(BASE_SCHEMA_ID, kind_id) || body_len > self.rules.message_limit {
+      return Err(Error::invalid_input("wire limits"));
+    }
+    let mut frame = Vec::with_capacity(PRELUDE_LEN + body.len());
+    frame.extend_from_slice(&Prelude::new(BASE_SCHEMA_ID, kind_id, 0, body_len).encode());
+    frame.extend_from_slice(body);
+    self
+      .sink
+      .send(WsMessage::binary(frame))
+      .await
+      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportSend))
+  }
+}
+
+/// The read half of a split session-phase connection, with exactly the
+/// receive semantics of [`Connection::receive`].
+pub(crate) struct ConnectionReader {
+  stream: SplitStream<WebSocketStream<TlsStream<TcpStream>>>,
+  rules: FrameRules,
+}
+
+impl ConnectionReader {
+  /// Receives the next wire message. Returns `Ok(None)` on an orderly
+  /// close; every limit or framing violation fails closed.
+  pub(crate) async fn receive(&mut self) -> Result<Option<Message>> {
+    loop {
+      let Some(item) = self.stream.next().await else {
+        return Ok(None);
+      };
+      let message = item.map_err(receive_error)?;
+      match message {
+        WsMessage::Binary(bytes) => {
+          let rules = self.rules;
+          let (prelude, body) = split_message(
+            &bytes,
+            rules.allowed_flags,
+            rules.message_limit,
+            rules.receive_limit,
+            rules.is_declared,
+          )?;
+          return Ok(Some(Message {
+            schema_id: prelude.schema_id(),
+            kind_id: prelude.kind_id(),
+            flags: prelude.flags(),
+            body: body.to_vec(),
+          }));
+        }
+        WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
+        WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+        WsMessage::Close(_) => return Ok(None),
+        WsMessage::Frame(_) => return Err(Error::invalid_input("websocket raw frame")),
+      }
+    }
   }
 }
 

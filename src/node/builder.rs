@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-  NodeConfig, NodeHandle, Result,
+  ExtensionRegistry, NodeConfig, NodeHandle, Result,
   api::{Entropy, SystemEntropy},
   provider::{KeyProvider, StorageFactory},
   runtime::{RuntimeDependencies, spawn_runtime},
@@ -12,6 +12,7 @@ pub struct NodeBuilder {
   keys: Arc<dyn KeyProvider>,
   config: NodeConfig,
   entropy: Arc<dyn Entropy>,
+  extensions: ExtensionRegistry,
 }
 
 impl NodeBuilder {
@@ -21,11 +22,17 @@ impl NodeBuilder {
       keys,
       config: NodeConfig::new(),
       entropy: Arc::new(SystemEntropy),
+      extensions: ExtensionRegistry::new(),
     }
   }
 
   pub fn config(mut self, value: NodeConfig) -> Self {
     self.config = value;
+    self
+  }
+
+  pub fn extensions(mut self, value: ExtensionRegistry) -> Self {
+    self.extensions = value;
     self
   }
 
@@ -35,15 +42,19 @@ impl NodeBuilder {
   }
 
   pub async fn start(self) -> Result<NodeHandle> {
+    let extensions = Arc::new(self.extensions);
     let client = spawn_runtime(RuntimeDependencies {
       storage_factory: self.storage,
       context: None,
       keys: self.keys,
       config: self.config,
-      entropy: self.entropy,
+      entropy: self.entropy.clone(),
+      extensions: extensions.clone(),
+      sessions: Default::default(),
+      routes: Default::default(),
       _runtime_seed: None,
     })
     .await?;
-    Ok(NodeHandle::new(client))
+    Ok(NodeHandle::new(client, self.entropy, extensions))
   }
 }

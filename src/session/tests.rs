@@ -82,7 +82,7 @@ async fn listen(
   node: &Node, with_hint: bool,
 ) -> (
   std::net::SocketAddr,
-  tokio::task::JoinHandle<crate::Result<crate::NodeId>>,
+  tokio::task::JoinHandle<crate::Result<super::driver::EstablishedSession>>,
 ) {
   let certificate = EphemeralCertificate::generate(node.entropy.as_ref()).unwrap();
   let config = server_config(&certificate).unwrap();
@@ -139,7 +139,7 @@ async fn session_join_then_member_reconnect_round_trips() {
   let (address, first_responder) = listen(&receiver, true).await;
   let mut connection = connect(address).await;
   let hint = connection.join_hint().unwrap().clone();
-  let (issuer_id, view) = joiner
+  let (session, view) = joiner
     .driver
     .join(
       &mut connection,
@@ -148,6 +148,8 @@ async fn session_join_then_member_reconnect_round_trips() {
     )
     .await
     .unwrap();
+  let issuer_id = session.peer().clone();
+  assert!(!session.selected_features().is_empty());
   assert_eq!(view.issuer(), &issuer_id);
   assert_ne!(view.admitted_node(), &issuer_id);
 
@@ -173,15 +175,15 @@ async fn session_join_then_member_reconnect_round_trips() {
   // Member-mode reconnect: no credential, trusted bindings on both sides.
   let (address, member_responder) = listen(&receiver, false).await;
   let mut connection = connect(address).await;
-  let peer = joiner
+  let session = joiner
     .driver
     .initiate_member(&mut connection, &issuer_id)
     .await
     .unwrap();
-  assert_eq!(peer, issuer_id);
+  assert_eq!(session.peer(), &issuer_id);
   assert_eq!(
-    member_responder.await.unwrap().unwrap(),
-    peer_return_marker(&joiner)
+    member_responder.await.unwrap().unwrap().peer(),
+    &peer_return_marker(&joiner)
   );
 }
 

@@ -63,6 +63,39 @@ use crate::{
 /// admission commit and grant adoption).
 pub(crate) const AUTHENTICATION_DEADLINE: Duration = Duration::from_secs(10);
 
+/// One authenticated session at the end of the bootstrap exchange: the
+/// peer's session-authenticated node ID and the exact negotiated feature
+/// intersection (ADR-0002), which gates packet-protocol admission.
+#[derive(Clone, Debug)]
+pub(crate) struct EstablishedSession {
+  peer: NodeId,
+  selected_features: Vec<crate::FeatureTag>,
+}
+
+impl EstablishedSession {
+  pub(crate) fn peer(&self) -> &NodeId {
+    &self.peer
+  }
+
+  pub(crate) fn selected_features(&self) -> &[crate::FeatureTag] {
+    &self.selected_features
+  }
+}
+
+/// Extracts the established-session summary from a completed handshake.
+fn established(handshake: &Handshake) -> Result<EstablishedSession> {
+  let (peer, _) = handshake
+    .peer_identity()
+    .ok_or_else(|| Error::internal("handshake peer"))?;
+  let selected_features = handshake
+    .selected_features()
+    .ok_or_else(|| Error::internal("handshake selection"))?;
+  Ok(EstablishedSession {
+    peer: peer.clone(),
+    selected_features,
+  })
+}
+
 /// The frame rules for the authentication phase: no flags, the ADR-0002
 /// handshake control body limit, and the closed base-schema kind registry.
 pub(crate) fn handshake_frame_rules() -> Result<FrameRules> {
@@ -72,7 +105,7 @@ pub(crate) fn handshake_frame_rules() -> Result<FrameRules> {
     allowed_flags: 0,
     message_limit: limit,
     receive_limit: limit,
-    is_declared: |schema, kind| wire::lookup(schema, kind).is_some(),
+    is_declared: wire::is_declared,
   })
 }
 
@@ -129,9 +162,9 @@ impl SessionDriver {
   }
 
   /// Runs the responder (listener) side of one accepted connection.
-  /// Returns the authenticated peer's node ID. In join mode this commits
+  /// Returns the authenticated session. In join mode this commits
   /// the admission triple and delivers the signed grant before returning.
-  pub(crate) async fn respond(&self, connection: &mut Connection) -> Result<NodeId> {
+  pub(crate) async fn respond(&self, connection: &mut Connection) -> Result<EstablishedSession> {
     let result = timeout(AUTHENTICATION_DEADLINE, self.respond_inner(connection))
       .await
       .map_err(|_| Error::authentication_failed("authentication deadline"))?;
@@ -143,7 +176,7 @@ impl SessionDriver {
     result
   }
 
-  async fn respond_inner(&self, connection: &mut Connection) -> Result<NodeId> {
+  async fn respond_inner(&self, connection: &mut Connection) -> Result<EstablishedSession> {
     let first = receive_kind(connection, HandshakeKind::InitiatorHello).await?;
     let peek = peek_initiator_hello(&first.body)?;
 
@@ -265,7 +298,9 @@ impl SessionDriver {
         }
       }
     }
-    Ok(peer_id)
+    let session = established(&handshake)?;
+    debug_assert_eq!(session.peer(), &peer_id);
+    Ok(session)
   }
 
   /// Commits the join admission and delivers the signed grant at protocol
@@ -295,14 +330,14 @@ impl SessionDriver {
   }
 
   /// Runs the initiator side of a join-mode connection. Returns the
-  /// authenticated issuer's node ID and the adopted admission view.
+  /// authenticated session with the issuer and the adopted admission view.
   ///
   /// The credential is consumed from the caller; the ADR-0001 signing order
   /// is enforced here: the local identity signature is produced only after
   /// the responder proof verifies.
   pub(crate) async fn join(
     &self, connection: &mut Connection, hint: &JoinHint, credential: CredentialSecret,
-  ) -> Result<(NodeId, AdmissionView)> {
+  ) -> Result<(EstablishedSession, AdmissionView)> {
     timeout(
       AUTHENTICATION_DEADLINE,
       self.join_inner(connection, hint, credential),
@@ -313,7 +348,7 @@ impl SessionDriver {
 
   async fn join_inner(
     &self, connection: &mut Connection, hint: &JoinHint, credential: CredentialSecret,
-  ) -> Result<(NodeId, AdmissionView)> {
+  ) -> Result<(EstablishedSession, AdmissionView)> {
     if crate::identity::genesis::local_cluster(&self.context)
       .await?
       .is_some()
@@ -396,23 +431,25 @@ impl SessionDriver {
       identity.node().clone(),
       issuer.clone(),
     );
-    Ok((issuer.clone(), view))
+    Ok((established(&handshake)?, view))
   }
 
   /// Runs the initiator side of a member-mode connection: no credential,
   /// the expected peer's trusted binding must already exist from an earlier
   /// join or sync, and both sides prove their identity keys over the fresh
-  /// transcript. Returns the authenticated peer's node ID.
+  /// transcript. Returns the authenticated session.
   #[allow(dead_code)] // G3-04 reconnect command wiring; session tests cover it.
   pub(crate) async fn initiate_member(
     &self, connection: &mut Connection, peer: &NodeId,
-  ) -> Result<NodeId> {
+  ) -> Result<EstablishedSession> {
     timeout(AUTHENTICATION_DEADLINE, self.member_inner(connection, peer))
       .await
       .map_err(|_| Error::authentication_failed("authentication deadline"))?
   }
 
-  async fn member_inner(&self, connection: &mut Connection, peer: &NodeId) -> Result<NodeId> {
+  async fn member_inner(
+    &self, connection: &mut Connection, peer: &NodeId,
+  ) -> Result<EstablishedSession> {
     let pointer = crate::identity::genesis::local_cluster(&self.context)
       .await?
       .ok_or_else(|| Error::not_ready("local cluster"))?;
@@ -463,10 +500,7 @@ impl SessionDriver {
     .await?;
     let confirmation = receive_kind(connection, HandshakeKind::SelectionConfirmation).await?;
     handshake.receive(&confirmation.body)?;
-    let (peer_id, _) = handshake
-      .peer_identity()
-      .ok_or_else(|| Error::internal("handshake peer"))?;
-    Ok(peer_id.clone())
+    established(&handshake)
   }
 }
 

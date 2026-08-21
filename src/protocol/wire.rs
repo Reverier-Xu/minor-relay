@@ -9,7 +9,10 @@
 //! This phase publishes the six authentication handshake kinds. Positions
 //! one through five are the strict lockstep authentication exchange;
 //! position six is the join-only post-authentication admission grant
-//! delivery.
+//! delivery. The four packet-stream kinds carry the ADR-0007 opaque packet
+//! data plane over an established authenticated session: open (trace,
+//! endpoints, protocol tag, metadata), ordered chunks, end, and the
+//! current-process admission acknowledgement.
 
 /// The deterministic-CBOR base schema ID (ADR-0002).
 pub(crate) const BASE_SCHEMA_ID: u16 = 0x0001;
@@ -56,6 +59,37 @@ impl HandshakeKind {
   }
 }
 
+/// One published packet-stream message kind of base schema `0x0001`
+/// (ADR-0007).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketKind {
+  /// Opens one directed packet stream: trace ID, authenticated endpoints,
+  /// protocol tag, and bounded metadata.
+  Open,
+  /// One ordered body chunk of an open stream.
+  Chunk,
+  /// Terminates an open stream after its final chunk.
+  End,
+  /// Current-process admission acknowledgement (or typed rejection) for an
+  /// open stream. Never a durable-retention claim.
+  Ack,
+}
+
+impl PacketKind {
+  /// Every published packet-stream kind, in wire order.
+  pub(crate) const ALL: [Self; 4] = [Self::Open, Self::Chunk, Self::End, Self::Ack];
+
+  /// The immutable kind ID under base schema `0x0001`.
+  pub(crate) const fn kind_id(self) -> u16 {
+    match self {
+      Self::Open => 0x0010,
+      Self::Chunk => 0x0011,
+      Self::End => 0x0012,
+      Self::Ack => 0x0013,
+    }
+  }
+}
+
 /// Resolves one prelude `(schema_id, kind_id)` pair to a published handshake
 /// kind. Unknown schemas and unknown kinds return `None`, which the
 /// transport must reject before body dispatch.
@@ -68,9 +102,26 @@ pub(crate) fn lookup(schema_id: u16, kind_id: u16) -> Option<HandshakeKind> {
     .find(|kind| kind.kind_id() == kind_id)
 }
 
+/// Resolves one prelude `(schema_id, kind_id)` pair to a published
+/// packet-stream kind.
+pub(crate) fn lookup_packet(schema_id: u16, kind_id: u16) -> Option<PacketKind> {
+  if schema_id != BASE_SCHEMA_ID {
+    return None;
+  }
+  PacketKind::ALL
+    .into_iter()
+    .find(|kind| kind.kind_id() == kind_id)
+}
+
+/// The closed-registry declaration check for every published kind of the
+/// base schema, handshake and packet stream alike.
+pub(crate) fn is_declared(schema_id: u16, kind_id: u16) -> bool {
+  lookup(schema_id, kind_id).is_some() || lookup_packet(schema_id, kind_id).is_some()
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{BASE_SCHEMA_ID, HandshakeKind, lookup};
+  use super::{BASE_SCHEMA_ID, HandshakeKind, PacketKind, is_declared, lookup, lookup_packet};
 
   const GOLDEN: [(u16, HandshakeKind); 6] = [
     (0x0001, HandshakeKind::InitiatorHello),
@@ -119,5 +170,40 @@ mod tests {
     for schema_id in [0x0000, 0x0002, 0xFFFF] {
       assert_eq!(lookup(schema_id, 0x0001), None, "schema: {schema_id:#06x}");
     }
+  }
+
+  const PACKET_GOLDEN: [(u16, PacketKind); 4] = [
+    (0x0010, PacketKind::Open),
+    (0x0011, PacketKind::Chunk),
+    (0x0012, PacketKind::End),
+    (0x0013, PacketKind::Ack),
+  ];
+
+  #[test]
+  fn tls_transport_wire_packet_kind_registry_golden_mapping_is_exact() {
+    assert_eq!(PacketKind::ALL.len(), PACKET_GOLDEN.len());
+    for (kind_id, kind) in PACKET_GOLDEN {
+      assert_eq!(kind.kind_id(), kind_id, "kind: {kind:?}");
+      assert_eq!(lookup_packet(BASE_SCHEMA_ID, kind_id), Some(kind));
+      assert!(is_declared(BASE_SCHEMA_ID, kind_id), "kind: {kind_id:#06x}");
+    }
+  }
+
+  #[test]
+  fn tls_transport_wire_packet_kinds_do_not_collide_with_handshake_kinds() {
+    for packet in PacketKind::ALL {
+      assert!(
+        HandshakeKind::ALL
+          .iter()
+          .all(|kind| kind.kind_id() != packet.kind_id()),
+        "collision: {packet:?}"
+      );
+    }
+    for kind_id in [0x0000, 0x0007, 0x000F, 0x0014, 0x00FF, 0xFFFF] {
+      assert_eq!(lookup_packet(BASE_SCHEMA_ID, kind_id), None);
+      assert!(!is_declared(BASE_SCHEMA_ID, kind_id), "kind: {kind_id:#06x}");
+    }
+    assert!(!is_declared(0x0000, 0x0010));
+    assert!(!is_declared(0x0002, 0x0010));
   }
 }

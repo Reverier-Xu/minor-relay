@@ -311,6 +311,14 @@ impl Handshake {
     self.selection.as_ref().map(Selection::bytes)
   }
 
+  /// The negotiated feature intersection, once selection completed.
+  pub(crate) fn selected_features(&self) -> Option<Vec<crate::FeatureTag>> {
+    self
+      .selection
+      .as_ref()
+      .map(|selection| selection.features().to_vec())
+  }
+
   /// Position 1 (initiator): the mode/generation/cluster/identity hello.
   pub(crate) fn initiator_hello(&mut self) -> Result<Vec<u8>, HandshakeError> {
     self.begin_send(KIND_INITIATOR_HELLO, Role::Initiator)?;

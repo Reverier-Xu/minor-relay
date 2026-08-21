@@ -12,8 +12,7 @@
 //! use minor_relay::runtime;
 //! ```
 //!
-//! Superseded limits, public clock injection, and the placeholder extension
-//! registry are absent.
+//! Superseded limits and public clock injection are absent.
 //!
 //! ```compile_fail,E0432
 //! use minor_relay::{AdmissionLimits, Clock, MonotonicTime, ProtocolLimits, TraceLimits};
@@ -23,10 +22,6 @@
 //! use minor_relay::extension::Clock;
 //! ```
 //!
-//! ```compile_fail,E0432
-//! use minor_relay::ExtensionRegistry;
-//! ```
-//!
 //! ```compile_fail,E0599
 //! let _ = minor_relay::NodeConfig::new().with_member_limit(1_024);
 //! ```
@@ -34,9 +29,11 @@
 mod api;
 mod config;
 mod error;
+mod extension_registry;
 mod identity;
 mod node;
 mod operation;
+mod packet;
 mod protocol;
 mod provider;
 mod runtime;
@@ -51,14 +48,19 @@ mod simulation;
 pub use api::BoxFuture;
 pub use config::{NodeConfig, ParserLimits, RecoveryConfig, TraceMetadataLimits};
 pub use error::{Error, ErrorKind, ProviderErrorContext, ProviderErrorKind, Result};
+pub use extension_registry::{ExtensionRegistry, PacketConsumer, ProtocolDefinition};
 pub use identity::{
   ClusterId, Digest, IssuedJoinCredential, JoinCredential, ListenerId, NodeId, OperationId,
   PublicKey, SessionId, Signature, TraceId, TransactionId,
 };
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{
-  Command, CreateCluster, Event, GetLocalNode, GetNodeStatus, JoinCluster, Listen, Query,
+  Command, CreateCluster, Event, GetLocalNode, GetNodeStatus, GetRoute, JoinCluster, Listen, Query,
   RotateJoinCredential, Shutdown, StopListener, WaitForShutdown,
+};
+pub use packet::{
+  DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,
+  PacketTarget, RouteHandle, RouteState, RouteStatusView,
 };
 pub use protocol::{
   DiscoveryTag, FeatureDefinition, FeatureTag, ProtocolTag, QualifiedTag, TransportTag,

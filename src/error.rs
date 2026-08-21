@@ -171,6 +171,27 @@ impl Error {
       context,
     }
   }
+
+  pub(crate) const fn route_unavailable(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::RouteUnavailable,
+      context,
+    }
+  }
+
+  pub(crate) const fn stream_interrupted(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::StreamInterrupted,
+      context,
+    }
+  }
+
+  pub(crate) const fn overloaded(context: &'static str) -> Self {
+    Self {
+      kind: ErrorKind::Overloaded,
+      context,
+    }
+  }
 }
 
 impl fmt::Debug for Error {

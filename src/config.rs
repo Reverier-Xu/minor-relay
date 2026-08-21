@@ -58,6 +58,14 @@ impl NodeConfig {
     self.receipt_retention
   }
 
+  pub(crate) const fn session_queue_messages(&self) -> usize {
+    self.session_queue_messages
+  }
+
+  pub(crate) const fn trace_metadata_limits(&self) -> &TraceMetadataLimits {
+    &self.trace_metadata_limits
+  }
+
   pub(crate) const fn required_features(&self) -> &BTreeSet<FeatureTag> {
     &self.required_features
   }
@@ -132,6 +140,10 @@ impl TraceMetadataLimits {
       terminal,
       retention,
     })
+  }
+
+  pub(crate) const fn active(&self) -> usize {
+    self.active
   }
 }
 
