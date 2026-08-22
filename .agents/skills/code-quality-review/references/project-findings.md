@@ -3,6 +3,25 @@
 Verified against the codebase on 2026-08-22 (main @ c8f0394). P1 = should-fix,
 P2 = nice-to-have. All line numbers are from that revision and drift.
 
+## Resolution status (updated after the P1+P2 fix pass, 2026-08-22)
+
+- **All seven P1 findings are fixed** (base62/hex/condition sharing, error
+  projection, test harness consolidation, typed-bus dispatch, constant
+  single-sourcing).
+- **All twenty P2 findings are fixed**, including two that grew beyond the
+  original plan: `connect_member` now pins member reconnects to the
+  join-time leaf SPKI (the join hint carries it; documented as a wire
+  format addition), and hostname/IP grammar is delegated to `domain` 0.11
+  and `std::net` with lowercase normalization for storage/comparison.
+- `docs/implementation-plan.md` records the `domain` dependency amendment;
+  `docs/roadmap.md` lists which gate consumes each reserved config field.
+- Remaining known follow-ups: M6 moves the routing-domain code out of
+  `session/stream.rs` (marked `TODO(M6)`); M9 wires `NodeHandle::events`
+  (marked `TODO(M9)`); G4/G5/G6 wire the reserved config fields (marked
+  `TODO(G4/G5/G6)`).
+
+## Historical findings (pre-fix baseline)
+
 ## P1 — should-fix (verified in real code)
 
 1. **TypeId if-else "typed bus" dispatch** — `src/node/handle.rs:64-120`:
