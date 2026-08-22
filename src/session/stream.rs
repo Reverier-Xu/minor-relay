@@ -92,12 +92,34 @@ pub(crate) struct SessionFrame {
   body: Vec<u8>,
 }
 
+/// Which side initiated an established session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DialDirection {
+  /// This node dialed the peer.
+  Outgoing,
+  /// The peer dialed this node.
+  Incoming,
+}
+
+/// The deterministic crossed-dial ownership rule (SC-G04-P0-09): the
+/// connection initiated by the smaller node id wins, so both sides of a
+/// simultaneous dial converge to the same authenticated session. Each side
+/// keeps the entry whose direction matches the rule and drops the other.
+pub(crate) fn keep_connection(local: &NodeId, peer: &NodeId, direction: DialDirection) -> bool {
+  match direction {
+    DialDirection::Outgoing => local < peer,
+    DialDirection::Incoming => local > peer,
+  }
+}
+
 /// One established session's send-side handle in the session table.
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
   frames: mpsc::Sender<SessionFrame>,
   pending_acks: Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
   alive: Arc<AtomicBool>,
+  direction: DialDirection,
+  retire: watch::Sender<()>,
 }
 
 impl SessionEntry {
@@ -114,27 +136,55 @@ impl SessionEntry {
 #[instrument(name = "session", skip_all, fields(peer = %session.peer()))]
 pub(crate) async fn run_session(
   connection: Connection, session: EstablishedSession, context: Arc<SessionPacketContext>,
-  table: SessionTable, shutdown: watch::Receiver<()>,
+  table: SessionTable, shutdown: watch::Receiver<()>, direction: DialDirection,
 ) {
   let peer = session.peer().clone();
   let (writer, mut reader) = connection.into_split();
   let (frames, frames_rx) = mpsc::channel(context.queue_messages);
   let pending_acks = Arc::new(Mutex::new(HashMap::new()));
   let alive = Arc::new(AtomicBool::new(true));
+  let (retire_tx, retire_rx) = watch::channel(());
   let entry = SessionEntry {
     frames: frames.clone(),
     pending_acks: Arc::clone(&pending_acks),
     alive: Arc::clone(&alive),
+    direction,
+    retire: retire_tx,
   };
   {
-    let replaced = table
-      .lock()
-      .map(|mut sessions| sessions.insert(peer, entry))
-      .ok()
-      .flatten();
-    if let Some(previous) = replaced {
-      debug!("session replaced by a new connection to the same peer");
-      retire(&previous);
+    let local = context.local().clone();
+    let mut guard = match table.lock() {
+      Ok(guard) => guard,
+      Err(_) => {
+        alive.store(false, Ordering::SeqCst);
+        return;
+      }
+    };
+    let replace = match guard.get(&peer) {
+      None => true,
+      Some(previous) => {
+        let keep_existing = keep_connection(&local, &peer, previous.direction);
+        let keep_new = keep_connection(&local, &peer, direction);
+        // Crossed dial: the deterministic rule prefers exactly one of the
+        // two directions; keep that one and drop the other. Same direction
+        // (reconnect, restart) always replaces with the newest entry.
+        if keep_existing != keep_new {
+          keep_new
+        } else {
+          true
+        }
+      }
+    };
+    if replace {
+      let previous = guard.insert(peer.clone(), entry);
+      if let Some(previous) = previous {
+        debug!("session replaced; draining the previous connection");
+        retire(&previous);
+      }
+    } else {
+      debug!("crossed dial: keeping the deterministic owner, closing this connection");
+      alive.store(false, Ordering::SeqCst);
+      return;
     }
   }
 
@@ -152,6 +202,9 @@ pub(crate) async fn run_session(
     }
     () = shutdown_observer(shutdown) => {
       trace!("session ended by shutdown signal");
+    }
+    () = retire_observer(retire_rx) => {
+      trace!("session ended by deterministic replacement");
     }
   }
 
@@ -176,7 +229,16 @@ async fn shutdown_observer(mut signal: watch::Receiver<()>) {
   let _ = signal.changed().await;
 }
 
-/// Marks a replaced session dead and fails its pending admissions.
+/// Resolves when this session is deterministically replaced (crossed dial
+/// or a newer same-direction connection).
+async fn retire_observer(mut signal: watch::Receiver<()>) {
+  let _ = signal.changed().await;
+}
+
+/// Drains a replaced session: it stops accepting new work, its pending
+/// admissions fail exactly once with `StreamInterrupted`, and the retire
+/// signal closes its reader so the connection tears down after the winner
+/// is registered.
 fn retire(entry: &SessionEntry) {
   entry.alive.store(false, Ordering::SeqCst);
   if let Ok(mut pending) = entry.pending_acks.lock() {
@@ -184,6 +246,7 @@ fn retire(entry: &SessionEntry) {
       let _ = notify.send(Err(ErrorKind::StreamInterrupted));
     }
   }
+  let _ = entry.retire.send(());
 }
 
 /// Writes queued session frames in order until the queue closes or the
@@ -635,4 +698,40 @@ fn now_millis() -> u64 {
     .ok()
     .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
     .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod replacement_tests {
+  use super::{DialDirection, keep_connection};
+  use crate::NodeId;
+
+  fn node(value: u8) -> NodeId {
+    NodeId::parse(&format!("node_{value:021}")).unwrap()
+  }
+
+  /// SC-G04-P0-09: every completion ordering picks the same single session
+  /// owner from durable identities.
+  #[test]
+  fn crossed_dial_converges_to_the_smaller_initiator_connection() {
+    let smaller = node(1);
+    let larger = node(2);
+
+    // Smaller node keeps its outgoing dial; larger keeps its incoming one —
+    // both sides converge to the smaller's connection.
+    assert!(keep_connection(&smaller, &larger, DialDirection::Outgoing));
+    assert!(!keep_connection(&smaller, &larger, DialDirection::Incoming));
+    assert!(!keep_connection(&larger, &smaller, DialDirection::Outgoing));
+    assert!(keep_connection(&larger, &smaller, DialDirection::Incoming));
+
+    // The rule is total for every ordering: exactly one direction wins per
+    // side, and the winning pair is the same connection.
+    for (local, peer) in [
+      (smaller.clone(), larger.clone()),
+      (larger.clone(), smaller.clone()),
+    ] {
+      let keep_outgoing = keep_connection(&local, &peer, DialDirection::Outgoing);
+      let keep_incoming = keep_connection(&local, &peer, DialDirection::Incoming);
+      assert_ne!(keep_outgoing, keep_incoming);
+    }
+  }
 }

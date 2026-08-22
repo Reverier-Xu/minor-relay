@@ -363,7 +363,15 @@ impl Supervisor {
               Ok(session) => {
                 // Keep the authenticated session open: it serves packet
                 // streams until the connection closes (ADR-0007).
-                run_session(connection, session, packet, sessions, shutdown).await;
+                run_session(
+                  connection,
+                  session,
+                  packet,
+                  sessions,
+                  shutdown,
+                  crate::session::stream::DialDirection::Incoming,
+                )
+                .await;
               }
               Err(error) => {
                 tracing::warn!(kind = ?error.kind(), context = %error, "session establishment failed");
@@ -425,7 +433,15 @@ impl Supervisor {
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
     tasks.spawn(async move {
-      run_session(connection, session, packet, sessions, shutdown).await;
+      run_session(
+        connection,
+        session,
+        packet,
+        sessions,
+        shutdown,
+        crate::session::stream::DialDirection::Outgoing,
+      )
+      .await;
     });
     Ok(view)
   }
@@ -465,7 +481,15 @@ impl Supervisor {
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
     tasks.spawn(async move {
-      run_session(connection, session, packet, sessions, shutdown).await;
+      run_session(
+        connection,
+        session,
+        packet,
+        sessions,
+        shutdown,
+        crate::session::stream::DialDirection::Outgoing,
+      )
+      .await;
     });
     Ok(authenticated)
   }
