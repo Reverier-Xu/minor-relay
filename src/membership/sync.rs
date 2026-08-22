@@ -111,13 +111,19 @@ impl SyncPayload {
 /// (SC-G05-P0-09, the grant-carrying reconnect path).
 #[derive(Debug)]
 pub(crate) struct MembershipSyncConsumer {
-  context: Arc<LocalIdentityContext>,
+  // Held weakly so the registry shared with a live node handle never pins
+  // the node's metadata store after shutdown; a packet arriving after the
+  // runtime dropped is rejected as shutting down.
+  context: std::sync::Weak<LocalIdentityContext>,
   entropy: Arc<dyn Entropy>,
 }
 
 impl MembershipSyncConsumer {
-  pub(crate) const fn new(context: Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>) -> Self {
-    Self { context, entropy }
+  pub(crate) fn new(context: Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>) -> Self {
+    Self {
+      context: Arc::downgrade(&context),
+      entropy,
+    }
   }
 }
 
@@ -126,28 +132,34 @@ impl PacketConsumer for MembershipSyncConsumer {
     Box::pin(async move {
       let bytes = drain_body(packet.body()).await?;
       let payload = SyncPayload::decode(&bytes)?;
-      accept_payload(self, &payload).await
+      let context = self
+        .context
+        .upgrade()
+        .ok_or_else(|| Error::shutting_down("membership sync"))?;
+      accept_payload(&context, self.entropy.clone(), &payload).await
     })
   }
 }
 
-async fn accept_payload(consumer: &MembershipSyncConsumer, payload: &SyncPayload) -> Result<()> {
-  let store = consumer.context.store();
+async fn accept_payload(
+  context: &Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>, payload: &SyncPayload,
+) -> Result<()> {
+  let store = context.store();
   match payload {
     SyncPayload::Page(encoded) => {
       let trusted = trust_store::trusted_bindings(store).await?;
       let page = MembershipPage::decode_and_verify(encoded.as_ref(), &trusted)?;
-      let _ = page_sync::apply_page_ctx(store, consumer.entropy.as_ref(), &page).await?;
+      let _ = page_sync::apply_page_ctx(store, entropy.as_ref(), &page).await?;
     }
     SyncPayload::Snapshot(encoded) => {
       // The trusted issuer is the cluster creator; a member (which holds a
       // pointer but no genesis record) resolves it through its own
       // admission grant's issuer binding instead.
-      let genesis = existing_cluster(&consumer.context).await.unwrap_or(None);
+      let genesis = existing_cluster(context).await.unwrap_or(None);
       let trusted_issuer = match &genesis {
         Some(genesis) => (genesis.creator().clone(), genesis.creator_key().clone()),
         None => {
-          let local = consumer.context.identity().node().clone();
+          let local = context.identity().node().clone();
           trust_store::trusted_issuer(store, &local)
             .await?
             .ok_or_else(|| Error::not_ready("local cluster"))?
@@ -155,7 +167,7 @@ async fn accept_payload(consumer: &MembershipSyncConsumer, payload: &SyncPayload
       };
       let cluster = match &genesis {
         Some(genesis) => genesis.cluster().clone(),
-        None => crate::identity::genesis::local_cluster(&consumer.context)
+        None => crate::identity::genesis::local_cluster(context)
           .await?
           .ok_or_else(|| Error::not_ready("local cluster"))?
           .cluster()
@@ -167,30 +179,22 @@ async fn accept_payload(consumer: &MembershipSyncConsumer, payload: &SyncPayload
         &trusted_issuer.0,
         &trusted_issuer.1,
       )?;
-      trust_store::persist_snapshot_ctx(store, consumer.entropy.as_ref(), &snapshot).await?;
+      trust_store::persist_snapshot_ctx(store, entropy.as_ref(), &snapshot).await?;
       // Binding adoption is best effort per record: a transient store
       // contention on one binding must not abort the remaining bindings of
       // the snapshot; the next delivery retries what was skipped
       // (anti-entropy repair, SC-G05-P0-07).
       for binding in snapshot.bindings() {
-        if let Err(error) = trust_store::persist_binding_ctx(
-          store,
-          consumer.entropy.as_ref(),
-          binding.node(),
-          binding.key(),
-        )
-        .await
+        if let Err(error) =
+          trust_store::persist_binding_ctx(store, entropy.as_ref(), binding.node(), binding.key())
+            .await
         {
           tracing::debug!(node = %binding.node(), kind = ?error.kind(), "trust binding persist skipped");
           continue;
         }
-        let _ = trust_store::adopt_binding_ctx(
-          store,
-          consumer.entropy.as_ref(),
-          binding.node(),
-          binding.key(),
-        )
-        .await;
+        let _ =
+          trust_store::adopt_binding_ctx(store, entropy.as_ref(), binding.node(), binding.key())
+            .await;
       }
     }
   }

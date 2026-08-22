@@ -257,7 +257,7 @@ async fn finish_shutdown(
 struct Supervisor {
   dependencies: RuntimeDependencies,
   shutdown_tx: watch::Sender<()>,
-  connection_tasks: Arc<std::sync::Mutex<Vec<AbortHandle>>>,
+  connection_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
   driver: SessionDriver,
   packet: Arc<SessionPacketContext>,
   route_capacity: usize,
@@ -274,6 +274,10 @@ struct Supervisor {
   // explicit reconnect (a new session to the peer) restores the
   // relationship (SC-G05-P0-27 no-extra-edge).
   recovery_excluded: std::collections::BTreeSet<NodeId>,
+  // The anti-entropy driver task: aborted on shutdown so the node's
+  // storage handle is released promptly (a restarted node reopening the
+  // same factory must not race a lingering driver).
+  sync_driver: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Supervisor {
@@ -327,7 +331,7 @@ impl Supervisor {
     // snapshot over every authenticated session on the configured interval
     // and stops on the shutdown signal (SC-G05-P0-22: streams metadata
     // pages; bounded work per tick).
-    {
+    let sync_driver = {
       let driver_context = Arc::clone(&sync_context);
       let driver_keys = dependencies.keys.clone();
       let driver_entropy = dependencies.entropy.clone();
@@ -370,8 +374,9 @@ impl Supervisor {
             }
           }
         }
-      });
-    }
+      })
+    };
+    let sync_driver = Some(sync_driver);
     let recovery = crate::membership::recovery::RecoveryController::new(
       crate::membership::recovery::RecoveryPolicy::new(
         dependencies.config.recovery().neighbors(),
@@ -393,19 +398,29 @@ impl Supervisor {
       published_endpoints,
       recovery_history: std::collections::BTreeSet::new(),
       recovery_excluded: std::collections::BTreeSet::new(),
+      sync_driver,
     }
   }
 
-  fn into_dependencies(self) -> RuntimeDependencies {
+  fn into_dependencies(mut self) -> RuntimeDependencies {
     // Every open session task observes the shutdown signal and closes its
     // connection instead of being orphaned when the supervisor exits; the
-    // tracked abort handles terminate the untracked accept-side tasks.
+    // tracked tasks (accept side and the anti-entropy driver) are aborted
+    // and awaited so their storage captures are dropped before a restarted
+    // node reopens the same factory.
     let _ = self.shutdown_tx.send(());
-    if let Ok(handles) = self.connection_tasks.lock() {
-      for handle in handles.iter() {
+    let mut aborted = Vec::new();
+    if let Some(driver) = self.sync_driver.take() {
+      driver.abort();
+      aborted.push(driver);
+    }
+    if let Ok(mut handles) = self.connection_tasks.lock() {
+      for handle in handles.drain(..) {
         handle.abort();
+        aborted.push(handle);
       }
     }
+    drop(aborted);
     self.dependencies
   }
 
@@ -510,7 +525,7 @@ impl Supervisor {
             }
         });
         if let Ok(mut tasks) = connection_tasks.lock() {
-          tasks.push(task.abort_handle());
+          tasks.push(task);
         }
       }
     });
