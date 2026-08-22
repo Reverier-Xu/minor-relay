@@ -47,14 +47,12 @@ fn crash_hook(_point: u8) {}
 
 use fs4::FileExt;
 
-use crate::hex::{decode as hex_decode_bytes, encode as hex_encode};
-
 use super::document::{GenerationDocument, GenerationInput, LockHeader};
 use crate::{
   BoxFuture, CommitOutcome, CommitReceipt, Digest, DurabilityLevel, Error, ProviderErrorContext,
-  ProviderErrorKind, Result, StoreCapabilities, StoreEntry, StoreKey,
-  StoreNamespace, StoreOperation, StoreRequirements, StoreRevision, StoreTransaction, StoreValue,
-  TransactionId,
+  ProviderErrorKind, Result, StoreCapabilities, StoreEntry, StoreKey, StoreNamespace,
+  StoreOperation, StoreRequirements, StoreRevision, StoreTransaction, StoreValue, TransactionId,
+  hex::{decode as hex_decode_bytes, encode as hex_encode},
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
 };
 
@@ -323,12 +321,9 @@ impl JsonStorage {
     }
     if transaction.operation_digest() != &transaction.computed_operation_digest()
       || transaction.base_revision().as_bytes() != state.generation.to_be_bytes()
-      || !transaction
-        .operations()
-        .iter()
-        .all(|operation| {
-          crate::provider::condition_matches(&state.entries, &state.receipts, operation)
-        })
+      || !transaction.operations().iter().all(|operation| {
+        crate::provider::condition_matches(&state.entries, &state.receipts, operation)
+      })
     {
       return Ok(CommitOutcome::Conflict);
     }

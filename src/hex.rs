@@ -58,7 +58,7 @@ mod tests {
 
   #[test]
   fn hex_round_trips_bytes() {
-    let bytes = [0x00_u8, 0x0f, 0x10, 0xff, 0xab, 0xcd];
+    let bytes = [0x00_u8, 0x0F, 0x10, 0xFF, 0xAB, 0xCD];
     let text = encode(&bytes);
     assert_eq!(text, "000f10ffabcd");
     assert_eq!(decode(&text, "round trip").unwrap(), bytes);
@@ -67,9 +67,18 @@ mod tests {
 
   #[test]
   fn hex_rejects_odd_length_upper_case_and_non_hex() {
-    assert_eq!(decode("abc", "odd").unwrap_err().kind(), ErrorKind::InvalidInput);
-    assert_eq!(decode("ABCD", "upper").unwrap_err().kind(), ErrorKind::InvalidInput);
-    assert_eq!(decode("abcz", "non-hex").unwrap_err().kind(), ErrorKind::InvalidInput);
+    assert_eq!(
+      decode("abc", "odd").unwrap_err().kind(),
+      ErrorKind::InvalidInput
+    );
+    assert_eq!(
+      decode("ABCD", "upper").unwrap_err().kind(),
+      ErrorKind::InvalidInput
+    );
+    assert_eq!(
+      decode("abcz", "non-hex").unwrap_err().kind(),
+      ErrorKind::InvalidInput
+    );
     assert_eq!(
       decode_array::<2>("aabbcc", "length").unwrap_err().kind(),
       ErrorKind::InvalidInput

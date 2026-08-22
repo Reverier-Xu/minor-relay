@@ -650,7 +650,6 @@ pub trait Storage: fmt::Debug + Send + Sync + 'static {
   fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
 }
 
-
 fn digest_store_value(value: &[u8]) -> Digest {
   let mut hasher = Sha256::new();
   hasher.update(STORE_VALUE_DOMAIN);
@@ -665,8 +664,7 @@ fn digest_store_value(value: &[u8]) -> Digest {
 /// under test.
 pub(crate) fn condition_matches(
   entries: &std::collections::BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
-  receipts: &std::collections::BTreeMap<TransactionId, CommitReceipt>,
-  operation: &StoreOperation,
+  receipts: &std::collections::BTreeMap<TransactionId, CommitReceipt>, operation: &StoreOperation,
 ) -> bool {
   match operation {
     StoreOperation::Check {

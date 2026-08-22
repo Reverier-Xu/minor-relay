@@ -94,7 +94,17 @@ pub(crate) enum DeleteScript {
   Unknown,
 }
 
+/// Scripts the key-creation-intent path: `ApplyReportUnknown` commits the
+/// key then reports an unknown outcome so the caller exercises
+/// reconciliation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CreateScript {
+  Apply,
+  ApplyReportUnknown,
+}
+
 pub(crate) struct ScriptedKeys {
+  capabilities: KeyCapabilities,
   inner: Arc<ScriptedKeyInner>,
 }
 
@@ -113,6 +123,9 @@ struct ScriptedKeyInner {
   calls: Mutex<Vec<KeyCall>>,
   sign_script: Mutex<VecDeque<SignScript>>,
   delete_script: Mutex<VecDeque<DeleteScript>>,
+  create_script: Mutex<VecDeque<CreateScript>>,
+  reconcile_unknowns: Mutex<usize>,
+  public_key_override: Mutex<Option<PublicKey>>,
   next_handle: AtomicUsize,
 }
 
@@ -131,15 +144,42 @@ impl ScriptedKeys {
   /// a key pair.
   pub(crate) fn full_at(base: u64) -> Arc<Self> {
     Arc::new(Self {
+      capabilities: KeyCapabilities::new()
+        .ed25519(true)
+        .reconciliation(true)
+        .deletion(true),
       inner: Arc::new(ScriptedKeyInner {
         records: Mutex::new(BTreeMap::new()),
         operations: Mutex::new(BTreeMap::new()),
         calls: Mutex::new(Vec::new()),
         sign_script: Mutex::new(VecDeque::new()),
         delete_script: Mutex::new(VecDeque::new()),
+        create_script: Mutex::new(VecDeque::new()),
+        reconcile_unknowns: Mutex::new(0),
+        public_key_override: Mutex::new(None),
         next_handle: AtomicUsize::new(base as usize),
       }),
     })
+  }
+
+  /// A scripted provider with caller-chosen capabilities, for refusal
+  /// tests that must prove no key mutation happens before capability
+  /// checks.
+  pub(crate) fn with_capabilities(capabilities: KeyCapabilities) -> Self {
+    Self {
+      capabilities,
+      inner: Arc::new(ScriptedKeyInner {
+        records: Mutex::new(BTreeMap::new()),
+        operations: Mutex::new(BTreeMap::new()),
+        calls: Mutex::new(Vec::new()),
+        sign_script: Mutex::new(VecDeque::new()),
+        delete_script: Mutex::new(VecDeque::new()),
+        create_script: Mutex::new(VecDeque::new()),
+        reconcile_unknowns: Mutex::new(0),
+        public_key_override: Mutex::new(None),
+        next_handle: AtomicUsize::new(0),
+      }),
+    }
   }
 
   pub(crate) fn as_provider(self: &Arc<Self>) -> Arc<dyn KeyProvider> {
@@ -161,6 +201,21 @@ impl ScriptedKeys {
 
   pub(crate) fn push_delete_script(&self, script: DeleteScript) {
     self.inner.delete_script.lock().unwrap().push_back(script);
+  }
+
+  pub(crate) fn push_create_script(&self, script: CreateScript) {
+    self.inner.create_script.lock().unwrap().push_back(script);
+  }
+
+  /// Sets the key returned by `public_key` regardless of the stored handle,
+  /// for public-key mismatch tests.
+  pub(crate) fn set_public_key_override(&self, key: PublicKey) {
+    *self.inner.public_key_override.lock().unwrap() = Some(key);
+  }
+
+  /// Makes the next `count` reconciliation calls report `Unknown`.
+  pub(crate) fn set_reconcile_unknowns(&self, count: usize) {
+    *self.inner.reconcile_unknowns.lock().unwrap() = count;
   }
 
   pub(crate) fn create_detached(&self, operation: &KeyOperationId) -> CreatedKey {
@@ -186,6 +241,12 @@ impl ScriptedKeys {
       .get(handle.expose_provider_handle())
       .unwrap()
       .clone()
+  }
+
+  /// Looks up the created key for one operation without recording a
+  /// provider call, for assertions on already-created handles.
+  pub(crate) fn lookup_operation(&self, operation: &KeyOperationId) -> Option<CreatedKey> {
+    self.inner.lookup_operation(operation)
   }
 }
 
@@ -229,18 +290,29 @@ impl ScriptedKeyInner {
 
 impl KeyProvider for ScriptedKeys {
   fn capabilities(&self) -> KeyCapabilities {
-    KeyCapabilities::new()
-      .ed25519(true)
-      .reconciliation(true)
-      .deletion(true)
+    self.capabilities
   }
 
   fn create_ed25519<'a>(
     &'a self, operation: &'a KeyOperationId,
   ) -> BoxFuture<'a, Result<KeyCreateState>> {
     self.inner.push_call(KeyCall::Create(operation.clone()));
-    let created = self.inner.apply_create(operation);
-    Box::pin(async move { Ok(KeyCreateState::Present(created)) })
+    let script = self
+      .inner
+      .create_script
+      .lock()
+      .unwrap()
+      .pop_front()
+      .unwrap_or(CreateScript::Apply);
+    Box::pin(async move {
+      match script {
+        CreateScript::Apply => Ok(KeyCreateState::Present(self.inner.apply_create(operation))),
+        CreateScript::ApplyReportUnknown => {
+          self.inner.apply_create(operation);
+          Ok(KeyCreateState::Unknown)
+        }
+      }
+    })
   }
 
   fn reconcile_create<'a>(
@@ -249,8 +321,20 @@ impl KeyProvider for ScriptedKeys {
     self
       .inner
       .push_call(KeyCall::ReconcileCreate(operation.clone()));
+    let unknown = {
+      let mut left = self.inner.reconcile_unknowns.lock().unwrap();
+      if *left > 0 {
+        *left -= 1;
+        true
+      } else {
+        false
+      }
+    };
     let present = self.inner.lookup_operation(operation);
     Box::pin(async move {
+      if unknown {
+        return Ok(KeyCreateState::Unknown);
+      }
       Ok(match present {
         Some(created) => KeyCreateState::Present(created),
         None => KeyCreateState::Absent,
@@ -262,19 +346,23 @@ impl KeyProvider for ScriptedKeys {
     self
       .inner
       .push_call(KeyCall::PublicKey(handle.expose_provider_handle().to_vec()));
-    let result = self
-      .inner
-      .records
-      .lock()
-      .unwrap()
-      .get(handle.expose_provider_handle())
-      .map(|signing| PublicKey::from_bytes(signing.verifying_key().to_bytes()))
-      .ok_or_else(|| {
-        Error::provider(
-          ProviderErrorKind::Internal,
-          ProviderErrorContext::KeyPublicKey,
-        )
-      });
+    let override_key = self.inner.public_key_override.lock().unwrap().clone();
+    let result = match &override_key {
+      Some(key) => Ok(key.clone()),
+      None => self
+        .inner
+        .records
+        .lock()
+        .unwrap()
+        .get(handle.expose_provider_handle())
+        .map(|signing| PublicKey::from_bytes(signing.verifying_key().to_bytes()))
+        .ok_or_else(|| {
+          Error::provider(
+            ProviderErrorKind::Internal,
+            ProviderErrorContext::KeyPublicKey,
+          )
+        }),
+    };
     Box::pin(async move { result })
   }
 

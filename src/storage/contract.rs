@@ -312,9 +312,7 @@ fn reference_commit(
   if !transaction
     .operations()
     .iter()
-    .all(|operation| {
-      crate::provider::condition_matches(&state.entries, &state.receipts, operation)
-    })
+    .all(|operation| crate::provider::condition_matches(&state.entries, &state.receipts, operation))
   {
     return Ok(CommitOutcome::Conflict);
   }

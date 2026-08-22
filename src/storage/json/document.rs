@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as ShaDigest, Sha256};
 
 use crate::{
-  CommitReceipt, Digest, Error, Result, StoreRevision, TransactionId, hex::{
-    decode as hex_decode_bytes, decode_array as hex_decode, encode as hex_encode,
-  },
+  CommitReceipt, Digest, Error, Result, StoreRevision, TransactionId,
+  hex::{decode as hex_decode_bytes, decode_array as hex_decode, encode as hex_encode},
 };
 
 pub(super) const GENERATION_SCHEMA: &str = "relay.woooo.tech/schemas/json-generation-v1";

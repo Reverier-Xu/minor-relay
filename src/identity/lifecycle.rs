@@ -479,266 +479,26 @@ pub(crate) fn reconcile_unknown() -> Error {
 #[cfg(test)]
 mod tests {
   use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     future,
-    sync::{
-      Arc, Mutex,
-      atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::Ordering},
     time::Duration,
   };
 
-  use ed25519_dalek::{Signer, SigningKey};
-
   use super::*;
   use crate::{
-    BoxFuture, Digest, ErrorKind, KeyCapabilities, KeyDeleteState, KeyHandle, PublicKey,
-    QualifiedTag, Signature, StoreCapabilities, StoreKey, StoreNamespace, StoreRequirements,
-    StoreRevision, StoreTransaction,
+    BoxFuture, Digest, ErrorKind, KeyCapabilities, KeyHandle, PublicKey, QualifiedTag,
+    StoreCapabilities, StoreKey, StoreNamespace, StoreRequirements, StoreRevision,
+    StoreTransaction,
     provider::{KeyProvider, Storage},
     storage::contract::{ReferenceFactory, required_capabilities},
   };
 
   const RETENTION: Duration = Duration::from_secs(3_600);
-  use crate::storage::pending::PENDING_NAMESPACE;
-
-  // Entropy fills produce base62 suffix values 1, 2, 3, ...; every test uses
-  // fewer than ten fills, so decimal zero-padding matches base62 encoding.
-  #[derive(Debug, Default)]
-  struct SequenceEntropy(Mutex<u128>);
-
-  impl Entropy for SequenceEntropy {
-    fn fill(&self, output: &mut [u8]) -> Result<()> {
-      if output.len() != 16 {
-        return Err(Error::internal("sequence entropy length"));
-      }
-      let mut next = self.0.lock().unwrap();
-      *next = next
-        .checked_add(1)
-        .ok_or_else(|| Error::internal("sequence entropy exhausted"))?;
-      output.copy_from_slice(&next.to_be_bytes());
-      Ok(())
-    }
-  }
-
-  #[derive(Clone, Debug, Eq, PartialEq)]
-  enum KeyCall {
-    Create(KeyOperationId),
-    ReconcileCreate(KeyOperationId),
-    PublicKey(Vec<u8>),
-    Sign,
-    Delete,
-    ReconcileDelete,
-  }
-
-  #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-  enum CreateScript {
-    Apply,
-    ApplyReportUnknown,
-  }
-
-  #[derive(Debug)]
-  struct ScriptedKeys {
-    capabilities: KeyCapabilities,
-    inner: Arc<ScriptedKeyInner>,
-  }
-
-  #[derive(Debug)]
-  struct ScriptedKeyInner {
-    records: Mutex<BTreeMap<Vec<u8>, (KeyOperationId, SigningKey)>>,
-    operations: Mutex<BTreeMap<KeyOperationId, Vec<u8>>>,
-    calls: Mutex<Vec<KeyCall>>,
-    create_script: Mutex<VecDeque<CreateScript>>,
-    reconcile_unknowns: Mutex<usize>,
-    public_key_override: Mutex<Option<PublicKey>>,
-    next_handle: AtomicUsize,
-  }
-
-  fn scripted_signing(index: u64) -> SigningKey {
-    let mut seed = [0_u8; 32];
-    seed[..8].copy_from_slice(&index.to_be_bytes());
-    SigningKey::from_bytes(&seed)
-  }
-
-  impl ScriptedKeys {
-    fn new(capabilities: KeyCapabilities) -> Self {
-      Self {
-        capabilities,
-        inner: Arc::new(ScriptedKeyInner {
-          records: Mutex::new(BTreeMap::new()),
-          operations: Mutex::new(BTreeMap::new()),
-          calls: Mutex::new(Vec::new()),
-          create_script: Mutex::new(VecDeque::new()),
-          reconcile_unknowns: Mutex::new(0),
-          public_key_override: Mutex::new(None),
-          next_handle: AtomicUsize::new(0),
-        }),
-      }
-    }
-
-    fn full() -> Self {
-      Self::new(
-        KeyCapabilities::new()
-          .ed25519(true)
-          .reconciliation(true)
-          .deletion(true),
-      )
-    }
-
-    fn take_calls(&self) -> Vec<KeyCall> {
-      std::mem::take(&mut *self.inner.calls.lock().unwrap())
-    }
-  }
-
-  impl ScriptedKeyInner {
-    fn push_call(&self, call: KeyCall) {
-      self.calls.lock().unwrap().push(call);
-    }
-
-    fn apply_create(&self, operation: &KeyOperationId) -> CreatedKey {
-      let mut operations = self.operations.lock().unwrap();
-      if let Some(handle) = operations.get(operation) {
-        let records = self.records.lock().unwrap();
-        let (_, signing) = records.get(handle).unwrap();
-        return CreatedKey::new(
-          KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
-          PublicKey::from_bytes(signing.verifying_key().to_bytes()),
-        );
-      }
-      let index = self.next_handle.fetch_add(1, Ordering::SeqCst) as u64;
-      let signing = scripted_signing(index);
-      let handle = format!("scripted-handle-{index}").into_bytes();
-      let created = CreatedKey::new(
-        KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
-        PublicKey::from_bytes(signing.verifying_key().to_bytes()),
-      );
-      operations.insert(operation.clone(), handle.clone());
-      self
-        .records
-        .lock()
-        .unwrap()
-        .insert(handle, (operation.clone(), signing));
-      created
-    }
-
-    fn lookup_operation(&self, operation: &KeyOperationId) -> Option<CreatedKey> {
-      let handle = self.operations.lock().unwrap().get(operation).cloned()?;
-      let records = self.records.lock().unwrap();
-      let (_, signing) = records.get(&handle).unwrap();
-      Some(CreatedKey::new(
-        KeyHandle::from_provider_bytes(Arc::from(handle)).unwrap(),
-        PublicKey::from_bytes(signing.verifying_key().to_bytes()),
-      ))
-    }
-  }
-
-  impl KeyProvider for ScriptedKeys {
-    fn capabilities(&self) -> KeyCapabilities {
-      self.capabilities
-    }
-
-    fn create_ed25519<'a>(
-      &'a self, operation: &'a KeyOperationId,
-    ) -> BoxFuture<'a, Result<KeyCreateState>> {
-      self.inner.push_call(KeyCall::Create(operation.clone()));
-      let script = self
-        .inner
-        .create_script
-        .lock()
-        .unwrap()
-        .pop_front()
-        .unwrap_or(CreateScript::Apply);
-      Box::pin(async move {
-        match script {
-          CreateScript::Apply => Ok(KeyCreateState::Present(self.inner.apply_create(operation))),
-          CreateScript::ApplyReportUnknown => {
-            self.inner.apply_create(operation);
-            Ok(KeyCreateState::Unknown)
-          }
-        }
-      })
-    }
-
-    fn reconcile_create<'a>(
-      &'a self, operation: &'a KeyOperationId,
-    ) -> BoxFuture<'a, Result<KeyCreateState>> {
-      self
-        .inner
-        .push_call(KeyCall::ReconcileCreate(operation.clone()));
-      let unknown = {
-        let mut left = self.inner.reconcile_unknowns.lock().unwrap();
-        if *left > 0 {
-          *left -= 1;
-          true
-        } else {
-          false
-        }
-      };
-      let present = self.inner.lookup_operation(operation);
-      Box::pin(async move {
-        if unknown {
-          return Ok(KeyCreateState::Unknown);
-        }
-        Ok(match present {
-          Some(created) => KeyCreateState::Present(created),
-          None => KeyCreateState::Absent,
-        })
-      })
-    }
-
-    fn public_key<'a>(&'a self, handle: &'a KeyHandle) -> BoxFuture<'a, Result<PublicKey>> {
-      self
-        .inner
-        .push_call(KeyCall::PublicKey(handle.expose_provider_handle().to_vec()));
-      let override_key = self.inner.public_key_override.lock().unwrap().clone();
-      let result = match &override_key {
-        Some(key) => Ok(key.clone()),
-        None => self
-          .inner
-          .records
-          .lock()
-          .unwrap()
-          .get(handle.expose_provider_handle())
-          .map(|(_, signing)| PublicKey::from_bytes(signing.verifying_key().to_bytes()))
-          .ok_or_else(|| {
-            Error::provider(
-              ProviderErrorKind::Internal,
-              ProviderErrorContext::KeyPublicKey,
-            )
-          }),
-      };
-      Box::pin(async move { result })
-    }
-
-    fn sign<'a>(
-      &'a self, handle: &'a KeyHandle, message: &'a [u8],
-    ) -> BoxFuture<'a, Result<Signature>> {
-      self.inner.push_call(KeyCall::Sign);
-      let result = self
-        .inner
-        .records
-        .lock()
-        .unwrap()
-        .get(handle.expose_provider_handle())
-        .map(|(_, signing)| Signature::from_bytes(signing.sign(message).to_bytes()))
-        .ok_or_else(|| Error::provider(ProviderErrorKind::Internal, ProviderErrorContext::KeySign));
-      Box::pin(async move { result })
-    }
-
-    fn delete<'a>(
-      &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
-    ) -> BoxFuture<'a, Result<KeyDeleteState>> {
-      self.inner.push_call(KeyCall::Delete);
-      Box::pin(async { Err(Error::internal("unexpected key deletion")) })
-    }
-
-    fn reconcile_delete<'a>(
-      &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
-    ) -> BoxFuture<'a, Result<KeyDeleteState>> {
-      self.inner.push_call(KeyCall::ReconcileDelete);
-      Box::pin(async { Err(Error::internal("unexpected key deletion")) })
-    }
-  }
+  use crate::{
+    identity::testing::{CreateScript, KeyCall, ScriptedKeys, SequenceEntropy, scripted_signing},
+    storage::pending::PENDING_NAMESPACE,
+  };
 
   #[derive(Clone, Copy, Debug, Eq, PartialEq)]
   enum CommitFault {
@@ -926,11 +686,11 @@ mod tests {
   }
 
   fn assert_never_signed_or_deleted(keys: &ScriptedKeys) {
-    for call in keys.inner.calls.lock().unwrap().iter() {
+    for call in keys.all_calls() {
       assert!(
         !matches!(
           call,
-          KeyCall::Sign | KeyCall::Delete | KeyCall::ReconcileDelete
+          KeyCall::Sign(_) | KeyCall::Delete | KeyCall::ReconcileDelete
         ),
         "unexpected provider call: {call:?}"
       );
@@ -946,12 +706,12 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_fresh_open_runs_exact_provider_and_commit_order() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
 
     let context = open_with(factory, keys.clone(), entropy).await.unwrap();
     let identity = context.identity().clone();
-    let created = keys.inner.lookup_operation(&operation(2)).unwrap();
+    let created = keys.lookup_operation(&operation(2)).unwrap();
 
     assert_eq!(identity.node(), &node(1));
     assert_eq!(identity.operation(), &operation(2));
@@ -976,7 +736,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_restart_loads_persisted_identity_without_create() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
 
     let first = open_with(factory.clone(), keys.clone(), entropy.clone())
@@ -999,7 +759,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_missing_handle_fails_closed_without_replacement() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
 
     let first = open_with(factory.clone(), keys, entropy.clone())
@@ -1009,7 +769,7 @@ mod tests {
     let commits = commit_calls(&reference);
     drop(first);
 
-    let missing = Arc::new(ScriptedKeys::full());
+    let missing = ScriptedKeys::full();
     let error = open_with(factory, missing.clone(), entropy)
       .await
       .unwrap_err();
@@ -1029,7 +789,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_mismatched_public_key_fails_closed_without_replacement() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
 
     let first = open_with(factory.clone(), keys, entropy.clone())
@@ -1040,10 +800,10 @@ mod tests {
     drop(first);
 
     let mismatched = ScriptedKeys::full();
-    *mismatched.inner.public_key_override.lock().unwrap() = Some(PublicKey::from_bytes(
+    mismatched.set_public_key_override(PublicKey::from_bytes(
       scripted_signing(9_999).verifying_key().to_bytes(),
     ));
-    let mismatched = Arc::new(mismatched);
+
     let error = open_with(factory, mismatched.clone(), entropy)
       .await
       .unwrap_err();
@@ -1078,7 +838,7 @@ mod tests {
       KeyCapabilities::new(),
     ] {
       let (reference, factory) = fresh_reference();
-      let keys = Arc::new(ScriptedKeys::new(capabilities));
+      let keys = Arc::new(ScriptedKeys::with_capabilities(capabilities));
       let entropy = Arc::new(SequenceEntropy::default());
 
       let error = open_with(factory.clone(), keys.clone(), entropy.clone())
@@ -1090,7 +850,7 @@ mod tests {
       assert!(stored_local(&reference).is_none());
       assert!(stored_intents(&reference).is_empty());
 
-      let capable = Arc::new(ScriptedKeys::full());
+      let capable = ScriptedKeys::full();
       let context = open_with(factory, capable.clone(), entropy).await.unwrap();
       assert_final_state(&reference, context.identity());
       assert_eq!(commit_calls(&reference), 3);
@@ -1102,13 +862,8 @@ mod tests {
   async fn identity_records_lifecycle_create_unknown_restart_reconciles_same_operation() {
     let (reference, factory) = fresh_reference();
     let keys = ScriptedKeys::full();
-    keys
-      .inner
-      .create_script
-      .lock()
-      .unwrap()
-      .push_back(CreateScript::ApplyReportUnknown);
-    let keys = Arc::new(keys);
+    keys.push_create_script(CreateScript::ApplyReportUnknown);
+
     let entropy = Arc::new(SequenceEntropy::default());
 
     let error = open_with(factory.clone(), keys.clone(), entropy.clone())
@@ -1130,7 +885,7 @@ mod tests {
 
     let context = open_with(factory, keys.clone(), entropy).await.unwrap();
     let identity = context.identity().clone();
-    let created = keys.inner.lookup_operation(&operation(2)).unwrap();
+    let created = keys.lookup_operation(&operation(2)).unwrap();
     assert_eq!(identity.node(), &node(1));
     assert_eq!(identity.operation(), &operation(2));
     assert_eq!(identity.handle(), created.handle());
@@ -1143,7 +898,7 @@ mod tests {
     );
     let creates = first_calls
       .iter()
-      .chain(keys.inner.calls.lock().unwrap().iter())
+      .chain(keys.all_calls().iter())
       .filter(|call| matches!(call, KeyCall::Create(_)))
       .count();
     assert_eq!(creates, 1);
@@ -1159,7 +914,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_finalize_interrupted_after_apply_recovers_via_journal() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1184,7 +939,7 @@ mod tests {
     assert!(task.await.unwrap_err().is_cancelled());
     drop(fault_factory);
 
-    let created = keys.inner.lookup_operation(&operation(2)).unwrap();
+    let created = keys.lookup_operation(&operation(2)).unwrap();
     assert_eq!(
       keys.take_calls(),
       vec![
@@ -1217,7 +972,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_finalize_unknown_not_applied_resumes_intent() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1230,7 +985,7 @@ mod tests {
       .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Conflict);
     assert_eq!(error.context(), "local identity finalize");
-    let created = keys.inner.lookup_operation(&operation(2)).unwrap();
+    let created = keys.lookup_operation(&operation(2)).unwrap();
     assert_eq!(
       keys.take_calls(),
       vec![
@@ -1267,7 +1022,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_finalize_unknown_applied_reconciles_in_run() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1284,7 +1039,7 @@ mod tests {
       .unwrap();
     let identity = context.identity().clone();
     assert_eq!(identity.node(), &node(1));
-    let created = keys.inner.lookup_operation(&operation(2)).unwrap();
+    let created = keys.lookup_operation(&operation(2)).unwrap();
     assert_eq!(
       keys.take_calls(),
       vec![
@@ -1314,7 +1069,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_cleanup_aborted_retries_once_with_fresh_id() {
     let (reference, _factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1362,7 +1117,7 @@ mod tests {
       ),
     ] {
       let (reference, _factory) = fresh_reference();
-      let keys = Arc::new(ScriptedKeys::full());
+      let keys = ScriptedKeys::full();
       let entropy = Arc::new(SequenceEntropy::default());
       let fault = Arc::new(FaultingFactory::new(&reference, script));
       let fault_factory: Arc<dyn StorageFactory> = fault;
@@ -1379,7 +1134,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_reconcile_create_unknown_leaves_intent_untouched() {
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1407,7 +1162,7 @@ mod tests {
     assert_eq!(stored_intents(&reference).len(), 1);
     assert_eq!(commit_calls(&reference), 1);
 
-    *keys.inner.reconcile_unknowns.lock().unwrap() += 1;
+    keys.set_reconcile_unknowns(1);
     let error = open_with(factory.clone(), keys.clone(), entropy.clone())
       .await
       .unwrap_err();
@@ -1423,7 +1178,7 @@ mod tests {
 
     let context = open_with(factory, keys.clone(), entropy).await.unwrap();
     let identity = context.identity().clone();
-    let created = keys.inner.lookup_operation(&operation(2)).unwrap();
+    let created = keys.lookup_operation(&operation(2)).unwrap();
     assert_eq!(identity.node(), &node(1));
     assert_eq!(identity.operation(), &operation(2));
     assert_eq!(identity.handle(), created.handle());
@@ -1443,7 +1198,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_intent_commit_unknown_reconciles_exactly_once() {
     let (reference, _factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1466,7 +1221,6 @@ mod tests {
         KeyCall::Create(operation(2)),
         KeyCall::PublicKey(
           keys
-            .inner
             .lookup_operation(&operation(2))
             .unwrap()
             .handle()
@@ -1482,7 +1236,7 @@ mod tests {
     );
 
     let (reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
     let fault = Arc::new(FaultingFactory::new(
       &reference,
@@ -1513,7 +1267,7 @@ mod tests {
   async fn assert_discovery_corrupt(index: usize, setup: impl Fn(&Arc<ReferenceFactory>)) {
     let (reference, factory) = fresh_reference();
     setup(&reference);
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let error = open_with(factory, keys.clone(), Arc::new(SequenceEntropy::default()))
       .await
       .unwrap_err();
@@ -1639,7 +1393,7 @@ mod tests {
   #[tokio::test]
   async fn identity_records_lifecycle_errors_are_typed_and_redacted() {
     let (_reference, factory) = fresh_reference();
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let entropy = Arc::new(SequenceEntropy::default());
 
     let first = open_with(factory.clone(), keys, entropy.clone())
@@ -1649,10 +1403,10 @@ mod tests {
     drop(first);
 
     let mismatched = ScriptedKeys::full();
-    *mismatched.inner.public_key_override.lock().unwrap() = Some(PublicKey::from_bytes(
+    mismatched.set_public_key_override(PublicKey::from_bytes(
       scripted_signing(9_999).verifying_key().to_bytes(),
     ));
-    let mismatched = Arc::new(mismatched);
+
     let error = open_with(factory, mismatched, entropy).await.unwrap_err();
     let rendered = format!("{error:?}");
     assert_eq!(
@@ -1670,7 +1424,7 @@ mod tests {
       (local_namespace, local_key),
       StoreValue::new(Arc::from(b"opaque-corrupt-value".as_slice())),
     );
-    let keys = Arc::new(ScriptedKeys::full());
+    let keys = ScriptedKeys::full();
     let error = open_with(factory, keys, Arc::new(SequenceEntropy::default()))
       .await
       .unwrap_err();

@@ -605,7 +605,6 @@ fn string_tags<T: TagText>(tags: &[T]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-
   use crate::hex::encode as hex;
 
   fn extension_tag(name: &str) -> FeatureTag {

@@ -14,10 +14,12 @@ use tempfile::TempDir;
 #[cfg(unix)]
 use super::JsonStoreFactory;
 #[cfg(unix)]
-use super::document::{GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA};
+use super::document::{
+  GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA,
+};
+use super::helpers::*;
 #[cfg(unix)]
 use crate::hex::{decode as hex_decode_bytes, encode as hex_encode};
-use super::helpers::*;
 #[cfg(unix)]
 use crate::provider::StorageFactory;
 #[cfg(unix)]

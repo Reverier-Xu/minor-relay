@@ -787,8 +787,7 @@ mod tests {
   const TRANSACTION: &str = "txn_0123456789abcdefghijk";
   const FORGOTTEN_TRANSACTION: &str = "txn_111111111111111111111";
   use crate::identity::records::{
-    CLUSTER_GENESIS_NAMESPACE as GENESIS_NAMESPACE,
-    LOCAL_IDENTITY_NAMESPACE as IDENTITY_NAMESPACE,
+    CLUSTER_GENESIS_NAMESPACE as GENESIS_NAMESPACE, LOCAL_IDENTITY_NAMESPACE as IDENTITY_NAMESPACE,
   };
 
   fn namespace(value: &str) -> StoreNamespace {
