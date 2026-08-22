@@ -69,30 +69,11 @@ impl JoinHint {
 }
 
 fn generation_hex(generation: &[u8; 16]) -> String {
-  let mut text = String::with_capacity(32);
-  for byte in generation {
-    text.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-    text.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
-  }
-  text
+  crate::hex::encode(generation)
 }
 
 fn parse_generation_hex(text: &str) -> Result<[u8; 16]> {
-  let error = || Error::invalid_input("websocket hint");
-  if text.len() != 32 {
-    return Err(error());
-  }
-  let mut generation = [0_u8; 16];
-  for (index, byte) in generation.iter_mut().enumerate() {
-    let high = text.as_bytes()[index * 2];
-    let low = text.as_bytes()[index * 2 + 1];
-    let (Some(high), Some(low)) = (char::from(high).to_digit(16), char::from(low).to_digit(16))
-    else {
-      return Err(error());
-    };
-    *byte = u8::try_from((high << 4) | low).map_err(|_| error())?;
-  }
-  Ok(generation)
+  crate::hex::decode_array(text, "websocket hint")
 }
 
 /// The aggregate WebSocket message limit: ADR-0002's 65,536-byte

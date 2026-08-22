@@ -413,7 +413,6 @@ pub enum RouteState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RouteStatusView {
   handle: RouteHandle,
-  trace_id: TraceId,
   selected_node: Option<NodeId>,
   state: RouteState,
   bytes_forwarded: u64,
@@ -425,8 +424,10 @@ impl RouteStatusView {
     &self.handle
   }
 
+  /// The route trace id; the handle already carries the same identity, so
+  /// this accessor derives from it instead of duplicating the field.
   pub fn trace_id(&self) -> &TraceId {
-    &self.trace_id
+    self.handle.trace_id()
   }
 
   pub fn selected_node(&self) -> Option<&NodeId> {
@@ -545,7 +546,6 @@ impl RouteRecord {
       handle: RouteHandle {
         trace_id: self.trace_id.clone(),
       },
-      trace_id: self.trace_id.clone(),
       selected_node: self.selected_node.clone(),
       state: self.state.clone(),
       bytes_forwarded: self.bytes_forwarded,

@@ -152,18 +152,20 @@ impl SessionDriver {
     let Some(pointer) = crate::identity::genesis::local_cluster(&self.context).await? else {
       return Ok(None);
     };
-    let generation = self
-      .issuer
-      .lock()
-      .map_err(|_| Error::internal("join credential issuer"))
-      .and_then(|issuer| {
-        issuer
-          .generation_id()
-          .ok_or_else(|| Error::not_ready("join credential"))
-      });
-    let generation = match generation {
-      Ok(generation) => generation,
-      Err(_) => return Ok(None),
+    let generation = match self.issuer.lock() {
+      Ok(issuer) => match issuer.generation_id() {
+        Some(generation) => generation,
+        // No active generation is a normal transient state: the listener
+        // publishes no hint and keeps accepting.
+        None => return Ok(None),
+      },
+      // A poisoned issuer lock is an internal fault, not a missing hint;
+      // surface it so it stays observable instead of masquerading as
+      // "no active generation".
+      Err(_) => {
+        tracing::warn!("join credential issuer lock poisoned");
+        return Err(Error::internal("join credential issuer"));
+      }
     };
     Ok(Some(JoinHint::new(pointer.cluster().clone(), generation)))
   }

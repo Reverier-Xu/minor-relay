@@ -147,9 +147,9 @@ impl StoreGuard {
   fn acquire(directory: &Path) -> Result<Self> {
     let canonical = directory
       .canonicalize()
-      .map_err(|_| provider_error(ProviderErrorKind::Io, ProviderErrorContext::StorageOpen))?;
+      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::StorageOpen))?;
     if !canonical.is_dir() {
-      return Err(provider_error(
+      return Err(Error::provider(
         ProviderErrorKind::StorageCorrupt,
         ProviderErrorContext::StorageOpen,
       ));
@@ -159,7 +159,7 @@ impl StoreGuard {
         .lock()
         .map_err(|_| Error::internal("json store guard"))?;
       if !open.insert(canonical.clone()) {
-        return Err(provider_error(
+        return Err(Error::provider(
           ProviderErrorKind::StorageLocked,
           ProviderErrorContext::StorageOpen,
         ));
@@ -191,7 +191,7 @@ impl StoreGuard {
               fs4::TryLockError::WouldBlock => ProviderErrorKind::StorageLocked,
               fs4::TryLockError::Error(_) => ProviderErrorKind::Io,
             };
-            return Err(provider_error(kind, ProviderErrorContext::StorageOpen));
+            return Err(Error::provider(kind, ProviderErrorContext::StorageOpen));
           }
           std::thread::sleep(Duration::from_micros(500));
         }
@@ -260,7 +260,7 @@ impl JsonStorage {
     let os_crash = probe_directory_barrier(&canonical);
     let capabilities = capability_set(os_crash);
     if !capabilities.satisfies(requirements) {
-      return Err(provider_error(
+      return Err(Error::provider(
         ProviderErrorKind::UnsupportedCapability,
         ProviderErrorContext::StorageOpen,
       ));
@@ -272,21 +272,21 @@ impl JsonStorage {
     let store_uuid = if lock_bytes.is_empty() {
       let mut uuid = [0_u8; 16];
       getrandom::fill(&mut uuid)
-        .map_err(|_| provider_error(ProviderErrorKind::Io, ProviderErrorContext::Entropy))?;
+        .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::Entropy))?;
       guard
         .write_lock_bytes(&LockHeader::new(uuid).encode()?)
         .map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
       uuid
     } else {
       let header = LockHeader::decode(&lock_bytes).map_err(|_| {
-        provider_error(
+        Error::provider(
           ProviderErrorKind::StorageCorrupt,
           ProviderErrorContext::StorageOpen,
         )
       })?;
       let uuid = hex_decode_bytes(&header.store_uuid, "json store uuid")?;
       <[u8; 16]>::try_from(uuid.as_slice()).map_err(|_| {
-        provider_error(
+        Error::provider(
           ProviderErrorKind::StorageCorrupt,
           ProviderErrorContext::StorageOpen,
         )
@@ -332,7 +332,7 @@ impl JsonStorage {
       .checked_add(1)
       .ok_or_else(|| Error::resource_exhausted("json generation"))?;
     if next_generation > self.max_generations {
-      return Err(provider_error(
+      return Err(Error::provider(
         ProviderErrorKind::ResourceExhausted,
         ProviderErrorContext::StorageCommit,
       ));
@@ -416,7 +416,7 @@ impl JsonStorage {
       )
       .ok_or_else(|| Error::resource_exhausted("json store bytes"))?;
     if total_bytes > self.max_total_bytes {
-      return Err(provider_error(
+      return Err(Error::provider(
         ProviderErrorKind::ResourceExhausted,
         ProviderErrorContext::StorageCommit,
       ));
@@ -435,7 +435,7 @@ impl JsonStorage {
       .canonical
       .join(format!("{file_stem}{GENERATION_SUFFIX}"));
     if final_path.exists() {
-      return Err(provider_error(
+      return Err(Error::provider(
         ProviderErrorKind::StorageCorrupt,
         ProviderErrorContext::StorageCommit,
       ));
@@ -459,7 +459,7 @@ impl JsonStorage {
     };
     crash_hook(11);
     cleanup_temp_files(&self._guard.canonical).map_err(|_| {
-      provider_error(
+      Error::provider(
         ProviderErrorKind::CommitUnknown,
         ProviderErrorContext::StorageCommit,
       )
@@ -529,7 +529,7 @@ fn write_and_rename(temp_path: &Path, final_path: &Path, bytes: &[u8]) -> std::i
 }
 
 fn map_commit_io_error(_error: std::io::Error) -> Error {
-  provider_error(
+  Error::provider(
     ProviderErrorKind::CommitUnknown,
     ProviderErrorContext::StorageCommit,
   )
@@ -541,10 +541,6 @@ fn map_io_error(error: std::io::Error, context: ProviderErrorContext) -> Error {
     std::io::ErrorKind::PermissionDenied => ProviderErrorKind::PermissionDenied,
     _ => ProviderErrorKind::Io,
   };
-  provider_error(kind, context)
-}
-
-fn provider_error(kind: ProviderErrorKind, context: ProviderErrorContext) -> Error {
   Error::provider(kind, context)
 }
 
@@ -576,7 +572,7 @@ fn directory_barrier(directory: &Path) -> Result<()> {
   let file = File::open(directory)
     .map_err(|error| map_io_error(error, ProviderErrorContext::StorageFlush))?;
   rustix::fs::fsync(&file)
-    .map_err(|_| provider_error(ProviderErrorKind::Io, ProviderErrorContext::StorageFlush))
+    .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::StorageFlush))
 }
 
 #[cfg(not(unix))]
@@ -619,7 +615,7 @@ fn load_chain(directory: &Path, store_uuid: &[u8; 16]) -> Result<Head> {
       fs::read(path).map_err(|error| map_io_error(error, ProviderErrorContext::StorageOpen))?;
     let document = GenerationDocument::parse(&bytes).map_err(|error| {
       if error.kind() == crate::ErrorKind::UnsupportedSchema {
-        provider_error(
+        Error::provider(
           ProviderErrorKind::UnsupportedSchema,
           ProviderErrorContext::StorageOpen,
         )
@@ -768,7 +764,7 @@ fn entry_metadata(path: &Path) -> Result<fs::Metadata> {
 }
 
 fn corrupt_open() -> Error {
-  provider_error(
+  Error::provider(
     ProviderErrorKind::StorageCorrupt,
     ProviderErrorContext::StorageOpen,
   )

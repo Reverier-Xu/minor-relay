@@ -448,13 +448,7 @@ async fn adoption_state(
 }
 
 fn adoption_purpose(admission: &AdmissionId) -> String {
-  let mut purpose = String::with_capacity(9 + admission.as_bytes().len() * 2);
-  purpose.push_str("adoption-");
-  for byte in admission.as_bytes() {
-    purpose.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-    purpose.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
-  }
-  purpose
+  format!("adoption-{}", crate::hex::encode(admission.as_bytes()))
 }
 
 /// Classifies the durable outcome of an admission attempt.
@@ -540,13 +534,7 @@ pub(crate) async fn admission_state(
 }
 
 fn admission_purpose(generation: &GenerationId) -> String {
-  let mut purpose = String::with_capacity(10 + generation.as_bytes().len() * 2);
-  purpose.push_str("admission-");
-  for byte in generation.as_bytes() {
-    purpose.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-    purpose.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
-  }
-  purpose
+  format!("admission-{}", crate::hex::encode(generation.as_bytes()))
 }
 
 #[cfg(test)]
