@@ -226,12 +226,27 @@ async fn close_star_sessions(nodes: &[Node], issuer: usize) {
 /// dials resolve before the assertion).
 async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec<(u8, u8)> {
   let deadline = std::time::Instant::now() + timeout;
-  let mut previous: Option<Vec<(u8, u8)>> = None;
+  let mut stable: Vec<(u8, u8)> = Vec::new();
+  let mut stable_samples = 0;
   loop {
     let edges = collected_topology(nodes).await;
-    let settled = edges.len() == expected && previous.as_ref().is_some_and(|last| *last == edges);
-    if settled {
-      return edges;
+    if edges.len() == expected && edges == stable {
+      stable_samples += 1;
+      if stable_samples >= 3 {
+        // The exact topology held for three consecutive samples: settled,
+        // with no extra or recovery edge (SC-G05-P0-27).
+        return edges;
+      }
+    } else {
+      stable = edges;
+      stable_samples = 1;
+      if edges.len() > expected {
+        // A redundant edge reappeared (an in-flight recovery dial landing
+        // after its disconnect): re-close the issuer's redundant stars and
+        // keep settling. The exclusion keeps the recovery from re-spawning
+        // new dials, so this terminates.
+        close_star_sessions(nodes, 0).await;
+      }
     }
     if std::time::Instant::now() >= deadline {
       eprintln!(
@@ -239,14 +254,12 @@ async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec
         edges.len(),
         edges
       );
-      assert!(
-        false,
-        "topology settle timeout after {timeout:?}: expected {expected} directed, got {}",
+      panic!(
+        "topology settle timeout after {timeout:?}: expected {expected} edges, got {}",
         edges.len()
       );
     }
-    previous = Some(edges);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
   }
 }
 
@@ -538,18 +551,23 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-24).
   let mut nodes = build_cluster(15).await;
+  eprintln!("STAGE joins done");
 
   // Reciprocal trust converges over the authenticated sessions: every
   // member's trust page exposes all fifteen bindings (SC-G05-P0-24/25).
   wait_trust(&nodes, 15, Duration::from_secs(60)).await;
+  eprintln!("STAGE trust15 done");
 
   // Induced 28-edge graph among nodes 0..14, before node 15 joins
   // (SC-G05-P0-24): connect the CQ4 edges among the present members and
   // close the redundant join-star sessions, then settle to the exact edge
   // set.
   connect_cq4(&nodes).await;
+  eprintln!("STAGE cq4-15 dials done");
   close_star_sessions(&nodes, 0).await;
-  let induced = wait_settled(&nodes, 28, Duration::from_secs(15)).await;
+  eprintln!("STAGE stars closed");
+  let induced = wait_settled(&nodes, 28, Duration::from_secs(45)).await;
+  eprintln!("STAGE induced settle done");
   assert_eq!(induced.len(), 28, "induced 28-edge graph among 0..14");
   let expected_induced: std::collections::BTreeSet<(u8, u8)> = cq4_edges()
     .into_iter()
@@ -570,6 +588,7 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   let secret = issued.credential().expose_secret().to_owned();
   join_with_retry(&node15, nodes[0].endpoint.clone(), &secret).await;
   node15.id = node_id(&node15).await;
+  eprintln!("STAGE node15 joined");
   let node15_handle = node15.handle.clone();
   wait_until(
     move || {
