@@ -14,8 +14,7 @@ use std::sync::Arc;
 use super::{
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_corrupt, reconcile_recovered_journal,
-    reconcile_unknown,
+    discover_local_identity, discovery_corrupt, reconcile_recovered_journal, reconcile_unknown,
   },
   records::{
     KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key, local_identity_key,
