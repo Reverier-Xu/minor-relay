@@ -52,6 +52,7 @@ pub(crate) const DATA_BODY_BYTES_LIMIT: &str = "relay.woooo.tech/limits/data-bod
 /// The five built-in feature labels in declaration order. Fixtures and
 /// tests reuse this single list so adding a built-in feature cannot
 /// silently desynchronize the offer and selection fixtures.
+#[cfg(test)]
 pub(crate) const BUILTIN_FEATURE_LABELS: [&str; 5] = [
   AUTH_ED25519_SESSION,
   SESSION_CORE,

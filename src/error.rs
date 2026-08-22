@@ -1,6 +1,11 @@
 use std::fmt;
 
 /// A stable, secret-safe error category.
+///
+/// Adding a category only touches this enum and its constructors; the
+/// provider projection [`ProviderErrorKind`] is a separate closed input and
+/// is not extended unless the new category must also be producible by
+/// provider implementations.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
@@ -9,6 +14,8 @@ pub enum ErrorKind {
   NotFound,
   NotReady,
   NotTrusted,
+  /// Reserved for the G9 authorization-revoke gate (api-manifest
+  /// `NodeRevoked`/`TrustStatus::Revoked`); no current gate produces it.
   Revoked,
   Unsupported,
   UnsupportedSchema,
@@ -28,6 +35,12 @@ pub enum ErrorKind {
   Internal,
 }
 
+/// The closed set of error categories a provider implementation may
+/// produce. It is the provider-side projection of [`ErrorKind`]: every
+/// variant maps 1:1 through [`ProviderErrorKind::into_error_kind`], and no
+/// core-only category (authentication, routing, stream, conflict) is
+/// expressible by a provider. Extend [`ErrorKind`] freely; extend this
+/// enum only when a new category must also originate inside a provider.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderErrorKind {
@@ -81,7 +94,7 @@ pub struct Error {
 impl Error {
   pub fn provider(kind: ProviderErrorKind, context: ProviderErrorContext) -> Self {
     Self {
-      kind: provider_error_kind(kind),
+      kind: kind.into_error_kind(),
       context: provider_error_context(context),
     }
   }
@@ -214,20 +227,25 @@ impl std::error::Error for Error {}
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-const fn provider_error_kind(kind: ProviderErrorKind) -> ErrorKind {
-  match kind {
-    ProviderErrorKind::Unsupported => ErrorKind::Unsupported,
-    ProviderErrorKind::UnsupportedSchema => ErrorKind::UnsupportedSchema,
-    ProviderErrorKind::UnsupportedCapability => ErrorKind::UnsupportedCapability,
-    ProviderErrorKind::CommitUnknown => ErrorKind::CommitUnknown,
-    ProviderErrorKind::Overloaded => ErrorKind::Overloaded,
-    ProviderErrorKind::ResourceExhausted => ErrorKind::ResourceExhausted,
-    ProviderErrorKind::StorageLocked => ErrorKind::StorageLocked,
-    ProviderErrorKind::StorageCorrupt => ErrorKind::StorageCorrupt,
-    ProviderErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
-    ProviderErrorKind::Io => ErrorKind::Io,
-    ProviderErrorKind::Cancelled => ErrorKind::Cancelled,
-    ProviderErrorKind::Internal => ErrorKind::Internal,
+impl ProviderErrorKind {
+  /// Projects this provider category onto the stable core category. The
+  /// mapping is the single source of truth for the provider subset; keep it
+  /// in sync with the enum variants above.
+  const fn into_error_kind(self) -> ErrorKind {
+    match self {
+      ProviderErrorKind::Unsupported => ErrorKind::Unsupported,
+      ProviderErrorKind::UnsupportedSchema => ErrorKind::UnsupportedSchema,
+      ProviderErrorKind::UnsupportedCapability => ErrorKind::UnsupportedCapability,
+      ProviderErrorKind::CommitUnknown => ErrorKind::CommitUnknown,
+      ProviderErrorKind::Overloaded => ErrorKind::Overloaded,
+      ProviderErrorKind::ResourceExhausted => ErrorKind::ResourceExhausted,
+      ProviderErrorKind::StorageLocked => ErrorKind::StorageLocked,
+      ProviderErrorKind::StorageCorrupt => ErrorKind::StorageCorrupt,
+      ProviderErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
+      ProviderErrorKind::Io => ErrorKind::Io,
+      ProviderErrorKind::Cancelled => ErrorKind::Cancelled,
+      ProviderErrorKind::Internal => ErrorKind::Internal,
+    }
   }
 }
 
