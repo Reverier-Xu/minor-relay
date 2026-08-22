@@ -418,3 +418,43 @@ pub(crate) mod simulation {
     }
   }
 }
+
+#[cfg(test)]
+mod scale_tests {
+  use std::collections::BTreeSet;
+
+  use super::{RecoveryController, RecoveryPolicy, RecoveryState};
+  use crate::NodeId;
+
+  fn node_at(index: usize) -> NodeId {
+    NodeId::parse(&format!("node_{index:021}")).unwrap()
+  }
+
+  fn set(indexes: &[usize]) -> BTreeSet<NodeId> {
+    indexes.iter().map(|index| node_at(*index)).collect()
+  }
+
+  /// The 1,024-node recovery trend: the controller makes bounded
+  /// decisions over a cluster-scale membership without a whole-population
+  /// graph or a rejection boundary (M5 verify).
+  #[test]
+  fn recovery_controller_scales_to_1024_nodes() {
+    let online: BTreeSet<NodeId> = (0..1_024).map(node_at).collect();
+    let mut controller = RecoveryController::new(RecoveryPolicy::new(4, 16, 1, 60));
+    // One partition: 512 members are unreachable.
+    let reachable: BTreeSet<NodeId> = (0..512).map(node_at).collect();
+    controller.observe(0, &online, &reachable);
+    assert_eq!(controller.state(), RecoveryState::Recovering);
+
+    let step = controller.next_step(0, &(512..1_024).map(node_at).collect());
+    assert!(
+      step.targets.len() <= 16,
+      "each cycle expands only through the bounded fan-out"
+    );
+
+    // Quiescence at scale: once every member is reachable the controller
+    // stops without a full mesh.
+    controller.observe(1, &online, &online);
+    assert_eq!(controller.state(), RecoveryState::Connected);
+  }
+}

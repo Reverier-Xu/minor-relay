@@ -23,3 +23,8 @@ require_nonempty_tests() {
 cargo test --locked --lib membership::recovery::simulation -- --list > "$TMP/s.list"
 require_nonempty_tests recovery_simulation "$TMP/s.list"
 cargo test --locked --lib membership::recovery::simulation
+# The sixteen-node public-facade lane: configured recovery restores
+# authenticated paths, streams metadata pages, and quiesces; reciprocal
+# trust, exact signed descriptors, and the exact crossed-cube topology are
+# asserted through public observations only (SC-G05-P0-22..27).
+cargo test --locked --test membership_sync membership_sync_sixteen_node_reciprocal_trust_and_exact_topology

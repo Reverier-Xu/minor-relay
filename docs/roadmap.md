@@ -195,8 +195,12 @@ Exit gate:
 - 16-node functional/SLO readiness and 1,024-node functional/trend evidence pass without a ceiling claim.
 - No membership, trust, topology, or policy API requires one whole-population allocation.
 
-Reserved config: `NodeConfig::anti_entropy_interval` and `RecoveryConfig` are consumed by the
-anti-entropy loop and recovery state machine that M5 wires (see `TODO(G5)` in `src/config.rs`).
+`NodeConfig::anti_entropy_interval` drives the session-carried membership sync
+driver and `RecoveryConfig` drives the recovery controller (wired in M5). The
+session sync protocol carries bounded membership pages and the issuer-signed
+trust snapshot; the recovery controller heals edge loss among ever-connected
+members and never dials intentionally disconnected peers until a deliberate
+reconnect.
 
 ### M6: Multi-Hop Packet Streams
 

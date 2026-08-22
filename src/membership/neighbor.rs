@@ -230,3 +230,45 @@ mod tests {
     assert!(plan.is_empty());
   }
 }
+
+#[cfg(test)]
+mod scale_tests {
+  use std::collections::BTreeSet;
+
+  use super::{MaintenanceBounds, MaintenanceLoad, plan_neighbors};
+  use crate::NodeId;
+
+  fn node_at(index: usize) -> NodeId {
+    NodeId::parse(&format!("node_{index:021}")).unwrap()
+  }
+
+  /// The 1,024-node functional trend: the sparse planner and the
+  /// maintenance limiter operate at cluster scale without a
+  /// whole-population allocation or a rejection boundary (M5 verify).
+  #[test]
+  fn neighbor_plan_and_limiter_scale_to_1024_nodes() {
+    let membership: BTreeSet<NodeId> = (0..1_024).map(node_at).collect();
+    // The plan for a mid-cluster node is bounded and clean at scale.
+    for local in [0_usize, 511, 1023] {
+      let plan = plan_neighbors(&node_at(local), &membership, 4).unwrap();
+      assert_eq!(plan.len(), 4, "degree four at scale for node {local}");
+      assert!(!plan.neighbors().contains(&node_at(local)), "no self-edge");
+      let unique: BTreeSet<&NodeId> = plan.neighbors().iter().collect();
+      assert_eq!(unique.len(), 4, "no duplicate peer");
+    }
+    // The maintenance limiter bounds independent of the population.
+    let bounds = MaintenanceBounds::new(4, 4);
+    let mut load = MaintenanceLoad::default();
+    for _ in 0..4 {
+      load.enqueue(bounds).unwrap();
+    }
+    assert!(load.enqueue(bounds).is_err(), "queue bound holds at scale");
+    for _ in 0..4 {
+      load.start_connect(bounds).unwrap();
+    }
+    assert!(
+      load.start_connect(bounds).is_err(),
+      "pending bound holds at scale"
+    );
+  }
+}

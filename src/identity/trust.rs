@@ -1,9 +1,5 @@
-//! Issuer-signed trust snapshots (G4-05).
-//!
-//! TODO(G4-06): the snapshot store and verification surface are consumed
-//! when the reciprocal reconnect lane wires trust sync; until then they are
-//! exercised by the unit suite.
-#![allow(dead_code)]
+//! Issuer-signed trust snapshots (G4-05, consumed by the membership sync
+//! lane in G5).
 //!
 //! A [`TrustSnapshotV1`] is one signed, ordered set of `NodeId`-to-`PublicKey`
 //! bindings: the issuer signs the canonical body (cluster, strictly

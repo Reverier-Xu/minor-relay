@@ -10,15 +10,12 @@ if (($# != 0)); then
   printf 'usage: scripts/verify-g05-06-views.sh\n' >&2
   exit 2
 fi
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-require_nonempty_tests() {
-  local label=$1 listing=$2
-  if ! grep -Eq ': test$' "$listing"; then
-    printf 'verification target matched no tests: %s\n' "$label" >&2
-    exit 1
-  fi
-}
-# Public membership/topology view lane (SC-G05-P0-23..26 core).
+# The public membership/topology view lane (SC-G05-P0-23..26 core).
 cargo test --locked --test secure_join secure_join_public_membership_and_topology_views
 cargo test --locked --test secure_join secure_join_sixteen_node_membership_joins_and_views
+# The membership failure matrix: duplicate delivery, partition healing, and
+# immediate recovery observability (SC-G05-P0-22/28).
+cargo test --locked --test membership_sync membership_sync_failure_matrix_partition_healing
+# The metadata convergence SLO: every sampled sample stays below
+# 10,000 milliseconds (SC-G05-P0-30).
+cargo test --locked --test membership_sync membership_sync_slo_trend_stays_below_bound
