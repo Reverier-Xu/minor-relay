@@ -223,12 +223,14 @@ async fn build_cluster(count: usize) -> Vec<Node> {
     let storage = Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
     let mut member = start_node(index as u64, storage).await;
     member.endpoint = listen(&member).await;
-    let issued = nodes[0]
+    let issuer = &nodes[0];
+    let issued = issuer
       .handle
       .command(RotateJoinCredential::new())
       .await
       .unwrap();
-    join_with_retry(&member, issuer_endpoint.clone(), issued.into_credential()).await;
+    let secret = issued.credential().expose_secret().to_owned();
+    join_with_retry(&member, issuer_endpoint.clone(), &secret).await;
     member.id = node_id(&member).await;
     nodes.push(member);
   }
@@ -376,14 +378,18 @@ async fn connect_cq4(nodes: &[Node]) {
 
 /// One join with bounded retries: the transport drops handshakes under
 /// sixteen-node load, so a join is retried before failing the harness.
-async fn join_with_retry(node: &Node, endpoint: Endpoint, credential: minor_relay::JoinCredential) {
+/// A credential is not `Clone` (secret hygiene), and a failed join
+/// consumes no credential, so each attempt reissues a fresh credential;
+/// the member identity is unchanged.
+async fn join_with_retry(node: &Node, endpoint: Endpoint, secret: &str) {
   let deadline = std::time::Instant::now() + Duration::from_secs(120);
-  let mut attempts = 0;
+  let mut attempts: u32 = 0;
   loop {
-    attempts += 1;
+    attempts = attempts.wrapping_add(1);
+    let credential = minor_relay::JoinCredential::parse(secret).unwrap();
     match node
       .handle
-      .command(JoinCluster::new(endpoint.clone(), credential.clone()))
+      .command(JoinCluster::new(endpoint.clone(), credential))
       .await
     {
       Ok(_) => return,
@@ -490,7 +496,8 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
     .command(RotateJoinCredential::new())
     .await
     .unwrap();
-  join_with_retry(&node15, nodes[0].endpoint.clone(), issued.into_credential()).await;
+  let secret = issued.credential().expose_secret().to_owned();
+  join_with_retry(&node15, nodes[0].endpoint.clone(), &secret).await;
   node15.id = node_id(&node15).await;
   let node15_handle = node15.handle.clone();
   wait_until(
