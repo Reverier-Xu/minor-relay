@@ -1,5 +1,10 @@
 //! Owner-signed node descriptors (G5-01, ADR-0007 metadata boundary).
 //!
+//! TODO(G5-02): the descriptor store and verification surface are consumed
+//! when membership sync exchanges pages; until then they are exercised by
+//! the unit suite.
+#![allow(dead_code)]
+//!
 //! A [`NodeDescriptorV1`] is the signed node-owned revision record: the
 //! owning node signs its `NodeId`-to-`PublicKey` binding, its endpoint
 //! candidates, a strictly increasing revision, and the removal flag. Core
@@ -15,8 +20,6 @@ use crate::{
 };
 
 /// The signature domain of one node descriptor.
-// TODO(G5-02): consumed when membership sync signs descriptors across
-// pages; until then only the verification surface uses it.
 pub(crate) const NODE_DESCRIPTOR_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/node-descriptor-v1";
 
 /// The durable schema, namespace, and key of one node descriptor record.
