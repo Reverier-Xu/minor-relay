@@ -129,7 +129,7 @@ impl MembershipPage {
 /// and applies received pages under strict validation.
 pub(crate) mod sync {
   use super::{MAX_PAGE_DESCRIPTORS, MembershipPage};
-  use crate::{NodeId, PublicKey, Result, provider::StorageFactory};
+  use crate::{Result, provider::StorageFactory};
 
   /// Emits one bounded page of descriptors starting after `cursor`. The
   /// cursor is the last emitted node's text, so pages continue without
