@@ -16,9 +16,7 @@ use crate::{
 
 /// The signature domain of one node descriptor.
 // TODO(G5-02): consumed when membership sync signs descriptors across
-// pages; until then the verification surface is exercised by the unit
-// suite.
-#[cfg(test)]
+// pages; until then only the verification surface uses it.
 pub(crate) const NODE_DESCRIPTOR_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/node-descriptor-v1";
 
 /// The durable schema, namespace, and key of one node descriptor record.
@@ -336,9 +334,8 @@ mod tests {
     let bytes = descriptor.encode().unwrap();
 
     // Tampered revision bytes fail verification.
-    let mut tampered = bytes.clone();
-    // The revision is encoded as a CBOR unsigned; flip the last byte of a
-    // plausible position by re-encoding a mutated descriptor instead.
+    let _bytes = bytes.clone();
+    // Re-encoding a mutated descriptor without re-signing must fail.
     let mut mutated = descriptor.clone();
     mutated.revision = 2;
     sign(&mut mutated, 1);
