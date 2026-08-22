@@ -1188,7 +1188,12 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
   // then release the stalled body so the route attempts to continue and
   // observes the close.
   receiver.handle.command(Shutdown::new()).await.unwrap();
-  tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  // Give the peer's session close time to propagate over the loopback
+  // before releasing the stalled body; under CI load a fixed 100ms has
+  // proven too short, so wait in bounded steps.
+  for _ in 0..10 {
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+  }
   release.notify_one();
 
   // The in-flight route must end with the explicit interruption state.
