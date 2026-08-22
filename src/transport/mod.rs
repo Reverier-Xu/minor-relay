@@ -25,6 +25,7 @@
 //! - [`endpoint`] carries the manifest `Endpoint` value type (canonical
 //!   `wss://host[:port]` text) used to address listeners and peers.
 
+pub(crate) mod candidates;
 pub(crate) mod cert;
 pub(crate) mod connection;
 mod endpoint;
