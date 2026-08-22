@@ -5,7 +5,6 @@ use sha2::{Digest as ShaDigest, Sha256};
 use crate::{BoxFuture, Digest, Error, PublicKey, QualifiedTag, Result, Signature, TransactionId};
 
 const KEY_OPERATION_PREFIX: &str = "keyop_";
-const ID_SUFFIX_LENGTH: usize = 21;
 const STORE_VALUE_DOMAIN: &[u8] = b"minor-relay/store-value/v1\0";
 const STORE_TRANSACTION_DOMAIN: &[u8] = b"minor-relay/store-transaction/v1\0";
 
@@ -54,7 +53,7 @@ pub struct KeyOperationId(String);
 
 impl KeyOperationId {
   pub fn parse(value: &str) -> Result<Self> {
-    validate_key_operation_id(value)?;
+    crate::identity::validate_id(value, KEY_OPERATION_PREFIX, "key operation id")?;
     Ok(Self(value.to_owned()))
   }
 
@@ -651,22 +650,6 @@ pub trait Storage: fmt::Debug + Send + Sync + 'static {
   fn flush<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
 }
 
-fn validate_key_operation_id(value: &str) -> Result<()> {
-  if value.len() != KEY_OPERATION_PREFIX.len() + ID_SUFFIX_LENGTH
-    || !value.starts_with(KEY_OPERATION_PREFIX)
-    || !value.as_bytes()[KEY_OPERATION_PREFIX.len()..]
-      .iter()
-      .copied()
-      .all(is_base62)
-  {
-    return Err(Error::invalid_input("key operation id"));
-  }
-  Ok(())
-}
-
-const fn is_base62(byte: u8) -> bool {
-  byte.is_ascii_digit() || byte.is_ascii_lowercase() || byte.is_ascii_uppercase()
-}
 
 fn digest_store_value(value: &[u8]) -> Digest {
   let mut hasher = Sha256::new();

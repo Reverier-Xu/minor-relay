@@ -146,7 +146,11 @@ impl fmt::Debug for OperationId {
   }
 }
 
-fn validate_id(value: &str, prefix: &str, context: &'static str) -> Result<()> {
+/// Validates one canonical prefixed base62 identifier: exact `prefix`
+/// length plus [`RANDOM_SUFFIX_LEN`] base62 characters. Shared by every
+/// identifier family (operation, key-operation, credential, trace) so the
+/// suffix rules cannot diverge between callers.
+pub(crate) fn validate_id(value: &str, prefix: &str, context: &'static str) -> Result<()> {
   let expected_len = prefix.len() + RANDOM_SUFFIX_LEN;
   if value.len() != expected_len || !value.starts_with(prefix) {
     return Err(Error::invalid_input(context));
