@@ -113,7 +113,7 @@ impl MembershipPage {
       let bytes: &[u8] = value.as_ref();
       bytes.to_vec()
     });
-    Ok(MembershipPage::new(descriptors, cursor)?)
+    MembershipPage::new(descriptors, cursor)
   }
 
   /// True when the cursor does not advance (loop protection).
