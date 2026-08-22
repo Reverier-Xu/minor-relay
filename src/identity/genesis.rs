@@ -12,7 +12,7 @@ use std::sync::Arc;
 use super::{
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_recovered_journal, reconcile_unknown,
+    discover_local_identity, discovery_corrupt, reconcile_recovered_journal,
   },
   records::{
     ClusterGenesisV1, IdentityBindingV1, LocalClusterPointerV1, admission_grant_namespace,

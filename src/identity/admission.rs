@@ -222,7 +222,7 @@ pub(crate) async fn commit_admission(
     .await?;
   drop(snapshot);
 
-  match commit_with_reconcile(&store, prepared).await? {
+  match commit_with_reconcile(store, prepared).await? {
     CommitWithReconcile::Committed => {
       cleanup_pending_exact(store, entropy, &purpose, "admission pending cleanup").await?;
       Ok(grant)
@@ -351,7 +351,7 @@ pub(crate) async fn adopt_admission(
     .await?;
   drop(snapshot);
 
-  match commit_with_reconcile(&store, prepared).await? {
+  match commit_with_reconcile(store, prepared).await? {
     CommitWithReconcile::Committed => {
       cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
       Ok(())
