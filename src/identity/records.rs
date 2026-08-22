@@ -14,6 +14,53 @@ use crate::{
 };
 
 const RECORD_VERSION: u64 = 1;
+/// The typed journal purpose of a durable intent or pending transaction.
+///
+/// Purposes become persistent storage values, so every producer builds them
+/// through this single encoding instead of concatenating strings by hand; a
+/// typo here is caught once, at the enum definition.
+/// The durable purpose text of the fixed variants, single-sourced so
+/// producers, wire code, and tests all reference one literal.
+pub(crate) const LOCAL_IDENTITY_PURPOSE_TEXT: &str = "local-identity";
+pub(crate) const CLUSTER_GENESIS_PURPOSE_TEXT: &str = "cluster-genesis";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum JournalPurpose {
+  /// The local identity bootstrap intent.
+  LocalIdentity,
+  /// The cluster genesis intent.
+  ClusterGenesis,
+  /// One credential admission attempt, keyed by issuer generation.
+  Admission(GenerationId),
+  /// One member adoption attempt, keyed by admission id.
+  Adoption(AdmissionId),
+  /// One key deletion intent, keyed by provider handle digest.
+  KeyDeletion(KeyHandle),
+}
+
+impl JournalPurpose {
+  /// The durable purpose text; the hex-suffixed variants share the crate
+  /// codec so wire and persisted values cannot drift in formatting.
+  pub(crate) fn text(&self) -> String {
+    match self {
+      Self::LocalIdentity => LOCAL_IDENTITY_PURPOSE_TEXT.to_owned(),
+      Self::ClusterGenesis => CLUSTER_GENESIS_PURPOSE_TEXT.to_owned(),
+      Self::Admission(generation) => {
+        format!("admission-{}", crate::hex::encode(generation.as_bytes()))
+      }
+      Self::Adoption(admission) => {
+        format!("adoption-{}", crate::hex::encode(admission.as_bytes()))
+      }
+      Self::KeyDeletion(handle) => {
+        format!(
+          "key-delete-{}",
+          crate::hex::encode(handle.expose_provider_handle())
+        )
+      }
+    }
+  }
+}
+
 const ED25519_ALGORITHM: &str = "relay.woooo.tech/crypto/ed25519";
 const MAX_PURPOSE_LEN: usize = 128;
 

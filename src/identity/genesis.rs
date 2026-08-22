@@ -29,7 +29,7 @@ use crate::{
   storage::receipt::{ReceiptReferenceChange, ReceiptReferenceToken},
 };
 
-const CLUSTER_GENESIS_PURPOSE: &str = "cluster-genesis";
+const CLUSTER_GENESIS_PURPOSE: &str = crate::identity::records::CLUSTER_GENESIS_PURPOSE_TEXT;
 
 /// Creates the local cluster or returns the exact existing genesis.
 ///

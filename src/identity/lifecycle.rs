@@ -45,7 +45,7 @@ use crate::{
   },
 };
 
-const LOCAL_IDENTITY_PURPOSE: &str = "local-identity";
+const LOCAL_IDENTITY_PURPOSE: &str = crate::identity::records::LOCAL_IDENTITY_PURPOSE_TEXT;
 
 /// An opened local identity paired with its metadata store.
 ///

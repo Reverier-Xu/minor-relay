@@ -283,8 +283,7 @@ async fn accept_exact_tombstone(
 }
 
 fn deletion_purpose(handle: &KeyHandle) -> String {
-  let digest = Sha256::digest(handle.expose_provider_handle());
-  format!("key-delete-{}", crate::hex::encode(&digest))
+  crate::identity::records::JournalPurpose::KeyDeletion(handle.clone()).text()
 }
 
 #[cfg(test)]

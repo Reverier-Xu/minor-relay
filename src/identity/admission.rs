@@ -448,7 +448,7 @@ async fn adoption_state(
 }
 
 fn adoption_purpose(admission: &AdmissionId) -> String {
-  format!("adoption-{}", crate::hex::encode(admission.as_bytes()))
+  crate::identity::records::JournalPurpose::Adoption(admission.clone()).text()
 }
 
 /// Classifies the durable outcome of an admission attempt.
@@ -534,7 +534,7 @@ pub(crate) async fn admission_state(
 }
 
 fn admission_purpose(generation: &GenerationId) -> String {
-  format!("admission-{}", crate::hex::encode(generation.as_bytes()))
+  crate::identity::records::JournalPurpose::Admission(generation.clone()).text()
 }
 
 #[cfg(test)]
