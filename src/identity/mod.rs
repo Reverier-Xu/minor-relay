@@ -13,6 +13,7 @@ pub(crate) mod records;
 pub(crate) mod signature;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod trust;
 mod value;
 
 pub use credential::{IssuedJoinCredential, JoinCredential};

@@ -1,0 +1,661 @@
+//! Issuer-signed trust snapshots (G4-05).
+//!
+//! TODO(G4-06): the snapshot store and verification surface are consumed
+//! when the reciprocal reconnect lane wires trust sync; until then they are
+//! exercised by the unit suite.
+#![allow(dead_code)]
+//!
+//! A [`TrustSnapshotV1`] is one signed, ordered set of `NodeId`-to-`PublicKey`
+//! bindings: the issuer signs the canonical body (cluster, strictly
+//! increasing revision, version, ordered bindings), and every recipient
+//! verifies the signature before persisting any binding. Conflicting
+//! evidence fails closed: invalid signatures, wrong clusters, untrusted
+//! issuers, stale revisions, and `NodeId` key substitutions are rejected
+//! without selecting a winner.
+
+use minicbor::{Decode, Encode, bytes::ByteVec};
+use sha2::{Digest as ShaDigest, Sha256};
+
+use crate::{
+  ClusterId, Digest, NodeId, PublicKey, Result, Signature,
+  protocol::{decode_canonical, encode_canonical},
+};
+
+/// The signature domain of one trust snapshot.
+pub(crate) const TRUST_SNAPSHOT_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/trust-snapshot-v1";
+
+/// The durable schema and namespace of one trust snapshot record.
+pub(crate) const TRUST_SNAPSHOT_SCHEMA: &str = "relay.woooo.tech/schemas/trust-snapshot-v1";
+pub(crate) const TRUST_SNAPSHOT_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-snapshot-v1";
+
+/// One ordered `(node, key)` binding inside a snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TrustBinding {
+  node: NodeId,
+  key: PublicKey,
+}
+
+impl TrustBinding {
+  pub(crate) const fn new(node: NodeId, key: PublicKey) -> Self {
+    Self { node, key }
+  }
+
+  pub(crate) const fn node(&self) -> &NodeId {
+    &self.node
+  }
+
+  pub(crate) const fn key(&self) -> &PublicKey {
+    &self.key
+  }
+}
+
+/// One issuer-signed trust snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TrustSnapshotV1 {
+  cluster: ClusterId,
+  revision: u64,
+  version: u16,
+  issuer: NodeId,
+  issuer_key: PublicKey,
+  bindings: Vec<TrustBinding>,
+  signature: Signature,
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct BindingWire {
+  #[n(0)]
+  node: String,
+  #[n(1)]
+  key: ByteVec,
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct SnapshotWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  record_version: u16,
+  #[n(2)]
+  cluster: String,
+  #[n(3)]
+  revision: u64,
+  #[n(4)]
+  version: u16,
+  #[n(5)]
+  issuer: String,
+  #[n(6)]
+  issuer_key: ByteVec,
+  #[n(7)]
+  bindings: Vec<BindingWire>,
+  #[n(8)]
+  signature: ByteVec,
+}
+
+impl TrustSnapshotV1 {
+  pub(crate) fn new(
+    cluster: ClusterId, revision: u64, version: u16, issuer: NodeId, issuer_key: PublicKey,
+    bindings: Vec<TrustBinding>, signature: Signature,
+  ) -> Self {
+    Self {
+      cluster,
+      revision,
+      version,
+      issuer,
+      issuer_key,
+      bindings,
+      signature,
+    }
+  }
+
+  pub(crate) const fn cluster(&self) -> &ClusterId {
+    &self.cluster
+  }
+
+  pub(crate) const fn revision(&self) -> u64 {
+    self.revision
+  }
+
+  pub(crate) const fn issuer(&self) -> &NodeId {
+    &self.issuer
+  }
+
+  pub(crate) fn bindings(&self) -> &[TrustBinding] {
+    &self.bindings
+  }
+
+  /// The canonical body the issuer signs.
+  pub(crate) fn encode_signed_body(&self) -> Result<Vec<u8>> {
+    encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
+  }
+
+  /// Encodes the full wire record (canonical body plus signature).
+  pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+    encode_canonical(
+      &self.wire_with_signature(),
+      crate::protocol::offer::OFFER_CBOR_LIMITS,
+    )
+  }
+
+  fn wire(&self) -> SnapshotWire {
+    SnapshotWire {
+      schema: TRUST_SNAPSHOT_SCHEMA.to_owned(),
+      record_version: 1,
+      cluster: self.cluster.as_str().to_owned(),
+      revision: self.revision,
+      version: self.version,
+      issuer: self.issuer.as_str().to_owned(),
+      issuer_key: ByteVec::from(self.issuer_key.as_bytes().to_vec()),
+      bindings: self
+        .bindings
+        .iter()
+        .map(|binding| BindingWire {
+          node: binding.node.as_str().to_owned(),
+          key: ByteVec::from(binding.key.as_bytes().to_vec()),
+        })
+        .collect(),
+      signature: ByteVec::from(Vec::new()),
+    }
+  }
+
+  fn wire_with_signature(&self) -> SnapshotWire {
+    let mut wire = self.wire();
+    wire.signature = ByteVec::from(self.signature.as_bytes().to_vec());
+    wire
+  }
+
+  /// Decodes and verifies one snapshot against the expected cluster and
+  /// the trusted issuer binding. Invalid signatures, wrong clusters,
+  /// untrusted issuers, and `NodeId` key substitutions fail closed
+  /// (SC-G04-P0-19).
+  pub(crate) fn decode_and_verify(
+    bytes: &[u8], expected_cluster: &ClusterId, trusted_issuer: &NodeId,
+    trusted_issuer_key: &PublicKey,
+  ) -> Result<TrustSnapshotV1> {
+    let wire: SnapshotWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
+      .map_err(|_| crate::Error::invalid_input("trust snapshot decode"))?;
+    if wire.schema != TRUST_SNAPSHOT_SCHEMA || wire.record_version != 1 {
+      return Err(crate::Error::invalid_input("trust snapshot schema"));
+    }
+    let cluster = ClusterId::parse(&wire.cluster)
+      .map_err(|_| crate::Error::invalid_input("trust snapshot cluster"))?;
+    if &cluster != expected_cluster {
+      return Err(crate::Error::not_trusted("trust snapshot cluster"));
+    }
+    let issuer = NodeId::parse(&wire.issuer)
+      .map_err(|_| crate::Error::invalid_input("trust snapshot issuer"))?;
+    if &issuer != trusted_issuer {
+      return Err(crate::Error::not_trusted("trust snapshot issuer"));
+    }
+    let issuer_key = PublicKey::from_bytes(
+      <[u8; 32]>::try_from(wire.issuer_key.as_ref())
+        .map_err(|_| crate::Error::invalid_input("trust snapshot issuer key"))?,
+    );
+    if &issuer_key != trusted_issuer_key {
+      // The snapshot claims the trusted issuer with a different key.
+      return Err(crate::Error::not_trusted("trust snapshot key substitution"));
+    }
+    let mut bindings = Vec::with_capacity(wire.bindings.len());
+    for binding in &wire.bindings {
+      let node = NodeId::parse(&binding.node)
+        .map_err(|_| crate::Error::invalid_input("trust snapshot node"))?;
+      let key = PublicKey::from_bytes(
+        <[u8; 32]>::try_from(binding.key.as_ref())
+          .map_err(|_| crate::Error::invalid_input("trust snapshot key"))?,
+      );
+      bindings.push(TrustBinding::new(node, key));
+    }
+    // Ordered deterministically: canonical node text ascending; a
+    // non-canonical order is rejected.
+    if !bindings.windows(2).all(|pair| pair[0].node < pair[1].node) {
+      return Err(crate::Error::invalid_input("trust snapshot ordering"));
+    }
+    let signature_bytes: &[u8] = wire.signature.as_ref();
+    let signature = Signature::from_bytes(
+      <[u8; 64]>::try_from(signature_bytes)
+        .map_err(|_| crate::Error::invalid_input("trust snapshot signature"))?,
+    );
+    let snapshot = Self::new(
+      cluster,
+      wire.revision,
+      wire.version,
+      issuer,
+      issuer_key.clone(),
+      bindings,
+      signature,
+    );
+    crate::identity::signature::verify_strict(
+      TRUST_SNAPSHOT_V1_DOMAIN,
+      &snapshot.encode_signed_body()?,
+      &issuer_key,
+      &snapshot.signature,
+      "trust snapshot signature",
+    )?;
+    Ok(snapshot)
+  }
+
+  /// True when this snapshot is strictly newer than `other` by revision.
+  pub(crate) fn is_newer_than(&self, other: &TrustSnapshotV1) -> bool {
+    self.revision > other.revision
+  }
+
+  /// Rejects a `NodeId` key substitution against the known local bindings:
+  /// every binding whose node is already known must carry the exact same
+  /// key (SC-G04-P0-19).
+  pub(crate) fn assert_no_key_substitution(&self, known: &[(NodeId, PublicKey)]) -> Result<()> {
+    let known: std::collections::BTreeMap<&NodeId, &PublicKey> =
+      known.iter().map(|(node, key)| (node, key)).collect();
+    for binding in &self.bindings {
+      if let Some(expected) = known.get(&binding.node) {
+        if *expected != &binding.key {
+          return Err(crate::Error::not_trusted("trust snapshot key substitution"));
+        }
+      }
+    }
+    Ok(())
+  }
+}
+
+/// The bounded, deterministic page of one trust observation stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TrustPage {
+  bindings: Vec<TrustBinding>,
+  next: Option<usize>,
+}
+
+impl TrustPage {
+  pub(crate) fn new(bindings: Vec<TrustBinding>, next: Option<usize>) -> Self {
+    Self { bindings, next }
+  }
+
+  pub(crate) fn bindings(&self) -> &[TrustBinding] {
+    &self.bindings
+  }
+
+  pub(crate) const fn next(&self) -> Option<usize> {
+    self.next
+  }
+}
+
+/// Paged trust observations over one ordered snapshot's bindings.
+pub(crate) fn page_bindings(
+  bindings: &[TrustBinding], offset: usize, limit: usize,
+) -> Result<TrustPage> {
+  let Some(slice) = bindings.get(offset..) else {
+    return Err(crate::Error::invalid_input("trust page offset"));
+  };
+  let page: Vec<TrustBinding> = slice.iter().take(limit).cloned().collect();
+  let next = offset
+    .checked_add(page.len())
+    .filter(|end| *end < bindings.len());
+  Ok(TrustPage::new(page, next))
+}
+
+/// The digest of one snapshot's canonical signed body, for receipts.
+pub(crate) fn snapshot_digest(snapshot: &TrustSnapshotV1) -> Result<Digest> {
+  let body = snapshot.encode_signed_body()?;
+  Ok(Digest::from_bytes(Sha256::digest(&body).into()))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::Duration;
+
+  use ed25519_dalek::Signer;
+
+  use super::{TrustBinding, TrustSnapshotV1, page_bindings};
+  use crate::{
+    ClusterId, NodeId, PublicKey, Signature,
+    identity::{signature::signature_message, testing::scripted_signing},
+  };
+
+  fn cluster() -> ClusterId {
+    ClusterId::parse("cluster_100000000000000000000").unwrap()
+  }
+
+  fn node(value: u8) -> NodeId {
+    NodeId::parse(&format!("node_{value:021}")).unwrap()
+  }
+
+  fn key(value: u8) -> PublicKey {
+    let signing = scripted_signing(value.into());
+    PublicKey::from_bytes(signing.verifying_key().to_bytes())
+  }
+
+  fn issuer_pair(value: u8) -> (NodeId, PublicKey) {
+    (node(value), key(value))
+  }
+
+  fn sign(snapshot: &mut TrustSnapshotV1, issuer_index: u8) {
+    let signing = scripted_signing(issuer_index.into());
+    let message = signature_message(
+      super::TRUST_SNAPSHOT_V1_DOMAIN,
+      &snapshot.encode_signed_body().unwrap(),
+    );
+    snapshot.signature = Signature::from_bytes(signing.sign(&message).to_bytes());
+  }
+
+  fn snapshot(revision: u64, issuer_index: u8, bindings: Vec<(u8, u8)>) -> TrustSnapshotV1 {
+    let (issuer, issuer_key) = issuer_pair(issuer_index);
+    let mut snapshot = TrustSnapshotV1::new(
+      cluster(),
+      revision,
+      1,
+      issuer,
+      issuer_key,
+      bindings
+        .into_iter()
+        .map(|(n, k)| TrustBinding::new(node(n), key(k)))
+        .collect(),
+      Signature::from_bytes([0; 64]),
+    );
+    sign(&mut snapshot, issuer_index);
+    snapshot
+  }
+
+  /// SC-G04-P0-16: the joiner verifies the issuer, cluster, revision, and
+  /// signature and the snapshot round-trips durably.
+  #[test]
+  fn trust_snapshot_round_trips_and_verifies() {
+    let snapshot = snapshot(7, 1, vec![(2, 2), (3, 3), (4, 4)]);
+    let bytes = snapshot.encode().unwrap();
+    let verified =
+      TrustSnapshotV1::decode_and_verify(&bytes, &cluster(), &node(1), &key(1)).unwrap();
+    assert_eq!(verified, snapshot);
+    assert_eq!(verified.bindings().len(), 3);
+    // Ordered by canonical node text.
+    assert_eq!(verified.bindings()[0].node(), &node(2));
+  }
+
+  /// SC-G04-P0-19: conflicting evidence fails closed.
+  #[test]
+  fn trust_snapshot_rejects_conflicting_evidence() {
+    let first = snapshot(7, 1, vec![(2, 2)]);
+
+    // Tampered signature bytes fail verification.
+    let mut tampered = first.clone();
+    tampered.signature = Signature::from_bytes([0x5A; 64]);
+    assert!(
+      TrustSnapshotV1::decode_and_verify(
+        &tampered.encode().unwrap(),
+        &cluster(),
+        &node(1),
+        &key(1),
+      )
+      .is_err()
+    );
+
+    // Wrong cluster fails closed.
+    let other_cluster = ClusterId::parse("cluster_200000000000000000000").unwrap();
+    assert!(
+      TrustSnapshotV1::decode_and_verify(
+        &first.encode().unwrap(),
+        &other_cluster,
+        &node(1),
+        &key(1),
+      )
+      .is_err()
+    );
+
+    // Untrusted issuer fails closed.
+    assert!(
+      TrustSnapshotV1::decode_and_verify(&first.encode().unwrap(), &cluster(), &node(9), &key(9),)
+        .is_err()
+    );
+
+    // NodeId key substitution fails closed.
+    let known = vec![(node(2), key(9))];
+    assert!(first.assert_no_key_substitution(&known).is_err());
+    let known_ok = vec![(node(2), key(2))];
+    assert!(first.assert_no_key_substitution(&known_ok).is_ok());
+
+    // Revision ordering: newer wins, stale conflicts are rejected by the
+    // caller comparing revisions.
+    let newer = snapshot(8, 1, vec![(2, 2)]);
+    assert!(newer.is_newer_than(&first));
+    assert!(!first.is_newer_than(&newer));
+  }
+
+  /// SC-G04-P0-17: all trust views return the same pairs; paging is
+  /// deterministic and bounded.
+  #[test]
+  fn trust_bindings_page_deterministically() {
+    let snapshot = snapshot(7, 1, vec![(2, 2), (3, 3), (4, 4), (5, 5)]);
+    let page = page_bindings(snapshot.bindings(), 0, 2).unwrap();
+    assert_eq!(page.bindings().len(), 2);
+    assert_eq!(page.next(), Some(2));
+    let page = page_bindings(snapshot.bindings(), 2, 2).unwrap();
+    assert_eq!(page.bindings().len(), 2);
+    assert_eq!(page.next(), None);
+    // Views agree on the exact pairs.
+    let all = page_bindings(snapshot.bindings(), 0, 8).unwrap();
+    assert_eq!(all.bindings(), snapshot.bindings());
+  }
+
+  #[test]
+  fn trust_snapshot_rejects_noncanonical_ordering() {
+    // Bindings must be canonically ordered; a reordered body fails.
+    let mut unordered = snapshot(7, 1, vec![(3, 3), (2, 2)]);
+    unordered.bindings = vec![
+      TrustBinding::new(node(3), key(3)),
+      TrustBinding::new(node(2), key(2)),
+    ];
+    sign(&mut unordered, 1);
+    let error = TrustSnapshotV1::decode_and_verify(
+      &unordered.encode().unwrap(),
+      &cluster(),
+      &node(1),
+      &key(1),
+    );
+    assert!(error.is_err());
+  }
+
+  #[allow(dead_code)]
+  fn _duration_hint() -> Duration {
+    Duration::ZERO
+  }
+
+  // ---- SC-G04-P0-17/18: durable persistence and paged observations ----
+
+  fn factory() -> std::sync::Arc<dyn crate::provider::StorageFactory> {
+    let reference = std::sync::Arc::new(crate::storage::contract::ReferenceFactory::new(
+      crate::storage::contract::required_capabilities(),
+    ));
+    reference
+  }
+
+  #[tokio::test]
+  async fn trust_snapshot_persists_and_reloads_after_restart() {
+    use super::store;
+    let snapshot = snapshot(9, 1, vec![(2, 2), (3, 3)]);
+
+    // Persist; each store call opens and drops its own storage handle, so
+    // a later open on the same provider is an offline restart.
+    let factory = factory();
+    store::persist_snapshot(&factory, &snapshot).await.unwrap();
+    store::persist_binding(&factory, &node(2), &key(2))
+      .await
+      .unwrap();
+    store::persist_binding(&factory, &node(3), &key(3))
+      .await
+      .unwrap();
+
+    // After the restart the exact snapshot and paged view agree with the
+    // original bindings.
+    let loaded = store::latest_snapshot(&factory, &cluster(), &node(1), &key(1))
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(loaded.revision(), 9);
+    assert_eq!(loaded.bindings(), snapshot.bindings());
+
+    let page = store::paged_trust(&factory, 0, 1).await.unwrap();
+    assert_eq!(page.bindings().len(), 1);
+    assert_eq!(page.next(), Some(1));
+    let page = store::paged_trust(&factory, 1, 8).await.unwrap();
+    assert_eq!(page.bindings().len(), 1);
+    assert_eq!(page.next(), None);
+  }
+
+  #[tokio::test]
+  async fn trust_snapshot_rejects_stale_conflicts_on_reload() {
+    use super::store;
+    let older = snapshot(4, 1, vec![(2, 2)]);
+    let newer = snapshot(5, 1, vec![(2, 2)]);
+
+    let factory = factory();
+    store::persist_snapshot(&factory, &newer).await.unwrap();
+    store::persist_snapshot(&factory, &older).await.unwrap();
+
+    // The highest revision wins; the stale snapshot cannot overwrite it.
+    let loaded = store::latest_snapshot(&factory, &cluster(), &node(1), &key(1))
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(loaded.revision(), 5);
+  }
+}
+
+/// The trust observation store: persists issuer-signed snapshots and
+/// serves bounded paged views over every binding (SC-G04-P0-17).
+pub(crate) mod store {
+  use std::sync::Arc;
+
+  use super::{
+    TRUST_BINDING_NAMESPACE, TRUST_SNAPSHOT_NAMESPACE, TrustBinding, TrustPage, TrustSnapshotV1,
+  };
+  use crate::{
+    ClusterId, NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace,
+    StoreOperation, StoreRequirements, StoreTransaction, StoreValue, TransactionId,
+    provider::StorageFactory,
+  };
+
+  fn snapshot_namespace() -> Result<StoreNamespace> {
+    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_SNAPSHOT_NAMESPACE).unwrap())
+  }
+
+  fn binding_namespace() -> Result<StoreNamespace> {
+    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_BINDING_NAMESPACE).unwrap())
+  }
+
+  fn snapshot_key(issuer: &NodeId, revision: u64) -> StoreKey {
+    let mut bytes = Vec::with_capacity(issuer.as_str().len() + 21);
+    bytes.extend_from_slice(issuer.as_str().as_bytes());
+    bytes.push(b'/');
+    bytes.extend_from_slice(format!("{revision:020}").as_bytes());
+    StoreKey::new(Arc::from(bytes))
+  }
+
+  /// Persists one verified snapshot as a plain store value.
+  pub(crate) async fn persist_snapshot(
+    factory: &Arc<dyn StorageFactory>, snapshot: &TrustSnapshotV1,
+  ) -> Result<()> {
+    let storage = factory.open(StoreRequirements::metadata()).await?;
+    let namespace = snapshot_namespace()?;
+    let key = snapshot_key(snapshot.issuer(), snapshot.revision());
+    let transaction = StoreTransaction::new(
+      TransactionId::generate(&crate::api::SystemEntropy)?,
+      storage.snapshot().await?.revision().clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: key.clone(),
+        expected: StoreExpectation::Absent,
+        value: StoreValue::new(Arc::from(snapshot.encode()?)),
+      }],
+    )?;
+    let _ = storage.commit(transaction).await?;
+    Ok(())
+  }
+
+  /// The highest-revision snapshot for one issuer, verified against the
+  /// caller's trusted context.
+  pub(crate) async fn latest_snapshot(
+    factory: &Arc<dyn StorageFactory>, expected_cluster: &ClusterId, trusted_issuer: &NodeId,
+    trusted_issuer_key: &PublicKey,
+  ) -> Result<Option<TrustSnapshotV1>> {
+    let storage = factory.open(StoreRequirements::metadata()).await?;
+    let namespace = snapshot_namespace()?;
+    let snapshot = storage.snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut latest: Option<(u64, Vec<u8>)> = None;
+    while let Some(entry) = scan.next().await? {
+      let bytes = entry.value().as_bytes().to_vec();
+      let key = entry.key();
+      let text = String::from_utf8_lossy(key.as_bytes()).to_string();
+      let revision: u64 = text
+        .rsplit('/')
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+      if latest
+        .as_ref()
+        .is_none_or(|(current, _)| revision > *current)
+      {
+        latest = Some((revision, bytes));
+      }
+    }
+    let Some((_, bytes)) = latest else {
+      return Ok(None);
+    };
+    Ok(Some(TrustSnapshotV1::decode_and_verify(
+      &bytes,
+      expected_cluster,
+      trusted_issuer,
+      trusted_issuer_key,
+    )?))
+  }
+
+  /// Persists one verified nonconflicting binding.
+  pub(crate) async fn persist_binding(
+    factory: &Arc<dyn StorageFactory>, node: &NodeId, key: &PublicKey,
+  ) -> Result<()> {
+    let storage = factory.open(StoreRequirements::metadata()).await?;
+    let namespace = binding_namespace()?;
+    let mut bytes = Vec::with_capacity(33);
+    bytes.push(1);
+    bytes.extend_from_slice(key.as_bytes());
+    let transaction = StoreTransaction::new(
+      TransactionId::generate(&crate::api::SystemEntropy)?,
+      storage.snapshot().await?.revision().clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec())),
+        expected: StoreExpectation::Absent,
+        value: StoreValue::new(Arc::from(bytes)),
+      }],
+    )?;
+    let _ = storage.commit(transaction).await?;
+    Ok(())
+  }
+
+  /// Paged trust observations: distinct bindings from verified snapshots,
+  /// deterministically ordered and bounded.
+  pub(crate) async fn paged_trust(
+    factory: &Arc<dyn StorageFactory>, offset: usize, limit: usize,
+  ) -> Result<TrustPage> {
+    let storage = factory.open(StoreRequirements::metadata()).await?;
+    let namespace = binding_namespace()?;
+    let mut bindings: Vec<TrustBinding> = Vec::new();
+    let snapshot = storage.snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    while let Some(entry) = scan.next().await? {
+      let bytes = entry.value().as_bytes();
+      if bytes.len() < 33 || bytes[0] != 1 {
+        continue;
+      }
+      let node = NodeId::parse(&String::from_utf8_lossy(entry.key().as_bytes()))?;
+      let key = PublicKey::from_bytes(bytes[1..33].try_into().unwrap());
+      bindings.push(TrustBinding::new(node, key));
+    }
+    bindings.sort_by(|left, right| left.node().cmp(right.node()));
+    bindings.dedup_by(|left, right| left.node() == right.node());
+    let total = bindings.len();
+    let page: Vec<TrustBinding> = bindings.into_iter().skip(offset).take(limit).collect();
+    let next = offset.checked_add(page.len()).filter(|end| *end < total);
+    Ok(TrustPage::new(page, next))
+  }
+}
+
+/// The durable namespace of one snapshot binding observation.
+pub(crate) const TRUST_BINDING_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-binding-v1";
