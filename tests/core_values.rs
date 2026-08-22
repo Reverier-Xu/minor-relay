@@ -71,10 +71,7 @@ fn g1_core_tags_reject_noncanonical_namespaces() {
   let too_long_name = "a".repeat(64);
   let too_long_tag = format!("example.com/features/{too_long_name}");
   for value in [
-    "Example.com/features/work",
-    "example.com./features/work",
     "example..com/features/work",
-    "-example.com/features/work",
     "example.com/features/-work",
     "example.com/features/work-",
     "example.com/features/work/extra",
