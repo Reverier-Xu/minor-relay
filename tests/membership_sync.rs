@@ -157,26 +157,63 @@ async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeou
 /// Closes the redundant join-star session between each member and the
 /// issuer when they are not CQ4 neighbors, so each pair ends with exactly
 /// the one CQ4 session (the dial replaces the join for CQ4-neighbor pairs
-/// through the crossed-dial rule). The issuer is index `issuer`.
+/// through the crossed-dial rule). Convergent: after the closes, the
+/// recovery controller may perceive an intentional disconnect as an edge
+/// loss in a narrow window and re-dial it, so the harness re-checks and
+/// re-closes until no redundant star edge remains (bounded iterations).
 async fn close_star_sessions(nodes: &[Node], issuer: usize) {
-  for (index, node) in nodes.iter().enumerate() {
-    if index == issuer {
-      continue;
+  let neighbors = cq4_neighbors(issuer as u8);
+  for _round in 0..40 {
+    // Find the redundant edges remaining on the issuer's public view.
+    let page = topology_edges(&nodes[issuer]).await;
+    let mut remaining = Vec::new();
+    for edge in page {
+      if edge.connected() && edge.source() == &nodes[issuer].id {
+        let redundant = nodes.iter().enumerate().any(|(index, node)| {
+          index != issuer && node.id == *edge.destination() && !neighbors.contains(&(index as u8))
+        });
+        if redundant {
+          remaining.push(edge.destination().clone());
+        }
+      }
     }
-    let neighbors = cq4_neighbors(issuer as u8);
-    if !neighbors.contains(&(index as u8)) {
+    if remaining.is_empty() {
+      return;
+    }
+    for peer in remaining {
       // Disconnect the issuer side first: removing the peer from the
       // issuer's recovery history before the connection close propagates
-      // prevents the recovery controller from perceiving the intentional
-      // disconnect as an edge loss and re-dialing it.
+      // prevents the recovery controller from re-dialing it.
       let _ = nodes[issuer]
         .handle
-        .command(DisconnectPeer::new(node.id.clone()))
+        .command(DisconnectPeer::new(peer.clone()))
         .await;
-      let _ = node
-        .handle
-        .command(DisconnectPeer::new(nodes[issuer].id.clone()))
+      let _ = nodes
+        .iter()
+        .find(|node| node.id == peer)
+        .map(|member| {
+          member
+            .handle
+            .command(DisconnectPeer::new(nodes[issuer].id.clone()))
+        })
+        .transpose()
         .await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+  }
+  // The final check doubles as the invariant: no redundant star edge may
+  // remain after the bounded convergence loop.
+  let page = topology_edges(&nodes[issuer]).await;
+  for edge in page {
+    if edge.connected() && edge.source() == &nodes[issuer].id {
+      let redundant = nodes.iter().enumerate().any(|(index, node)| {
+        index != issuer && node.id == *edge.destination() && !neighbors.contains(&(index as u8))
+      });
+      assert!(
+        !redundant,
+        "redundant star edge to {} survived closure",
+        edge.destination()
+      );
     }
   }
 }
