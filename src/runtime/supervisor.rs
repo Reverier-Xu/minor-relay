@@ -459,23 +459,25 @@ impl Supervisor {
             continue;
           }
         };
-        // A transient hint failure must not kill the listener: skip this
-        // connection and keep accepting. The hint carries the listener's
-        // leaf SPKI as the member-mode reconnect pinning anchor.
-        let Ok(mut hint) = driver.join_hint().await else {
-          continue;
-        };
-        if let Some(hint) = hint.as_mut()
-          && let Ok(spki) = certificate.leaf_spki()
-        {
-          *hint = hint.clone().with_leaf_spki(spki.as_ref().to_vec());
-        }
         let config = config.clone();
         let driver = driver.clone();
         let sessions = sessions.clone();
         let packet = packet.clone();
         let shutdown = shutdown.clone();
+        let leaf = certificate.leaf_spki().ok().map(|spki| spki.as_ref().to_vec());
         let task = tokio::spawn(async move {
+          // The join hint is computed inside the connection task so the
+          // accept loop stays fast and never stalls on the credential
+          // issuer lock; a hint failure skips this connection only.
+          let mut hint = match driver.join_hint().await {
+            Ok(Some(hint)) => Some(hint),
+            _ => None,
+          };
+          if let Some(hint) = hint.as_mut()
+            && let Some(spki) = leaf.as_ref()
+          {
+            *hint = hint.clone().with_leaf_spki(spki.clone());
+          }
           let accepted = Connection::accept(tcp, config, rules, hint.as_ref()).await;
           let mut connection = match accepted {
             Ok(connection) => connection,
@@ -583,47 +585,14 @@ impl Supervisor {
   /// fresh transcript and exporter binding without consulting any join
   /// credential, then keeps the session open for packet streams.
   async fn connect_member(
-    &mut self, receiver: Endpoint, peer: NodeId, tasks: &mut JoinSet<()>,
+    &mut self, receiver: Endpoint, peer: NodeId, _tasks: &mut JoinSet<()>,
   ) -> Result<NodeId> {
     self.require_unblocked()?;
-    let tcp = tokio::net::TcpStream::connect(receiver.authority())
-      .await
-      .map_err(|_| {
-        Error::provider(
-          crate::ProviderErrorKind::Io,
-          crate::ProviderErrorContext::TransportConnect,
-        )
-      })?;
-    // Member reconnects pin the peer's TLS leaf to the SPKI anchor learned
-    // at join (same-listener reconnects); without an anchor this process
-    // falls back to the join-mode relaxation and the application proof
-    // layer remains the authenticator.
-    let config = match self.driver.peer_spki(&peer) {
-      Some(spki) => {
-        tls::member_client_config(rustls::pki_types::SubjectPublicKeyInfoDer::from(spki))?
-      }
-      None => tls::join_client_config()?,
-    };
-    let server_name = receiver.server_name()?;
-    let rules = crate::session::handshake_frame_rules()?;
-    let mut connection = Connection::connect(tcp, config, server_name, rules).await?;
-    let session = self.driver.initiate_member(&mut connection, &peer).await?;
-    let authenticated = session.peer().clone();
+    let driver = self.driver.clone();
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
-    tasks.spawn(async move {
-      run_session(
-        connection,
-        session,
-        packet,
-        sessions,
-        shutdown,
-        crate::session::stream::DialDirection::Outgoing,
-      )
-      .await;
-    });
-    Ok(authenticated)
+    dial_member(driver, sessions, packet, shutdown, receiver, &peer).await
   }
 
   /// Routes one outbound packet over the established session to its exact
@@ -958,12 +927,20 @@ impl Supervisor {
     );
     for (member, endpoint) in candidates {
       if step.targets.contains(&member) {
+        // Recovery dials run in a detached task so the supervisor select
+        // loop never blocks on a handshake (each can take the full
+        // authentication deadline); the result is reconciled by the next
+        // observation tick.
         self.recovery_pending = self.recovery_pending.saturating_add(1);
         let receiver = endpoint.clone();
         let peer = member.clone();
-        let _ = self.connect_member(receiver, peer.clone(), tasks).await;
-        self.recovery_pending = self.recovery_pending.saturating_sub(1);
-        self.recovery.connected(&peer);
+        let driver = self.driver.clone();
+        let sessions = self.dependencies.sessions.clone();
+        let packet = self.packet.clone();
+        let shutdown = self.shutdown_tx.subscribe();
+        tokio::spawn(async move {
+          let _ = dial_member(driver, sessions, packet, shutdown, receiver, &peer).await;
+        });
       }
     }
     Ok(())
@@ -1001,6 +978,56 @@ impl Supervisor {
     }
     Ok(())
   }
+}
+
+/// Runs one member-mode dial against an already-admitted peer: the
+/// member-mode handshake proves both identities over a fresh transcript
+/// and exporter binding, then the session is kept open for packet streams.
+/// Called by `connect_member` and by the recovery controller's detached
+/// dial tasks.
+async fn dial_member(
+  driver: SessionDriver, sessions: crate::session::stream::SessionTable,
+  packet: Arc<SessionPacketContext>, shutdown: watch::Receiver<()>, receiver: Endpoint,
+  peer: &NodeId,
+) -> Result<NodeId> {
+  let tcp = tokio::net::TcpStream::connect(receiver.authority())
+    .await
+    .map_err(|_| {
+      Error::provider(
+        crate::ProviderErrorKind::Io,
+        crate::ProviderErrorContext::TransportConnect,
+      )
+    })?;
+  // Member reconnects pin the peer's TLS leaf to the SPKI anchor learned
+  // at join (same-listener reconnects); without an anchor this process
+  // falls back to the join-mode relaxation and the application proof
+  // layer remains the authenticator.
+  let config = match driver.peer_spki(peer) {
+    Some(spki) => {
+      tls::member_client_config(rustls::pki_types::SubjectPublicKeyInfoDer::from(spki))?
+    }
+    None => tls::join_client_config()?,
+  };
+  let server_name = receiver.server_name()?;
+  let rules = crate::session::handshake_frame_rules()?;
+  let mut connection = Connection::connect(tcp, config, server_name, rules).await?;
+  let session = driver.initiate_member(&mut connection, peer).await?;
+  let authenticated = session.peer().clone();
+  let local_packet = packet;
+  let table = sessions.clone();
+  let signal = shutdown;
+  tokio::spawn(async move {
+    run_session(
+      connection,
+      session,
+      local_packet,
+      table,
+      signal,
+      crate::session::stream::DialDirection::Outgoing,
+    )
+    .await;
+  });
+  Ok(authenticated)
 }
 
 /// Host wall-clock seconds (the recovery controller's tick unit; re-read
