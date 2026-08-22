@@ -333,14 +333,15 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G04-01"
 verification_id = "VERIFY-G04-01"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G04-01"
 owner_task = "T-G04-01"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g04-01-registry.sh"]
+timeout_seconds = 1800
 timeout_seconds = 1800
 
 [[task]]
