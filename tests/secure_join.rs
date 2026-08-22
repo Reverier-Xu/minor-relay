@@ -1356,3 +1356,50 @@ async fn secure_join_crossed_dial_converges_to_one_session() {
   joiner.handle.command(Shutdown::new()).await.unwrap();
   receiver.handle.command(Shutdown::new()).await.unwrap();
 }
+
+/// SC-G04-P0-15: shutdown rejects new work and releases session resources
+/// independently of wall-clock progress.
+#[tokio::test]
+async fn secure_join_shutdown_rejects_new_work_after_drain() {
+  let receiver = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(220_000)),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let joiner = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(230_000)),
+  )
+  .await;
+  joiner
+    .handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+  // New work after shutdown is rejected with a typed shutdown error, not
+  // accepted or hung.
+  let error = receiver
+    .handle
+    .command(CreateCluster::new())
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::ShuttingDown);
+
+  joiner.handle.command(Shutdown::new()).await.unwrap();
+}
