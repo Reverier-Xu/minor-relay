@@ -75,6 +75,27 @@ structurally sound — open registries per manifest, injected wall clock, no
 production unwrap/expect/unsafe, and the crossed-dial ownership rule is a
 total order verified by unit and integration tests.
 
+## G5 status (2026-08, gate in progress)
+
+- T-G05-01..05 (descriptors, pages, neighbors, recovery, seeded sim) all
+  registered with verify lanes (`verify-g05-01..05`), all lanes PASS; full
+  suite 399 tests, zero warnings.
+- Delivered: owner-signed node descriptors with strict-next revisions and
+  signed removal markers; bounded anti-entropy pages (emit/apply with
+  fail-closed dishonest-page rejection); deterministic sparse neighbor
+  planning with a maintenance limiter; the continuous recovery state
+  machine (activation/backoff/fan-out/quiesce/reactivate/immediate); a
+  seeded recovery simulation that replays exact decisions.
+- Handoff for the remaining batch: T-G05-05's 16-node facade E2E
+  (SC-G05-P0-21/22) and T-G05-06 readiness/scale closure (SC-G05-P0-23..29:
+  15+1 readiness, exact 32-session/degree-4/diameter-3 topology, membership
+  failure matrix, 10s metadata SLO, 1,024-node trend) need a 16-node
+  facade harness and public topology/membership views; the controller,
+  planning, and page components they consume are in place and unit-verified.
+- Wired from NodeConfig: `anti_entropy_interval` (page ticks) and
+  `RecoveryConfig` (recovery policy) remain TODO(G5) until the facade
+  harness consumes them.
+
 ## Historical findings (pre-fix baseline)
 
 ## P1 — should-fix (verified in real code)
