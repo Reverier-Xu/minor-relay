@@ -152,17 +152,19 @@ impl SessionDriver {
   /// Records the peer's leaf SPKI observed during a successful join, as the
   /// trust anchor for later member-mode reconnect pinning.
   pub(crate) fn record_peer_spki(&self, peer: &NodeId, spki: Vec<u8>) {
-    self
-      .member_spkis
-      .0
-      .lock()
-      .unwrap()
-      .insert(peer.clone(), spki);
+    if let Ok(mut anchors) = self.member_spkis.0.lock() {
+      anchors.insert(peer.clone(), spki);
+    }
   }
 
   /// The recorded leaf SPKI anchor for `peer`, when this process joined it.
   pub(crate) fn peer_spki(&self, peer: &NodeId) -> Option<Vec<u8>> {
-    self.member_spkis.0.lock().unwrap().get(peer).cloned()
+    self
+      .member_spkis
+      .0
+      .lock()
+      .ok()
+      .and_then(|anchors| anchors.get(peer).cloned())
   }
 
   /// The current non-secret join hint for accepted connections: the local
