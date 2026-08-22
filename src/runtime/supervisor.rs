@@ -125,7 +125,7 @@ async fn supervise(
   }
 
   let mut supervisor = Supervisor::new(dependencies);
-  let mut recovery_timer = tokio::time::interval(std::time::Duration::from_millis(500));
+  let mut recovery_timer = tokio::time::interval(std::time::Duration::from_secs(2));
   recovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
   loop {
     tokio::select! {

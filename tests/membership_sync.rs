@@ -444,7 +444,7 @@ async fn connect_cq4(nodes: &[Node]) {
     .await;
     // Pace the dials: bursts of concurrent handshakes starve the shared
     // runtime at sixteen-node scale and cause spurious drops.
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
   }
 }
 
