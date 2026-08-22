@@ -413,14 +413,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G05-01"
 verification_id = "VERIFY-G05-01"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G05-01"
 owner_task = "T-G05-01"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g05-01-descriptors.sh"]
 timeout_seconds = 1800
 
 [[task]]
