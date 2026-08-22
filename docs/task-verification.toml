@@ -465,14 +465,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G05-05"
 verification_id = "VERIFY-G05-05"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G05-05"
 owner_task = "T-G05-05"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g05-05-recovery-sim.sh"]
 timeout_seconds = 1800
 
 [[task]]
