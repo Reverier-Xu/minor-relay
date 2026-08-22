@@ -287,12 +287,7 @@ async fn build_cluster(count: usize) -> Vec<Node> {
     let storage = Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
     let mut member = start_node(index as u64, storage).await;
     member.endpoint = listen(&member).await;
-    let issuer = &nodes[0];
-    let issued = issuer
-      .handle
-      .command(RotateJoinCredential::new())
-      .await
-      .unwrap();
+    let issued = rotate_with_retry(&nodes[0]).await;
     let secret = issued.credential().expose_secret().to_owned();
     join_with_retry(&member, issuer_endpoint.clone(), &secret).await;
     member.id = node_id(&member).await;
@@ -440,6 +435,22 @@ async fn connect_cq4(nodes: &[Node]) {
   }
 }
 
+/// Issues one join credential with bounded retries: admission-sensitive
+/// operations refuse while a concurrent metadata commit holds the store
+/// frozen for microseconds, so a rotation is retried.
+async fn rotate_with_retry(issuer: &Node) -> minor_relay::IssuedJoinCredential {
+  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  loop {
+    match issuer.handle.command(RotateJoinCredential::new()).await {
+      Ok(issued) => return issued,
+      Err(_) if std::time::Instant::now() < deadline => {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("join credential rotation failed persistently: {error:?}"),
+    }
+  }
+}
+
 /// One join with bounded retries: the transport drops handshakes under
 /// sixteen-node load, so a join is retried before failing the harness.
 /// A credential is not `Clone` (secret hygiene), and a failed join
@@ -555,11 +566,7 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   let storage = Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
   let mut node15 = start_node(15, storage).await;
   node15.endpoint = listen(&node15).await;
-  let issued = nodes[0]
-    .handle
-    .command(RotateJoinCredential::new())
-    .await
-    .unwrap();
+  let issued = rotate_with_retry(&nodes[0]).await;
   let secret = issued.credential().expose_secret().to_owned();
   join_with_retry(&node15, nodes[0].endpoint.clone(), &secret).await;
   node15.id = node_id(&node15).await;
