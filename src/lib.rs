@@ -32,6 +32,7 @@ mod error;
 mod extension_registry;
 mod hex;
 mod identity;
+mod membership;
 mod node;
 mod operation;
 mod packet;
