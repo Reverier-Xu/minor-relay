@@ -21,9 +21,10 @@ mod common;
 
 use common::{MemoryStorageFactory, ScriptedKeys};
 
-/// The small anti-entropy interval used by the harness so convergence is
-/// fast; the SLO lane proves it stays far under the 10,000 ms bound.
-const SYNC_INTERVAL: Duration = Duration::from_millis(50);
+/// The anti-entropy interval used by the harness. At sixteen-node scale a
+/// faster tick starves the shared runtime and the transport drops
+/// handshakes; 250 ms still converges far under the 10,000 ms SLO bound.
+const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 
 struct Node {
   handle: NodeHandle,
