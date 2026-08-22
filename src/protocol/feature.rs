@@ -594,9 +594,7 @@ fn string_tags<T: TagText>(tags: &[T]) -> Vec<String> {
 mod tests {
   use super::*;
 
-  fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-  }
+  use crate::hex::encode as hex;
 
   fn extension_tag(name: &str) -> FeatureTag {
     FeatureTag::parse(&format!("testing.example/features/{name}")).unwrap()

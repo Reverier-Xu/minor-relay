@@ -30,6 +30,7 @@ mod api;
 mod config;
 mod error;
 mod extension_registry;
+mod hex;
 mod identity;
 mod node;
 mod operation;

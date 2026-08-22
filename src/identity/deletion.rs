@@ -284,13 +284,7 @@ async fn accept_exact_tombstone(
 
 fn deletion_purpose(handle: &KeyHandle) -> String {
   let digest = Sha256::digest(handle.expose_provider_handle());
-  let mut purpose = String::with_capacity(11 + 64);
-  purpose.push_str("key-delete-");
-  for byte in digest {
-    purpose.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-    purpose.push(char::from_digit(u32::from(byte & 0x0F), 16).unwrap_or('0'));
-  }
-  purpose
+  format!("key-delete-{}", crate::hex::encode(&digest))
 }
 
 #[cfg(test)]

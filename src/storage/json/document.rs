@@ -9,7 +9,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as ShaDigest, Sha256};
 
-use crate::{CommitReceipt, Digest, Error, Result, StoreRevision, TransactionId};
+use crate::{
+  CommitReceipt, Digest, Error, Result, StoreRevision, TransactionId, hex::{
+    decode as hex_decode_bytes, decode_array as hex_decode, encode as hex_encode,
+  },
+};
 
 pub(super) const GENERATION_SCHEMA: &str = "relay.woooo.tech/schemas/json-generation-v1";
 pub(super) const STORE_SCHEMA: &str = "relay.woooo.tech/schemas/json-store-v1";
@@ -236,44 +240,4 @@ fn body_length(entries: &[(String, String, String)], receipts: &[ReceiptBody]) -
     .checked_add(receipts_len)
     .ok_or_else(|| Error::resource_exhausted("json body length"))?;
   u64::try_from(total).map_err(|_| Error::resource_exhausted("json body length"))
-}
-
-pub(super) fn hex_encode(bytes: &[u8]) -> String {
-  const HEX: &[u8; 16] = b"0123456789abcdef";
-  let mut output = String::with_capacity(bytes.len() * 2);
-  for byte in bytes {
-    output.push(char::from(HEX[usize::from(byte >> 4)]));
-    output.push(char::from(HEX[usize::from(byte & 0x0F)]));
-  }
-  output
-}
-
-pub(super) fn hex_decode_bytes(value: &str, context: &'static str) -> Result<Vec<u8>> {
-  if !value.len().is_multiple_of(2)
-    || !value
-      .bytes()
-      .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-  {
-    return Err(Error::invalid_input(context));
-  }
-  let mut output = Vec::with_capacity(value.len() / 2);
-  for pair in value.as_bytes().as_chunks::<2>().0 {
-    let high = hex_digit(pair[0], context)?;
-    let low = hex_digit(pair[1], context)?;
-    output.push(high << 4 | low);
-  }
-  Ok(output)
-}
-
-fn hex_decode<const LENGTH: usize>(value: &str, context: &'static str) -> Result<[u8; LENGTH]> {
-  let bytes = hex_decode_bytes(value, context)?;
-  <[u8; LENGTH]>::try_from(bytes.as_slice()).map_err(|_| Error::invalid_input(context))
-}
-
-fn hex_digit(byte: u8, context: &'static str) -> Result<u8> {
-  match byte {
-    b'0'..=b'9' => Ok(byte - b'0'),
-    b'a'..=b'f' => Ok(byte - b'a' + 10),
-    _ => Err(Error::invalid_input(context)),
-  }
 }

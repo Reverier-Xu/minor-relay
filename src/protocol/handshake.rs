@@ -1032,9 +1032,7 @@ mod tests {
     CredentialSecret::from_bytes(CREDENTIAL)
   }
 
-  fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-  }
+  use crate::hex::encode as hex;
 
   fn registry() -> FeatureRegistry {
     FeatureRegistry::builtin().unwrap()

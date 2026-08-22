@@ -47,9 +47,9 @@ fn crash_hook(_point: u8) {}
 
 use fs4::FileExt;
 
-use super::document::{
-  GenerationDocument, GenerationInput, LockHeader, hex_decode_bytes, hex_encode,
-};
+use crate::hex::{decode as hex_decode_bytes, encode as hex_encode};
+
+use super::document::{GenerationDocument, GenerationInput, LockHeader};
 use crate::{
   BoxFuture, CommitOutcome, CommitReceipt, Digest, DurabilityLevel, Error, ProviderErrorContext,
   ProviderErrorKind, Result, StoreCapabilities, StoreEntry, StoreExpectation, StoreKey,

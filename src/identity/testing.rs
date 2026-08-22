@@ -579,11 +579,6 @@ pub(crate) fn namespace(tag: &str) -> StoreNamespace {
   StoreNamespace::new(QualifiedTag::parse(tag).unwrap()).unwrap()
 }
 
-#[allow(dead_code)]
-pub(crate) fn hex(bytes: &[u8]) -> String {
-  bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 pub(crate) fn entry(
   reference: &Arc<ReferenceFactory>, namespace: &StoreNamespace, key: &StoreKey,
 ) -> Option<StoreValue> {

@@ -14,9 +14,9 @@ use tempfile::TempDir;
 #[cfg(unix)]
 use super::JsonStoreFactory;
 #[cfg(unix)]
-use super::document::{
-  GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA, hex_decode_bytes,
-};
+use super::document::{GENERATION_SCHEMA, GenerationDocument, LOCK_SCHEMA, LockHeader, STORE_SCHEMA};
+#[cfg(unix)]
+use crate::hex::{decode as hex_decode_bytes, encode as hex_encode};
 use super::helpers::*;
 #[cfg(unix)]
 use crate::provider::StorageFactory;
@@ -47,7 +47,7 @@ async fn json_adapter_generation_file_is_deterministic_and_header_complete() {
   assert_eq!(document.transaction_id, "txn_000000000000000000001");
   assert_eq!(
     document.operation_digest,
-    super::document::hex_encode(receipt.operation_digest().as_bytes())
+    hex_encode(receipt.operation_digest().as_bytes())
   );
   assert_eq!(document.revision, "0000000000000001");
   assert_eq!(document.receipt.transaction, document.transaction_id);

@@ -159,9 +159,7 @@ mod tests {
   const EXPECTED_INITIATOR_PROOF_HEX: &str =
     "e2fbc91f358f4041783d434cc5b215c3b75a90c539b414a69d7960dd43f47da0";
 
-  fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-  }
+  use crate::hex::encode as hex;
 
   fn secret() -> CredentialSecret {
     CredentialSecret::from_bytes(CREDENTIAL)

@@ -858,9 +858,7 @@ mod tests {
     StoreNamespace::new(QualifiedTag::parse(tag).unwrap()).unwrap()
   }
 
-  fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-  }
+  use crate::hex::encode as hex;
 
   fn fresh_reference() -> (Arc<ReferenceFactory>, Arc<dyn StorageFactory>) {
     let reference = Arc::new(ReferenceFactory::new(required_capabilities()));
