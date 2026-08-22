@@ -238,7 +238,7 @@ async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec
         return edges;
       }
     } else {
-      stable = edges;
+      stable = edges.clone();
       stable_samples = 1;
       if edges.len() > expected {
         // A redundant edge reappeared (an in-flight recovery dial landing
