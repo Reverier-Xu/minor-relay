@@ -11,8 +11,6 @@
 
 use std::sync::Arc;
 
-use sha2::{Digest as ShaDigest, Sha256};
-
 use super::{
   lifecycle::{
     LocalIdentityContext, cleanup_pending_exact, discover_local_identity, discovery_corrupt,
