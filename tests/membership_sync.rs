@@ -218,6 +218,7 @@ async fn build_cluster(count: usize) -> Vec<Node> {
   issuer.handle.command(CreateCluster::new()).await.unwrap();
   issuer.id = node_id(&issuer).await;
   let issuer_endpoint = listen(&issuer).await;
+  issuer.endpoint = issuer_endpoint.clone();
   nodes.push(issuer);
 
   for index in 1..count {
