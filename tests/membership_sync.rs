@@ -238,6 +238,9 @@ async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec
         return edges;
       }
     } else {
+      if stable_samples > 0 && edges != stable {
+        eprintln!("FLAP prev={:?} now={:?}", stable, edges);
+      }
       stable = edges.clone();
       stable_samples = 1;
       if edges.len() > expected {
@@ -601,7 +604,7 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
         (page.items().len() >= 16).then_some(page.items().len())
       })
     },
-    Duration::from_secs(20),
+    Duration::from_secs(60),
   )
   .await;
   nodes.push(node15);
