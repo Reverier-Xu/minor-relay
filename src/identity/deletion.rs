@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use super::{
   lifecycle::{
-    LocalIdentityContext, cleanup_pending_exact, discover_local_identity, discovery_corrupt,
-    reconcile_corrupt, reconcile_recovered_journal, reconcile_unknown,
+    CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
+    discover_local_identity, discovery_corrupt, reconcile_corrupt, reconcile_recovered_journal,
+    reconcile_unknown,
   },
   records::{
     KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key, local_identity_key,
@@ -112,25 +113,14 @@ pub(crate) async fn delete_unreferenced_key(
           )
           .await?;
         drop(snapshot);
-        match store.commit(prepared).await? {
-          CommitOutcome::Committed(_) => {}
-          CommitOutcome::Aborted | CommitOutcome::Conflict => {
+        match commit_with_reconcile(store, prepared).await? {
+          CommitWithReconcile::Committed => {}
+          CommitWithReconcile::Aborted => {
             if attempts >= 2 {
               return Err(Error::conflict("key deletion intent"));
             }
             continue;
           }
-          CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-            ReconcileOutcome::Committed(_) => {}
-            ReconcileOutcome::Aborted => {
-              if attempts >= 2 {
-                return Err(Error::conflict("key deletion intent"));
-              }
-              continue;
-            }
-            ReconcileOutcome::DigestConflict => return Err(reconcile_corrupt()),
-            ReconcileOutcome::Unknown => return Err(reconcile_unknown()),
-          },
         }
         (value, intent, false)
       }
@@ -236,19 +226,9 @@ async fn delete_provider_step(
     )
     .await?;
   drop(snapshot);
-  match store.commit(prepared).await? {
-    CommitOutcome::Committed(_) => {}
-    CommitOutcome::Aborted | CommitOutcome::Conflict => {
-      return accept_exact_tombstone(store, &tombstone).await;
-    }
-    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-      ReconcileOutcome::Committed(_) => {}
-      ReconcileOutcome::Aborted => {
-        return accept_exact_tombstone(store, &tombstone).await;
-      }
-      ReconcileOutcome::DigestConflict => return Err(reconcile_corrupt()),
-      ReconcileOutcome::Unknown => return Err(reconcile_unknown()),
-    },
+  match commit_with_reconcile(store, prepared).await? {
+    CommitWithReconcile::Committed => {}
+    CommitWithReconcile::Aborted => return accept_exact_tombstone(store, &tombstone).await,
   }
   cleanup_pending_exact(store, entropy, purpose, "key deletion pending cleanup").await?;
   Ok(())

@@ -41,7 +41,7 @@ use crate::{
   storage::{
     MetadataStore,
     pending::PendingCleanupOutcome,
-    receipt::{ReceiptReferenceChange, ReceiptReferenceToken},
+    receipt::{PreparedTransaction, ReceiptReferenceChange, ReceiptReferenceToken},
   },
 };
 
@@ -261,19 +261,9 @@ async fn create_identity(
     )
     .await?;
   drop(snapshot);
-  match store.commit(prepared).await? {
-    CommitOutcome::Committed(_) => {}
-    CommitOutcome::Aborted | CommitOutcome::Conflict => {
-      return Err(Error::conflict("local identity intent commit"));
-    }
-    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-      ReconcileOutcome::Committed(_) => {}
-      ReconcileOutcome::Aborted => {
-        return Err(Error::conflict("local identity intent commit"));
-      }
-      ReconcileOutcome::DigestConflict => return Err(reconcile_corrupt()),
-      ReconcileOutcome::Unknown => return Err(reconcile_unknown()),
-    },
+  match commit_with_reconcile(&store, prepared).await? {
+    CommitWithReconcile::Committed => {}
+    CommitWithReconcile::Aborted => return Err(Error::conflict("local identity intent commit")),
   }
   let created = create_key_exact(keys, intent.operation()).await?;
   finalize_identity(store, entropy, intent, value, created).await
@@ -419,19 +409,9 @@ async fn finalize_identity(
     )
     .await?;
   drop(snapshot);
-  match store.commit(prepared).await? {
-    CommitOutcome::Committed(_) => {}
-    CommitOutcome::Aborted | CommitOutcome::Conflict => {
-      accept_exact_final_state(&store, &identity).await?;
-    }
-    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-      ReconcileOutcome::Committed(_) => {}
-      ReconcileOutcome::Aborted => {
-        accept_exact_final_state(&store, &identity).await?;
-      }
-      ReconcileOutcome::DigestConflict => return Err(reconcile_corrupt()),
-      ReconcileOutcome::Unknown => return Err(reconcile_unknown()),
-    },
+  match commit_with_reconcile(&store, prepared).await? {
+    CommitWithReconcile::Committed => {}
+    CommitWithReconcile::Aborted => accept_exact_final_state(&store, &identity).await?,
   }
   cleanup_pending_exact(
     &store,
@@ -460,6 +440,35 @@ pub(crate) fn discovery_corrupt() -> Error {
     ProviderErrorKind::StorageCorrupt,
     ProviderErrorContext::StorageSnapshot,
   )
+}
+
+/// The reconciled outcome of one prepared commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommitWithReconcile {
+  /// The transaction is committed, directly or after reconciliation.
+  Committed,
+  /// The transaction is definitely not applied.
+  Aborted,
+}
+
+/// Commits one prepared transaction and reconciles an indeterminate
+/// outcome against the provider. Every identity write site shares this
+/// control flow so the digest-conflict and unknown-reconciliation handling
+/// cannot diverge between lanes; callers keep their own committed/aborted
+/// follow-up logic.
+pub(crate) async fn commit_with_reconcile(
+  store: &MetadataStore, prepared: PreparedTransaction,
+) -> Result<CommitWithReconcile> {
+  match store.commit(prepared).await? {
+    CommitOutcome::Committed(_) => Ok(CommitWithReconcile::Committed),
+    CommitOutcome::Aborted | CommitOutcome::Conflict => Ok(CommitWithReconcile::Aborted),
+    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
+      ReconcileOutcome::Committed(_) => Ok(CommitWithReconcile::Committed),
+      ReconcileOutcome::Aborted => Ok(CommitWithReconcile::Aborted),
+      ReconcileOutcome::DigestConflict => Err(reconcile_corrupt()),
+      ReconcileOutcome::Unknown => Err(reconcile_unknown()),
+    },
+  }
 }
 
 pub(crate) fn reconcile_corrupt() -> Error {

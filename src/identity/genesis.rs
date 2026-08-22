@@ -11,8 +11,9 @@ use std::sync::Arc;
 
 use super::{
   lifecycle::{
-    LocalIdentityContext, cleanup_pending_exact, discover_local_identity, discovery_corrupt,
-    reconcile_corrupt, reconcile_recovered_journal, reconcile_unknown,
+    CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
+    discover_local_identity, discovery_corrupt, reconcile_corrupt, reconcile_recovered_journal,
+    reconcile_unknown,
   },
   records::{
     ClusterGenesisV1, IdentityBindingV1, LocalClusterPointerV1, admission_grant_namespace,
@@ -145,8 +146,8 @@ pub(crate) async fn create_cluster(
     .await?;
   drop(snapshot);
 
-  match store.commit(prepared).await? {
-    CommitOutcome::Committed(_) => {
+  match commit_with_reconcile(store, prepared).await? {
+    CommitWithReconcile::Committed => {
       cleanup_pending_exact(
         store,
         entropy,
@@ -156,22 +157,7 @@ pub(crate) async fn create_cluster(
       .await?;
       Ok(genesis)
     }
-    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-      ReconcileOutcome::Committed(_) => {
-        cleanup_pending_exact(
-          store,
-          entropy,
-          CLUSTER_GENESIS_PURPOSE,
-          "cluster genesis pending cleanup",
-        )
-        .await?;
-        Ok(genesis)
-      }
-      ReconcileOutcome::Aborted => Err(Error::conflict("cluster genesis commit")),
-      ReconcileOutcome::DigestConflict => Err(reconcile_corrupt()),
-      ReconcileOutcome::Unknown => Err(reconcile_unknown()),
-    },
-    CommitOutcome::Aborted | CommitOutcome::Conflict => match existing_cluster(context).await? {
+    CommitWithReconcile::Aborted => match existing_cluster(context).await? {
       Some(existing) if existing == genesis => {
         cleanup_pending_exact(
           store,

@@ -12,8 +12,9 @@ use std::sync::Arc;
 use super::{
   genesis::{existing_cluster, require_empty_namespace},
   lifecycle::{
-    LocalIdentityContext, cleanup_pending_exact, discover_local_identity, discovery_corrupt,
-    reconcile_corrupt, reconcile_recovered_journal, reconcile_unknown,
+    CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
+    discover_local_identity, discovery_corrupt, reconcile_corrupt, reconcile_recovered_journal,
+    reconcile_unknown,
   },
   records::{
     AdmissionGrantV1, AdmissionId, CredentialUseV1, GenerationId, IdentityBindingV1,
@@ -222,29 +223,18 @@ pub(crate) async fn commit_admission(
     .await?;
   drop(snapshot);
 
-  match store.commit(prepared).await? {
-    CommitOutcome::Committed(_) => {
+  match commit_with_reconcile(&store, prepared).await? {
+    CommitWithReconcile::Committed => {
       cleanup_pending_exact(store, entropy, &purpose, "admission pending cleanup").await?;
       Ok(grant)
     }
-    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-      ReconcileOutcome::Committed(_) => {
+    CommitWithReconcile::Aborted => match admission_state(context, proposal).await? {
+      AdmissionState::Consumed(_, existing) => {
         cleanup_pending_exact(store, entropy, &purpose, "admission pending cleanup").await?;
-        Ok(grant)
+        Ok(*existing)
       }
-      ReconcileOutcome::Aborted => Err(Error::conflict("admission commit")),
-      ReconcileOutcome::DigestConflict => Err(reconcile_corrupt()),
-      ReconcileOutcome::Unknown => Err(reconcile_unknown()),
+      _ => Err(Error::conflict("admission commit")),
     },
-    CommitOutcome::Aborted | CommitOutcome::Conflict => {
-      match admission_state(context, proposal).await? {
-        AdmissionState::Consumed(_, existing) => {
-          cleanup_pending_exact(store, entropy, &purpose, "admission pending cleanup").await?;
-          Ok(*existing)
-        }
-        _ => Err(Error::conflict("admission commit")),
-      }
-    }
   }
 }
 
@@ -362,21 +352,12 @@ pub(crate) async fn adopt_admission(
     .await?;
   drop(snapshot);
 
-  match store.commit(prepared).await? {
-    CommitOutcome::Committed(_) => {
+  match commit_with_reconcile(&store, prepared).await? {
+    CommitWithReconcile::Committed => {
       cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
       Ok(())
     }
-    CommitOutcome::Unknown { .. } => match store.reconcile().await? {
-      ReconcileOutcome::Committed(_) => {
-        cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
-        Ok(())
-      }
-      ReconcileOutcome::Aborted => Err(Error::conflict("adoption commit")),
-      ReconcileOutcome::DigestConflict => Err(reconcile_corrupt()),
-      ReconcileOutcome::Unknown => Err(reconcile_unknown()),
-    },
-    CommitOutcome::Aborted | CommitOutcome::Conflict => {
+    CommitWithReconcile::Aborted => {
       match adoption_state(context, grant, issuer_key, genesis_digest).await? {
         AdoptionState::Adopted => {
           cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
