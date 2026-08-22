@@ -20,36 +20,28 @@ impl FrameId {
   }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum EventPhase {
-  Topology,
-  Node,
-  Send,
-  Delivery,
-}
-
+/// The ordering key of one scheduled delivery. Sorting is deterministic:
+/// deadline first, then the reorder rank (reordered deliveries sort after
+/// in-order ones at equal deadlines, ordered by frame descending), then
+/// frame identity and the per-copy enqueue id. The former `ordinal` field
+/// was dropped because it duplicated `frame.value()`; the reorder rank is
+/// kept because its exact value is part of the deterministic order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct EventKey {
   deadline_nanos: u64,
-  phase: EventPhase,
   reorder_rank: u64,
-  ordinal: u64,
   frame: FrameId,
   copy: u8,
   enqueue_id: u64,
 }
 
 impl EventKey {
-  #[allow(clippy::too_many_arguments)]
   pub(crate) const fn new(
-    deadline_nanos: u64, phase: EventPhase, reorder_rank: u64, ordinal: u64, frame: FrameId,
-    copy: u8, enqueue_id: u64,
+    deadline_nanos: u64, reorder_rank: u64, frame: FrameId, copy: u8, enqueue_id: u64,
   ) -> Self {
     Self {
       deadline_nanos,
-      phase,
       reorder_rank,
-      ordinal,
       frame,
       copy,
       enqueue_id,
@@ -60,8 +52,8 @@ impl EventKey {
     self.deadline_nanos
   }
 
-  pub(crate) const fn phase(self) -> EventPhase {
-    self.phase
+  pub(crate) const fn enqueue_id(self) -> u64 {
+    self.enqueue_id
   }
 }
 
@@ -360,30 +352,31 @@ const fn drop_reason_code(reason: DropReason) -> u8 {
 #[cfg(test)]
 mod tests {
   use crate::simulation::{
-    event::{DropReason, EventKey, EventLog, EventPhase, EventRecord, FrameId},
+    event::{DropReason, EventKey, EventLog, EventRecord, FrameId},
     topology::{AddressId, LinkKey, NodeKey},
   };
 
   #[test]
   fn simulation_event_order_is_total_at_equal_deadline() {
     let mut keys = [
-      EventKey::new(10, EventPhase::Delivery, 0, 4, FrameId::new(2), 1, 7),
-      EventKey::new(10, EventPhase::Topology, 0, 3, FrameId::new(0), 0, 6),
-      EventKey::new(10, EventPhase::Send, 0, 2, FrameId::new(1), 0, 5),
-      EventKey::new(10, EventPhase::Node, 0, 1, FrameId::new(0), 0, 4),
-      EventKey::new(10, EventPhase::Delivery, 1, 4, FrameId::new(2), 0, 8),
+      EventKey::new(10, 0, FrameId::new(2), 1, 7),
+      EventKey::new(10, 0, FrameId::new(0), 0, 6),
+      EventKey::new(10, u64::MAX - 1, FrameId::new(1), 0, 5),
+      EventKey::new(10, 0, FrameId::new(0), 0, 4),
+      EventKey::new(10, u64::MAX - 2, FrameId::new(2), 0, 8),
     ];
     keys.sort();
 
+    // Deterministic total order at equal deadlines: in-order deliveries by
+    // frame and enqueue id, reordered deliveries after them (frame
+    // descending within the reordered group).
     assert_eq!(
-      keys.iter().map(|key| key.phase()).collect::<Vec<_>>(),
-      [
-        EventPhase::Topology,
-        EventPhase::Node,
-        EventPhase::Send,
-        EventPhase::Delivery,
-        EventPhase::Delivery,
-      ],
+      keys.iter().map(|key| key.frame.value()).collect::<Vec<_>>(),
+      [0, 0, 2, 2, 1],
+    );
+    assert_eq!(
+      keys.iter().map(|key| key.enqueue_id()).collect::<Vec<_>>(),
+      [4, 6, 7, 8, 5],
     );
     assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(keys.iter().all(|key| key.deadline_nanos() == 10));

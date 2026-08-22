@@ -6,7 +6,7 @@ use std::{
 use crate::{
   Digest,
   simulation::{
-    event::{DropReason, EventKey, EventLog, EventPhase, EventRecord, FrameId},
+    event::{DropReason, EventKey, EventLog, EventRecord, FrameId},
     topology::{
       AddressId, EndpointStamp, LinkKey, NodeKey, PartitionId, SimResult, SimulationError, Topology,
     },
@@ -210,15 +210,7 @@ impl Simulator {
         .checked_add(copy.into())
         .ok_or(SimulationError::Overflow)?;
       deliveries.push(ScheduledDelivery {
-        key: EventKey::new(
-          deadline,
-          EventPhase::Delivery,
-          reorder_rank,
-          frame.value(),
-          frame,
-          copy,
-          enqueue_id,
-        ),
+        key: EventKey::new(deadline, reorder_rank, frame, copy, enqueue_id),
         frame,
         copy,
         bytes,
