@@ -17,8 +17,26 @@ P2 = nice-to-have. All line numbers are from that revision and drift.
   `docs/roadmap.md` lists which gate consumes each reserved config field.
 - Remaining known follow-ups: M6 moves the routing-domain code out of
   `session/stream.rs` (marked `TODO(M6)`); M9 wires `NodeHandle::events`
-  (marked `TODO(M9)`); G4/G5/G6 wire the reserved config fields (marked
-  `TODO(G4/G5/G6)`).
+  (marked `TODO(M9)`); G5 wires the anti-entropy config fields (marked
+  `TODO(G5)`).
+
+## G4 status (2026-08, gate in progress)
+
+- T-G04-01..06 all registered with verify lanes (`verify-g04-01..06`), all
+  lanes PASS on the working tree; full suite 392 tests, zero warnings.
+- Delivered: transport/discovery registries with the built-in WSS registered
+  by default; identity-scoped endpoint candidates with wall-clock expiry;
+  deterministic crossed-dial session ownership with drain; bounded session
+  queues (count+bytes) and wall-clock liveness (idle + keepalive); signed
+  trust snapshots with fail-closed verification, durable persistence, and
+  paged observations; credential-free member reconnect (E2E-01/02/03).
+- Handoff to G5: the member-to-member trust propagation protocol (SC-G04-P0-17/18
+  dissemination and offline catch-up) needs the membership sync/anti-entropy
+  channel that G5 builds; the G4 components it consumes (trust store,
+  binding persistence, member-mode reconnect) are in place and unit-verified.
+- TODO markers added for G4-06 wiring that the reconnect E2E consumes:
+  `WssConnection::into_split/inner/join_hint`, `WssTransport::with_hint`,
+  `Connection::ping/pong_last_seen` pre-split forms.
 
 ## Historical findings (pre-fix baseline)
 
