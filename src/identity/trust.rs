@@ -247,10 +247,10 @@ impl TrustSnapshotV1 {
     let known: std::collections::BTreeMap<&NodeId, &PublicKey> =
       known.iter().map(|(node, key)| (node, key)).collect();
     for binding in &self.bindings {
-      if let Some(expected) = known.get(&binding.node) {
-        if *expected != &binding.key {
-          return Err(crate::Error::not_trusted("trust snapshot key substitution"));
-        }
+      if let Some(expected) = known.get(&binding.node)
+        && *expected != &binding.key
+      {
+        return Err(crate::Error::not_trusted("trust snapshot key substitution"));
       }
     }
     Ok(())
@@ -532,11 +532,11 @@ pub(crate) mod store {
   };
 
   fn snapshot_namespace() -> Result<StoreNamespace> {
-    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_SNAPSHOT_NAMESPACE).unwrap())
+    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_SNAPSHOT_NAMESPACE)?)
   }
 
   fn binding_namespace() -> Result<StoreNamespace> {
-    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_BINDING_NAMESPACE).unwrap())
+    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_BINDING_NAMESPACE)?)
   }
 
   fn snapshot_key(issuer: &NodeId, revision: u64) -> StoreKey {
