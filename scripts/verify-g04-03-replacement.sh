@@ -25,9 +25,9 @@ require_nonempty_tests() {
 }
 
 # Deterministic ownership lane (SC-G04-P0-09).
-cargo test --locked --lib session::replacement_tests -- --list > "$TMP/replace.list"
+cargo test --locked --lib session::stream::replacement_tests -- --list > "$TMP/replace.list"
 require_nonempty_tests session_replacement "$TMP/replace.list"
-cargo test --locked --lib session::replacement_tests
+cargo test --locked --lib session::stream::replacement_tests
 
 # Crossed-dial convergence and drain lane (SC-G04-P0-10..11, E2E-03).
 cargo test --locked --test secure_join secure_join_crossed_dial_converges_to_one_session
