@@ -38,6 +38,43 @@ P2 = nice-to-have. All line numbers are from that revision and drift.
   `WssConnection::into_split/inner/join_hint`, `WssTransport::with_hint`,
   `Connection::ping/pong_last_seen` pre-split forms.
 
+## G4 fresh re-review (2026-08, four independent reviewer agents)
+
+Fresh-context reviewers confirmed the G4 evidence (392 tests, six verify lanes)
+and surfaced four P1 bugs, all fixed and committed (364c564):
+
+1. **Dead session entries blocked reconnection** — the crossed-dial
+   replacement decision ignored `previous.alive()` and teardown never removed
+   the table entry, so a reconnect from the non-winning direction was dropped
+   at both endpoints forever. Fix: only live entries compete under the
+   ownership rule; teardown removes the registered dead entry.
+2. **Bounded queue admission was racy under concurrent senders** —
+   check-then-act on count/bytes could exceed the byte budget. Fix: one
+   mutex-protected critical section for admission+reservation.
+3. **`latest_snapshot` ignored the issuer** — it scanned the whole namespace
+   and picked the max revision across all issuers, so another issuer's higher
+   revision shadowed the trusted one. Fix: scan with the issuer key prefix.
+4. **Keepalive never observed the pong** — the timeout measured time since
+   the locally-sent ping, closing a peer that answers every ping but sends no
+   binary traffic. Fix: reflect peer pongs into the injected clock's activity
+   mark and require no response for the full deadline.
+
+P2 fixes (3e11e46): PageCursor/EndpointCandidate manifest accessor names,
+single-parse typed transport tag, SessionPolicy::from_config single-sourcing,
+writer-failure session teardown, snapshot_digest delegation.
+
+Deferred with TODO markers (G4-06 wiring / G7): `WssListener::close` is a
+no-op until the supervisor consumes the registry listener (needs a shared
+cancel signal); `Supervisor::new` keeps four `unreachable!` invariants;
+`WallClock` still lives in `storage::receipt` (move to node when G7 lands);
+transport pong timestamps use host seconds while session liveness uses the
+injected clock (reconcile units when G4-06 wires keepalive for real).
+
+Health check outcome: the G4 transport/session/trust additions are
+structurally sound — open registries per manifest, injected wall clock, no
+production unwrap/expect/unsafe, and the crossed-dial ownership rule is a
+total order verified by unit and integration tests.
+
 ## Historical findings (pre-fix baseline)
 
 ## P1 — should-fix (verified in real code)
