@@ -593,6 +593,9 @@ impl Supervisor {
     &mut self, receiver: Endpoint, peer: NodeId, _tasks: &mut JoinSet<()>,
   ) -> Result<NodeId> {
     self.require_unblocked()?;
+    // A deliberate caller connect restores an intentionally disconnected
+    // relationship: recovery may heal it again.
+    self.recovery_excluded.remove(&peer);
     let driver = self.driver.clone();
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
@@ -898,9 +901,6 @@ impl Supervisor {
       .collect();
     for peer in &direct {
       self.recovery_history.insert(peer.clone());
-      // A deliberate new session restores an intentionally disconnected
-      // relationship: recovery may heal it again.
-      self.recovery_excluded.remove(peer);
     }
     let online = self.recovery_history.clone();
     let now = now_seconds();
