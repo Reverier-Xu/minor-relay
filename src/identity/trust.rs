@@ -576,7 +576,12 @@ pub(crate) mod store {
     let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = snapshot_namespace()?;
     let snapshot = storage.snapshot().await?;
-    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    // Scan only this issuer's keys ({issuer}/{revision:020}): a higher
+    // revision snapshot from another issuer must never shadow the trusted
+    // issuer's latest snapshot.
+    let mut scan = snapshot
+      .scan(&namespace, trusted_issuer.as_str().as_bytes())
+      .await?;
     let mut latest: Option<(u64, Vec<u8>)> = None;
     while let Some(entry) = scan.next().await? {
       let bytes = entry.value().as_bytes().to_vec();

@@ -143,12 +143,13 @@ pub(crate) fn keep_connection(local: &NodeId, peer: &NodeId, direction: DialDire
 
 /// The shared admission state of one outbound session queue: the count of
 /// queued frames and their summed encoded bytes. Both bounds are checked
-/// before enqueue, and a rejected frame is never partially enqueued
-/// (SC-G04-P0-12).
+/// atomically (under `admit`) before enqueue, and a rejected frame is never
+/// partially enqueued (SC-G04-P0-12).
 #[derive(Debug, Default)]
 struct QueueState {
   count: AtomicUsize,
   bytes: AtomicUsize,
+  admit: std::sync::Mutex<()>,
 }
 
 /// The admission overhead of one queued frame beyond its body bytes.
@@ -168,16 +169,22 @@ pub(crate) struct BoundedSender {
 impl BoundedSender {
   pub(crate) fn send(&self, frame: SessionFrame) -> BoxFuture<'_, Result<()>> {
     let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
-    let reserved = {
-      let count = self.state.count.load(Ordering::Relaxed);
-      let queued_bytes = self.state.bytes.load(Ordering::Relaxed);
-      if count >= self.max_count || queued_bytes.saturating_add(bytes) > self.max_bytes {
-        None
-      } else {
-        self.state.count.fetch_add(1, Ordering::Relaxed);
-        self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
-        Some(bytes)
+    // The admission check and reservation are one atomic critical section:
+    // concurrent senders cannot both pass the count/byte check and exceed
+    // the budget (the check-then-act is synchronous, no await inside).
+    let reserved = match self.state.admit.lock() {
+      Ok(_guard) => {
+        let count = self.state.count.load(Ordering::Relaxed);
+        let queued_bytes = self.state.bytes.load(Ordering::Relaxed);
+        if count >= self.max_count || queued_bytes.saturating_add(bytes) > self.max_bytes {
+          None
+        } else {
+          self.state.count.fetch_add(1, Ordering::Relaxed);
+          self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
+          Some(bytes)
+        }
       }
+      Err(_) => return Box::pin(async move { Err(Error::internal("session queue")) }),
     };
     let Some(bytes) = reserved else {
       return Box::pin(async move { Err(Error::overloaded("session queue")) });
@@ -278,15 +285,22 @@ pub(crate) async fn run_session(
     let replace = match guard.get(&peer) {
       None => true,
       Some(previous) => {
-        let keep_existing = keep_connection(&local, &peer, previous.direction);
-        let keep_new = keep_connection(&local, &peer, direction);
-        // Crossed dial: the deterministic rule prefers exactly one of the
-        // two directions; keep that one and drop the other. Same direction
-        // (reconnect, restart) always replaces with the newest entry.
-        if keep_existing != keep_new {
-          keep_new
-        } else {
+        // A dead entry must never block reconnection: only a live previous
+        // session competes under the crossed-dial ownership rule.
+        if !previous.alive() {
           true
+        } else {
+          let keep_existing = keep_connection(&local, &peer, previous.direction);
+          let keep_new = keep_connection(&local, &peer, direction);
+          // Crossed dial: the deterministic rule prefers exactly one of the
+          // two directions; keep that one and drop the other. Same
+          // direction (reconnect, restart) always replaces with the newest
+          // entry.
+          if keep_existing != keep_new {
+            keep_new
+          } else {
+            true
+          }
         }
       }
     };
@@ -336,6 +350,14 @@ pub(crate) async fn run_session(
   }
 
   alive.store(false, Ordering::SeqCst);
+  // Remove this session's entry when it is still the registered one, so a
+  // dead entry cannot block a later reconnection from either direction.
+  if let Ok(mut sessions) = table.lock()
+    && let Some(current) = sessions.get(&peer)
+    && !current.alive()
+  {
+    sessions.remove(&peer);
+  }
   writer_task.abort();
   // Pending admissions and in-flight incoming bodies observe the
   // interruption explicitly: pending acks fail with StreamInterrupted and
@@ -417,8 +439,10 @@ async fn liveness_observer(
     if !keepalive_interval.is_zero()
       && last_ping != 0
       && now.saturating_sub(last_ping) >= keepalive_timeout.as_secs()
+      && now.saturating_sub(last) >= keepalive_timeout.as_secs()
     {
-      // The peer missed the keepalive result; close.
+      // The peer missed the keepalive result (no pong or traffic since the
+      // ping was sent); close.
       return;
     }
     if !keepalive_interval.is_zero()
@@ -485,7 +509,15 @@ async fn read_loop(
 ) {
   let mut incoming: HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)> = HashMap::new();
   let mut consumers = JoinSet::new();
+  let mut last_pong_seen = reader.pong_last_seen();
   loop {
+    // A peer pong is a keepalive response: reflect it into the injected
+    // clock's activity mark so the liveness observer sees one time source.
+    let pong = reader.pong_last_seen();
+    if pong != last_pong_seen {
+      last_pong_seen = pong;
+      last_activity.store(clock_seconds(context.clock.as_ref()), Ordering::Relaxed);
+    }
     let message = match reader.receive().await {
       Ok(Some(message)) => message,
       Ok(None) => {

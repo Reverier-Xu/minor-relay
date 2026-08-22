@@ -358,6 +358,14 @@ pub(crate) struct ConnectionReader {
 }
 
 impl ConnectionReader {
+  /// UNIX-seconds of the last peer pong (host clock), used by the session
+  /// reader to reflect keepalive responses into its injected clock.
+  pub(crate) fn pong_last_seen(&self) -> u64 {
+    self
+      .pong_last_seen
+      .load(std::sync::atomic::Ordering::Relaxed)
+  }
+
   /// Receives the next wire message. Returns `Ok(None)` on an orderly
   /// close; every limit or framing violation fails closed.
   pub(crate) async fn receive(&mut self) -> Result<Option<Message>> {
