@@ -90,6 +90,20 @@ pub(crate) enum Control {
   GetLocalNode {
     reply: oneshot::Sender<Result<LocalNodeView>>,
   },
+  GetMember {
+    node: NodeId,
+    reply: oneshot::Sender<Result<Option<crate::MemberView>>>,
+  },
+  PageMembers {
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::MemberPage>>,
+  },
+  PageTopology {
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::TopologyPage>>,
+  },
 }
 
 #[derive(Clone)]
@@ -217,6 +231,39 @@ impl RuntimeClient {
   pub(crate) async fn local_node(&self) -> Result<LocalNodeView> {
     self
       .send_command(|reply| Control::GetLocalNode { reply })
+      .await
+  }
+
+  /// One member's public observation (G5-06).
+  pub(crate) async fn member(&self, node: NodeId) -> Result<Option<crate::MemberView>> {
+    self
+      .send_command(|reply| Control::GetMember { node, reply })
+      .await
+  }
+
+  /// Pages the public membership observations (G5-06).
+  pub(crate) async fn page_members(
+    &self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::MemberPage> {
+    self
+      .send_command(|reply| Control::PageMembers {
+        cursor,
+        limit,
+        reply,
+      })
+      .await
+  }
+
+  /// Pages the public topology edges (G5-06).
+  pub(crate) async fn page_topology(
+    &self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::TopologyPage> {
+    self
+      .send_command(|reply| Control::PageTopology {
+        cursor,
+        limit,
+        reply,
+      })
       .await
   }
 

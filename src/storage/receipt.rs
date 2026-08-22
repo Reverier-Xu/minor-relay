@@ -162,7 +162,7 @@ pub(super) enum ReceiptCleanupOutcome {
 }
 
 impl MetadataStore {
-  pub(super) fn prepare_transaction(
+  pub(crate) fn prepare_transaction(
     &self, id: TransactionId, base_revision: StoreRevision, caller_operations: Vec<StoreOperation>,
   ) -> crate::Result<PreparedTransaction> {
     if caller_operations

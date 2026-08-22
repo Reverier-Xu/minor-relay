@@ -181,6 +181,18 @@ async fn supervise(
         let result = supervisor.local_node().await;
         let _ = reply.send(result);
       }
+      Control::GetMember { node, reply } => {
+        let result = supervisor.member(node).await;
+        let _ = reply.send(result);
+      }
+      Control::PageMembers { cursor, limit, reply } => {
+        let result = supervisor.page_members(cursor, limit).await;
+        let _ = reply.send(result);
+      }
+      Control::PageTopology { cursor, limit, reply } => {
+        let result = supervisor.page_topology(cursor, limit).await;
+        let _ = reply.send(result);
+      }
         }
       }
       request = packets.recv() => {
@@ -546,6 +558,190 @@ impl Supervisor {
       run_outbound(entry, local, request, routes).await;
     });
     Ok(())
+  }
+
+  /// Lazily publishes this node's own signed descriptor (revision 1) so
+  /// the public views always expose the local identity. Endpoints are
+  /// published by the listeners once G5-06 wires candidate publication.
+  async fn ensure_self_descriptor(&mut self) -> Result<()> {
+    let context = self.context()?;
+    let node = context.identity().node().clone();
+    let public_key = context.identity().public_key().clone();
+    let store = context.store();
+    let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
+      crate::membership::NODE_DESCRIPTOR_NAMESPACE,
+    )?)?;
+    let key = crate::StoreKey::new(std::sync::Arc::from(node.as_str().as_bytes().to_vec()));
+    let snapshot = store.snapshot().await?;
+    if snapshot.get(&namespace, &key).await?.is_some() {
+      return Ok(());
+    }
+    let mut descriptor = crate::membership::NodeDescriptorV1::new(
+      node.clone(),
+      public_key.clone(),
+      Vec::new(),
+      1,
+      false,
+      1,
+      crate::Signature::from_bytes([0; 64]),
+    );
+    let handle = context.identity().handle().clone();
+    let keys = Arc::clone(&self.dependencies.keys);
+    let message = crate::identity::signature::signature_message(
+      crate::membership::NODE_DESCRIPTOR_V1_DOMAIN,
+      &descriptor.encode_signed_body()?,
+    );
+    let signature = keys.sign(&handle, &message).await?;
+    descriptor.set_signature(signature);
+    let transaction = store.prepare_transaction(
+      crate::TransactionId::generate(self.dependencies.entropy.as_ref())?,
+      snapshot.revision().clone(),
+      vec![crate::StoreOperation::Put {
+        namespace,
+        key,
+        expected: crate::StoreExpectation::Absent,
+        value: crate::StoreValue::new(std::sync::Arc::from(descriptor.encode()?)),
+      }],
+    )?;
+    let _ = store.commit(transaction).await?;
+    Ok(())
+  }
+
+  /// One member's public observation from the signed descriptor store and
+  /// the session table (SC-G05-P0-23..26).
+  async fn member(&mut self, node: NodeId) -> Result<Option<crate::MemberView>> {
+    self.ensure_self_descriptor().await?;
+    let connected = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .contains_key(&node);
+    let snapshot = self.context()?.store().snapshot().await?;
+    let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
+      crate::membership::NODE_DESCRIPTOR_NAMESPACE,
+    )?)?;
+    let key = crate::StoreKey::new(std::sync::Arc::from(node.as_str().as_bytes().to_vec()));
+    let Some(value) = snapshot.get(&namespace, &key).await? else {
+      return Ok(None);
+    };
+    let descriptor = crate::membership::NodeDescriptorV1::decode_and_verify_any(value.as_bytes())?;
+    Ok(Some(crate::MemberView::new(
+      descriptor.node().clone(),
+      descriptor.public_key().clone(),
+      descriptor.revision(),
+      crate::membership::node_descriptor_digest(&descriptor)?,
+      if connected {
+        crate::ConnectivityStatus::Connected
+      } else {
+        crate::ConnectivityStatus::Reachable
+      },
+      descriptor.endpoints().to_vec(),
+    )))
+  }
+
+  /// Pages the signed descriptors, annotating connectivity from the
+  /// session table (SC-G05-P0-23..25).
+  async fn page_members(
+    &mut self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::MemberPage> {
+    self.ensure_self_descriptor().await?;
+    let limit = limit.clamp(1, 64);
+    // Snapshot the connected set under the lock, then release it before
+    // any await so the supervisor future stays `Send`.
+    let connected: std::collections::BTreeSet<NodeId> = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .keys()
+      .cloned()
+      .collect();
+    let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
+      crate::membership::NODE_DESCRIPTOR_NAMESPACE,
+    )?)?;
+    let snapshot = self.context()?.store().snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut items = Vec::new();
+    let mut last_key: Option<Vec<u8>> = None;
+    while let Some(entry) = scan.next().await? {
+      let key = entry.key().as_bytes();
+      if let Some(cursor) = cursor.as_ref()
+        && key <= cursor.as_bytes()
+      {
+        continue;
+      }
+      let descriptor =
+        crate::membership::NodeDescriptorV1::decode_and_verify_any(entry.value().as_bytes())?;
+      let node = descriptor.node().clone();
+      items.push(crate::MemberView::new(
+        node.clone(),
+        descriptor.public_key().clone(),
+        descriptor.revision(),
+        crate::membership::node_descriptor_digest(&descriptor)?,
+        if connected.contains(&node) {
+          crate::ConnectivityStatus::Connected
+        } else {
+          crate::ConnectivityStatus::Reachable
+        },
+        descriptor.endpoints().to_vec(),
+      ));
+      last_key = Some(key.to_vec());
+      if items.len() >= limit {
+        break;
+      }
+    }
+    let reached_end = items.len() < limit;
+    let next = if reached_end {
+      None
+    } else {
+      last_key.map(|key| crate::PageCursor::new(std::sync::Arc::from(key)))
+    };
+    Ok(crate::MemberPage::new(items, next))
+  }
+
+  /// Pages the authenticated sessions as directed topology edges
+  /// (SC-G05-P0-26).
+  async fn page_topology(
+    &mut self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::TopologyPage> {
+    let limit = limit.clamp(1, 64);
+    // Build the edge list entirely under the lock (no await inside), so the
+    // guard drops before the future completes.
+    let mut items = Vec::new();
+    let mut last_key: Option<Vec<u8>> = None;
+    let context_node = self.context()?.identity().node().clone();
+    for (peer, entry) in self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .iter()
+    {
+      let key = peer.as_str().as_bytes();
+      if let Some(cursor) = cursor.as_ref()
+        && key <= cursor.as_bytes()
+      {
+        continue;
+      }
+      items.push(crate::TopologyEdgeView::new(
+        context_node.clone(),
+        peer.clone(),
+        entry.alive(),
+        std::time::SystemTime::now(),
+      ));
+      last_key = Some(key.to_vec());
+      if items.len() >= limit {
+        break;
+      }
+    }
+    let reached_end = items.len() < limit;
+    let next = if reached_end {
+      None
+    } else {
+      last_key.map(|key| crate::PageCursor::new(std::sync::Arc::from(key)))
+    };
+    Ok(crate::TopologyPage::new(items, next))
   }
 
   async fn local_node(&mut self) -> Result<LocalNodeView> {

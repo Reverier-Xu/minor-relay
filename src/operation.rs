@@ -211,6 +211,69 @@ impl Query for WaitForShutdown {
   type Output = crate::ShutdownReason;
 }
 
+/// Queries one member's public observation (G5-06).
+pub struct GetMember {
+  node: NodeId,
+}
+
+impl GetMember {
+  pub fn new(node: NodeId) -> Self {
+    Self { node }
+  }
+
+  pub(crate) const fn node(&self) -> &NodeId {
+    &self.node
+  }
+}
+
+impl private::Sealed for GetMember {}
+
+impl Query for GetMember {
+  type Output = Option<crate::MemberView>;
+}
+
+/// Pages the public membership observations (G5-06).
+pub struct PageMembers {
+  page: crate::PageSpec,
+}
+
+impl PageMembers {
+  pub fn new(page: crate::PageSpec) -> Self {
+    Self { page }
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for PageMembers {}
+
+impl Query for PageMembers {
+  type Output = crate::MemberPage;
+}
+
+/// Pages the public topology edges (G5-06).
+pub struct PageTopology {
+  page: crate::PageSpec,
+}
+
+impl PageTopology {
+  pub fn new(page: crate::PageSpec) -> Self {
+    Self { page }
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for PageTopology {}
+
+impl Query for PageTopology {
+  type Output = crate::TopologyPage;
+}
+
 /// Queries the in-memory route status of one packet route handle
 /// (ADR-0007: bounded trace metadata only, no durability claim).
 pub struct GetRoute {

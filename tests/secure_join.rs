@@ -1403,3 +1403,157 @@ async fn secure_join_shutdown_rejects_new_work_after_drain() {
 
   joiner.handle.command(Shutdown::new()).await.unwrap();
 }
+
+// ---- G5 public membership and topology views (SC-G05-P0-23..26 core) ----
+
+use minor_relay::{GetMember, PageMembers, PageSpec, PageTopology};
+
+/// The public membership/topology views expose the local signed descriptor
+/// and the authenticated session edge after a join.
+#[tokio::test]
+async fn secure_join_public_membership_and_topology_views() {
+  let receiver = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(400_000)),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let joiner = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(410_000)),
+  )
+  .await;
+  let admission = joiner
+    .handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+
+  // The receiver's own signed descriptor is published lazily and readable.
+  let member = receiver
+    .handle
+    .query(GetMember::new(receiver_id.clone()))
+    .await
+    .unwrap()
+    .expect("local descriptor published");
+  assert_eq!(member.node_id(), &receiver_id);
+  assert_eq!(member.owner_revision(), 1);
+
+  // The membership page is bounded and exposes the descriptor.
+  let page = receiver
+    .handle
+    .query(PageMembers::new(PageSpec::first(8).unwrap()))
+    .await
+    .unwrap();
+  assert!(
+    page
+      .items()
+      .iter()
+      .any(|item| item.node_id() == &receiver_id)
+  );
+
+  // The topology page exposes the authenticated session edge to the joiner.
+  let topology = receiver
+    .handle
+    .query(PageTopology::new(PageSpec::first(8).unwrap()))
+    .await
+    .unwrap();
+  assert!(
+    topology
+      .items()
+      .iter()
+      .any(|edge| edge.destination() == admission.admitted_node() && edge.connected()),
+    "authenticated session edge must be visible"
+  );
+
+  joiner.handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}
+
+/// G5-06 core: a sixteen-node cluster joins the issuer and the public
+/// topology view exposes the authenticated edges (SC-G05-P0-24).
+#[tokio::test]
+async fn secure_join_sixteen_node_membership_joins_and_views() {
+  let issuer = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(500_000)),
+  )
+  .await;
+  issuer.handle.command(CreateCluster::new()).await.unwrap();
+  let listener = issuer
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+
+  let mut members = Vec::new();
+  for index in 0..15 {
+    let issued = issuer
+      .handle
+      .command(RotateJoinCredential::new())
+      .await
+      .unwrap();
+    let member = start(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(510_000 + index as u64 * 1_000)),
+    )
+    .await;
+    member
+      .handle
+      .command(JoinCluster::new(
+        listener.endpoint().clone(),
+        issued.into_credential(),
+      ))
+      .await
+      .unwrap();
+    members.push(member);
+  }
+
+  // The issuer's topology view exposes all fifteen authenticated edges.
+  let topology = issuer
+    .handle
+    .query(PageTopology::new(PageSpec::first(64).unwrap()))
+    .await
+    .unwrap();
+  assert_eq!(
+    topology
+      .items()
+      .iter()
+      .filter(|edge| edge.connected())
+      .count(),
+    15,
+    "all fifteen members hold an authenticated session"
+  );
+
+  // The issuer's own descriptor is readable and the membership page is
+  // bounded.
+  let issuer_view = issuer.handle.query(GetLocalNode::new()).await.unwrap();
+  let member = issuer
+    .handle
+    .query(GetMember::new(issuer_view.node_id().clone()))
+    .await
+    .unwrap()
+    .expect("issuer descriptor published");
+  assert_eq!(member.owner_revision(), 1);
+
+  for member in members {
+    member.handle.command(Shutdown::new()).await.unwrap();
+  }
+  issuer.handle.command(Shutdown::new()).await.unwrap();
+}

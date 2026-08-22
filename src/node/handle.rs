@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use crate::{
   Command, ConnectMember, CreateCluster, Error, Event, EventOptions, EventSubscription,
-  GetLocalNode, GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus, OutboundPacket,
-  PacketMetadata, PacketPolicy, PacketTarget, ProtocolTag, Query, Result, RotateJoinCredential,
-  Shutdown, StopListener, TraceId, WaitForShutdown,
+  GetLocalNode, GetMember, GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus,
+  OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget, PageMembers, PageTopology,
+  ProtocolTag, Query, Result, RotateJoinCredential, Shutdown, StopListener, TraceId,
+  WaitForShutdown,
   api::{BoxFuture, Entropy},
   extension_registry::ExtensionRegistry,
   runtime::RuntimeClient,
@@ -102,6 +103,34 @@ impl DispatchQuery for GetLocalNode {
   fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
     let runtime = runtime.clone();
     Box::pin(async move { runtime.local_node().await })
+  }
+}
+
+impl DispatchQuery for GetMember {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let node = self.node().clone();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.member(node).await })
+  }
+}
+
+impl DispatchQuery for PageMembers {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.page_members(cursor, limit).await })
+  }
+}
+
+impl DispatchQuery for PageTopology {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.page_topology(cursor, limit).await })
   }
 }
 

@@ -147,6 +147,19 @@ impl PageCursor {
   pub fn new(value: Arc<[u8]>) -> Self {
     Self(value)
   }
+
+  /// Builds a cursor from provider bytes (api-manifest shape).
+  pub fn from_provider_bytes(value: Arc<[u8]>) -> Result<Self> {
+    if value.is_empty() {
+      return Err(Error::invalid_input("page cursor"));
+    }
+    Ok(Self(value))
+  }
+
+  /// The opaque cursor bytes.
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.0
+  }
 }
 
 /// An open discovery implementation registered under a canonical

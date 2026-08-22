@@ -97,6 +97,11 @@ impl NodeDescriptorV1 {
     self.removed
   }
 
+  /// Attaches the owner signature after it has been produced.
+  pub(crate) fn set_signature(&mut self, signature: Signature) {
+    self.signature = signature;
+  }
+
   pub(crate) fn encode_signed_body(&self) -> Result<Vec<u8>> {
     let mut wire = self.wire();
     wire.signature = ByteVec::from(Vec::new());
@@ -176,6 +181,13 @@ impl NodeDescriptorV1 {
     )?;
     Ok(descriptor)
   }
+}
+
+/// The digest of one descriptor's canonical signed body, for public views.
+pub(crate) fn node_descriptor_digest(descriptor: &NodeDescriptorV1) -> Result<crate::Digest> {
+  Ok(crate::identity::signature::body_digest(
+    &descriptor.encode_signed_body()?,
+  ))
 }
 
 /// The bounded descriptor observation store.
