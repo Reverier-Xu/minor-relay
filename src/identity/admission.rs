@@ -13,7 +13,7 @@ use super::{
   genesis::{existing_cluster, require_empty_namespace},
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_recovered_journal, reconcile_unknown,
+    discover_local_identity, discovery_corrupt, reconcile_recovered_journal,
   },
   records::{
     AdmissionGrantV1, AdmissionId, CredentialUseV1, GenerationId, IdentityBindingV1,

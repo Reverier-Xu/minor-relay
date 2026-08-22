@@ -12,8 +12,7 @@ use std::sync::Arc;
 use super::{
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_corrupt, reconcile_recovered_journal,
-    reconcile_unknown,
+    discover_local_identity, discovery_corrupt, reconcile_recovered_journal, reconcile_unknown,
   },
   records::{
     ClusterGenesisV1, IdentityBindingV1, LocalClusterPointerV1, admission_grant_namespace,
@@ -23,8 +22,7 @@ use super::{
   signature::{CLUSTER_GENESIS_V1_DOMAIN, signature_message},
 };
 use crate::{
-  CommitOutcome, Error, ReconcileOutcome, Result, StoreExpectation, StoreOperation, StoreValue,
-  TransactionId,
+  Error, Result, StoreExpectation, StoreOperation, StoreValue, TransactionId,
   api::Entropy,
   provider::{KeyProvider, StoreSnapshot},
   storage::receipt::{ReceiptReferenceChange, ReceiptReferenceToken},

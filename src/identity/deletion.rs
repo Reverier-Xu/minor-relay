@@ -14,15 +14,15 @@ use std::sync::Arc;
 use super::{
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_recovered_journal, reconcile_unknown,
+    discover_local_identity, discovery_corrupt, reconcile_recovered_journal,
   },
   records::{
     KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key, local_identity_key,
   },
 };
 use crate::{
-  CommitOutcome, Error, ErrorKind, KeyDeleteState, KeyHandle, KeyOperationId, ReconcileOutcome,
-  Result, StoreExpectation, StoreOperation, StoreValue, TransactionId,
+  Error, ErrorKind, KeyDeleteState, KeyHandle, KeyOperationId, Result, StoreExpectation,
+  StoreOperation, StoreValue, TransactionId,
   api::Entropy,
   provider::KeyProvider,
   storage::receipt::{ReceiptReferenceChange, ReceiptReferenceToken},
