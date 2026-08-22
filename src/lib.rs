@@ -61,7 +61,7 @@ pub use operation::{
 };
 pub use packet::{
   DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,
-  PacketTarget, RouteHandle, RouteState, RouteStatusView,
+  PacketTarget, RouteHandle, RouteState, RouteStatusView, RoutingPolicy,
 };
 pub use protocol::{
   DiscoveryTag, FeatureDefinition, FeatureTag, ProtocolTag, QualifiedTag, TransportTag,

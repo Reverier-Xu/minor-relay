@@ -25,9 +25,18 @@ use crate::{
   extension_registry::ExtensionRegistry, runtime::RuntimeClient,
 };
 
-/// The built-in direct routing policy tag: the only routing policy this
-/// gate registers. Every other routing-policy tag is `Unsupported`.
-pub(crate) const DIRECT_ROUTING_POLICY: &str = "relay.woooo.tech/policies/direct";
+/// The caller-selected routing policy for one packet.
+///
+/// Typed so the compiler rejects unknown or misspelled policies at build
+/// time; only direct exact-node delivery exists at this gate, and selector
+/// policies arrive with label routing (G6/G9).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoutingPolicy {
+  /// Delivers directly over the authenticated session to the exact
+  /// destination node.
+  Direct,
+}
 
 /// The maximum number of metadata entries in one packet (ADR-0002 bounded
 /// collection).
@@ -52,14 +61,14 @@ pub enum PacketTarget {
 /// The caller-selected routing policy for one packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PacketPolicy {
-  routing_policy: QualifiedTag,
+  routing_policy: RoutingPolicy,
   load_balancing: Option<QualifiedTag>,
   max_hops: u32,
 }
 
 impl PacketPolicy {
   /// Selects a routing policy and a nonzero hop budget.
-  pub fn new(routing_policy: QualifiedTag, max_hops: u32) -> Result<Self> {
+  pub fn new(routing_policy: RoutingPolicy, max_hops: u32) -> Result<Self> {
     if max_hops == 0 {
       return Err(Error::invalid_input("packet hop budget"));
     }
@@ -77,7 +86,7 @@ impl PacketPolicy {
     self
   }
 
-  pub fn routing_policy(&self) -> &QualifiedTag {
+  pub fn routing_policy(&self) -> &RoutingPolicy {
     &self.routing_policy
   }
 

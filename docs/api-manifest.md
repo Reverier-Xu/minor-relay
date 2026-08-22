@@ -450,11 +450,16 @@ pub enum PacketTarget {
 
 pub struct PacketPolicy { /* private explicit policy selection */ }
 impl PacketPolicy {
-    pub fn new(routing_policy: QualifiedTag, max_hops: u32) -> Result<Self>;
+    pub fn new(routing_policy: RoutingPolicy, max_hops: u32) -> Result<Self>;
     pub fn load_balancer(self, value: QualifiedTag) -> Self;
-    pub fn routing_policy(&self) -> &QualifiedTag;
+    pub fn routing_policy(&self) -> &RoutingPolicy;
     pub fn load_balancing_policy(&self) -> Option<&QualifiedTag>;
     pub fn max_hops(&self) -> u32;
+}
+
+#[non_exhaustive]
+pub enum RoutingPolicy {
+    Direct,
 }
 
 pub struct PacketMetadata { /* private bounded canonical map */ }

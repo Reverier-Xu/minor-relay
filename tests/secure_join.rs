@@ -269,11 +269,7 @@ fn metadata() -> PacketMetadata {
 }
 
 fn policy() -> PacketPolicy {
-  PacketPolicy::new(
-    QualifiedTag::parse("relay.woooo.tech/policies/direct").unwrap(),
-    1,
-  )
-  .unwrap()
+  PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 1).unwrap()
 }
 
 #[tokio::test]

@@ -7,7 +7,6 @@ use crate::{
   Shutdown, StopListener, TraceId, WaitForShutdown,
   api::{BoxFuture, Entropy},
   extension_registry::ExtensionRegistry,
-  packet::DIRECT_ROUTING_POLICY,
   runtime::RuntimeClient,
 };
 
@@ -140,9 +139,6 @@ impl NodeHandle {
     let PacketTarget::Exact(_) = &target;
     if policy.load_balancing_policy().is_some() {
       return Err(Error::invalid_input("packet load balancer"));
-    }
-    if policy.routing_policy().as_str() != DIRECT_ROUTING_POLICY {
-      return Err(Error::unsupported("packet routing policy"));
     }
     if !self.extensions.has_protocol(&protocol) {
       return Err(Error::unsupported("packet protocol"));
