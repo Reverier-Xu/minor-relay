@@ -137,7 +137,15 @@ async fn supervise(
   let mut lifecycle = LifecyclePublisher::new(state);
   lifecycle.publish(LifecycleSnapshot::running());
   if ready.send(()).is_err() {
-    finish_shutdown(control, tasks, dependencies, &mut lifecycle, None).await;
+    finish_shutdown(
+      control,
+      tasks,
+      dependencies,
+      Vec::new(),
+      &mut lifecycle,
+      None,
+    )
+    .await;
     return;
   }
 
@@ -152,10 +160,12 @@ async fn supervise(
         };
         match message {
       Control::Shutdown { reply } => {
+        let (dependencies, drained) = supervisor.into_dependencies();
         finish_shutdown(
           control,
           tasks,
-          supervisor.into_dependencies(),
+          dependencies,
+          drained,
           &mut lifecycle,
           Some(reply),
         )
@@ -237,19 +247,14 @@ async fn supervise(
       }
     }
   }
-  finish_shutdown(
-    control,
-    tasks,
-    supervisor.into_dependencies(),
-    &mut lifecycle,
-    None,
-  )
-  .await;
+  let (dependencies, drained) = supervisor.into_dependencies();
+  finish_shutdown(control, tasks, dependencies, drained, &mut lifecycle, None).await;
 }
 
 async fn finish_shutdown(
   mut control: mpsc::Receiver<Control>, mut tasks: JoinSet<()>, dependencies: RuntimeDependencies,
-  lifecycle: &mut LifecyclePublisher, first_reply: Option<oneshot::Sender<ShutdownOutcome>>,
+  drained: Vec<tokio::task::JoinHandle<()>>, lifecycle: &mut LifecyclePublisher,
+  first_reply: Option<oneshot::Sender<ShutdownOutcome>>,
 ) {
   lifecycle.publish(LifecycleSnapshot::shutting_down());
   control.close();
@@ -259,6 +264,12 @@ async fn finish_shutdown(
     queued_replies.push(reply);
   }
   tasks.shutdown().await;
+  // Await the aborted accept-side and anti-entropy driver tasks so their
+  // storage captures are dropped before the shutdown reply returns (a
+  // restarted node on the same factory must not race the release).
+  for handle in drained {
+    let _ = handle.await;
+  }
   drop(control);
   drop(dependencies);
 
@@ -409,12 +420,13 @@ impl Supervisor {
     }
   }
 
-  fn into_dependencies(mut self) -> RuntimeDependencies {
+  fn into_dependencies(mut self) -> (RuntimeDependencies, Vec<tokio::task::JoinHandle<()>>) {
     // Every open session task observes the shutdown signal and closes its
     // connection instead of being orphaned when the supervisor exits; the
     // tracked tasks (accept side and the anti-entropy driver) are aborted
-    // and awaited so their storage captures are dropped before a restarted
-    // node reopens the same factory.
+    // and their handles returned so the shutdown path can await them and
+    // their storage captures are deterministically dropped before a
+    // restarted node reopens the same factory.
     let _ = self.shutdown_tx.send(());
     let mut aborted = Vec::new();
     if let Some(driver) = self.sync_driver.take() {
@@ -427,8 +439,7 @@ impl Supervisor {
         aborted.push(handle);
       }
     }
-    drop(aborted);
-    self.dependencies
+    (self.dependencies, aborted)
   }
 
   async fn create_cluster(&mut self) -> Result<ClusterView> {
