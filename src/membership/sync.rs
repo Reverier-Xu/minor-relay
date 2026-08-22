@@ -291,6 +291,34 @@ pub(crate) async fn ensure_local_descriptor(
   Ok(())
 }
 
+/// The local highest verified issuer snapshot, resolved through the
+/// trusted issuer anchor (the cluster creator, or the member's admission
+/// grant issuer).
+pub(crate) async fn local_latest_snapshot(
+  context: &Arc<LocalIdentityContext>,
+) -> Result<Option<TrustSnapshotV1>> {
+  let store = context.store();
+  let genesis = existing_cluster(context).await.unwrap_or(None);
+  let trusted_issuer = match &genesis {
+    Some(genesis) => (genesis.creator().clone(), genesis.creator_key().clone()),
+    None => {
+      let local = context.identity().node().clone();
+      trust_store::trusted_issuer(store, &local)
+        .await?
+        .ok_or_else(|| Error::not_ready("local cluster"))?
+    }
+  };
+  let cluster = match &genesis {
+    Some(genesis) => genesis.cluster().clone(),
+    None => crate::identity::genesis::local_cluster(context)
+      .await?
+      .ok_or_else(|| Error::not_ready("local cluster"))?
+      .cluster()
+      .clone(),
+  };
+  trust_store::latest_snapshot_ctx(store, &cluster, &trusted_issuer.0, &trusted_issuer.1).await
+}
+
 /// The issuer refreshes its trust snapshot when its admitted binding set
 /// changed: enumerate the durable bindings, sign revision `latest + 1`,
 /// and persist. Non-creators are a no-op. Returns the latest snapshot.
@@ -389,7 +417,13 @@ pub(crate) async fn sync_tick(
   if !local_endpoints.is_empty() {
     ensure_local_descriptor(context, keys, entropy, local_endpoints.to_vec()).await?;
   }
-  let snapshot = refresh_issuer_snapshot(context, keys, entropy).await?;
+  let snapshot = match refresh_issuer_snapshot(context, keys, entropy).await? {
+    Some(snapshot) => Some(snapshot),
+    // A member relays the highest verified issuer snapshot it holds, so
+    // the grant set propagates across the sparse topology even when the
+    // issuer's direct sessions are not the whole mesh (SC-G05-P0-25).
+    None => local_latest_snapshot(context).await?,
+  };
   let page =
     page_sync::emit_page_ctx(store, None, crate::membership::page::DEFAULT_PAGE_LIMIT).await?;
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
