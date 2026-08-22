@@ -25,8 +25,8 @@ use super::{
   signature::{ADMISSION_GRANT_V1_DOMAIN, signature_message},
 };
 use crate::{
-  CommitOutcome, Digest, Error, NodeId, PublicKey, ReconcileOutcome, Result, StoreExpectation,
-  StoreOperation, StoreValue, TransactionId,
+  Digest, Error, NodeId, PublicKey, Result, StoreExpectation, StoreOperation, StoreValue,
+  TransactionId,
   api::Entropy,
   provider::KeyProvider,
   storage::receipt::{ReceiptReferenceChange, ReceiptReferenceToken},
