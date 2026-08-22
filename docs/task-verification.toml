@@ -439,7 +439,7 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G05-03"
 verification_id = "VERIFY-G05-03"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
@@ -452,7 +452,7 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G05-04"
 verification_id = "VERIFY-G05-04"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
