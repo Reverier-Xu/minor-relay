@@ -531,18 +531,27 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
     .enumerate()
     .map(|(index, node)| (node.id.clone(), index))
     .collect();
-  let mut undirected: std::collections::BTreeSet<(u8, u8)> = std::collections::BTreeSet::new();
+  // A session is a real edge only when BOTH endpoints report a connected
+  // session to the other: a half-open session (one side's entry dead) is
+  // not part of the topology.
+  let mut directed: Vec<std::collections::BTreeSet<u8>> =
+    vec![std::collections::BTreeSet::new(); nodes.len()];
   for (index, node) in nodes.iter().enumerate() {
     for edge in topology_edges(node).await {
       if edge.connected()
         && edge.source() == &node.id
         && let Some(peer_index) = index_of.get(edge.destination())
       {
-        let (left, right) = (
-          (index as u8).min(*peer_index as u8),
-          (index as u8).max(*peer_index as u8),
-        );
-        undirected.insert((left, right));
+        directed[index].insert(*peer_index as u8);
+      }
+    }
+  }
+  let mut undirected: std::collections::BTreeSet<(u8, u8)> = std::collections::BTreeSet::new();
+  for left in 0..nodes.len() {
+    for right in directed[left].iter().copied() {
+      let right = right as usize;
+      if directed[right].contains(&(left as u8)) {
+        undirected.insert((left.min(right) as u8, left.max(right) as u8));
       }
     }
   }
