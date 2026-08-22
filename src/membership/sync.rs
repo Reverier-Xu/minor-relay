@@ -408,6 +408,7 @@ async fn sign_snapshot(
 pub(crate) async fn sync_tick(
   context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
   sessions: &SessionTable, runtime: &RuntimeClient, local_endpoints: &[crate::Endpoint],
+  last_snapshot_rev: &mut u64,
 ) -> Result<()> {
   let store = context.store();
   // Nothing to advertise at startup: the supervisor publishes the local
@@ -427,9 +428,15 @@ pub(crate) async fn sync_tick(
   let page =
     page_sync::emit_page_ctx(store, None, crate::membership::page::DEFAULT_PAGE_LIMIT).await?;
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
+  // A snapshot is sent only when its revision advanced: the grant set is
+  // unchanged most ticks, and re-sending the same revision to every
+  // session every tick floods the store with idempotent commits.
   let snapshot_payload = match snapshot {
-    Some(snapshot) => Some(SyncPayload::Snapshot(ByteVec::from(snapshot.encode()?))),
-    None => None,
+    Some(snapshot) if snapshot.revision() != *last_snapshot_rev => {
+      *last_snapshot_rev = snapshot.revision();
+      Some(SyncPayload::Snapshot(ByteVec::from(snapshot.encode()?)))
+    }
+    _ => None,
   };
   let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
   let peers: Vec<NodeId> = sessions

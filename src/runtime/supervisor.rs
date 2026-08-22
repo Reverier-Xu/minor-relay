@@ -345,6 +345,7 @@ impl Supervisor {
       tokio::spawn(async move {
         let mut timer = tokio::time::interval(driver_interval);
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_snapshot_rev = 0_u64;
         loop {
           tokio::select! {
             changed = driver_shutdown.changed() => {
@@ -363,6 +364,7 @@ impl Supervisor {
                 &driver_sessions,
                 &driver_runtime,
                 &endpoints,
+                &mut last_snapshot_rev,
               )
               .await;
             }
