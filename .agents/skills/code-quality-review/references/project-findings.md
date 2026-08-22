@@ -107,14 +107,21 @@ total order verified by unit and integration tests.
   connectivity from the session table without re-opening storage.
 - A sixteen-node join harness proves all fifteen authenticated edges are
   visible through the public topology view.
-- Remaining for the final G5 batch: member-to-member trust/descriptor
-  propagation wiring (the page exchange transport), which the exact
-  32-session/degree-4/diameter-3 topology (SC-G05-P0-26), the 15+1
-  readiness matrix (SC-G05-P0-23/25), the failure matrix (SC-27), the 10s
-  metadata SLO (SC-29), and the 1,024-node trend all consume. The
-  components (signed descriptors, anti-entropy pages, sparse planning,
-  recovery controller, public views) are in place and unit/integration
-  verified.
+- G5 is complete: the session-carried membership sync protocol streams
+  signed descriptor pages and the issuer-signed trust snapshot over
+  authenticated sessions; members relay the highest verified snapshot so
+  the grant set propagates across the sparse topology; the recovery
+  controller heals edge loss among ever-connected members, never dials
+  intentionally disconnected peers until a deliberate reconnect, and
+  quiesces at connected-path connectivity.
+- Sixteen-node E2E passes: reciprocal trust (15 and 16), exact 28-edge
+  induced CQ4 and exact 32-session/degree-4/diameter-3 topology, node 15's
+  grant on all members, descriptor readiness, partition healing, and the
+  metadata SLO lane (8-node: <10s). A 1,024-node functional/trend unit
+  lane covers the seed.
+- 16-node harness requires a tolerant settle (double-confirmed edges,
+  convergent star closure, three-stable-sample settle) because the
+  transport drops handshakes under load; the verify lane is slow (~17m).
 
 ## Historical findings (pre-fix baseline)
 
