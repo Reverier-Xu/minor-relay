@@ -459,10 +459,9 @@ mod tests {
   // ---- SC-G04-P0-17/18: durable persistence and paged observations ----
 
   fn factory() -> std::sync::Arc<dyn crate::provider::StorageFactory> {
-    let reference = std::sync::Arc::new(crate::storage::contract::ReferenceFactory::new(
+    std::sync::Arc::new(crate::storage::contract::ReferenceFactory::new(
       crate::storage::contract::required_capabilities(),
-    ));
-    reference
+    ))
   }
 
   #[tokio::test]
@@ -645,7 +644,10 @@ pub(crate) mod store {
         continue;
       }
       let node = NodeId::parse(&String::from_utf8_lossy(entry.key().as_bytes()))?;
-      let key = PublicKey::from_bytes(bytes[1..33].try_into().unwrap());
+      let key = PublicKey::from_bytes(
+        <[u8; 32]>::try_from(&bytes[1..33])
+          .map_err(|_| crate::Error::invalid_input("trust binding key"))?,
+      );
       bindings.push(TrustBinding::new(node, key));
     }
     bindings.sort_by(|left, right| left.node().cmp(right.node()));
