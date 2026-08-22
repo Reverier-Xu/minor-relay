@@ -658,6 +658,52 @@ fn digest_store_value(value: &[u8]) -> Digest {
   Digest::from_bytes(hasher.finalize().into())
 }
 
+/// Evaluates one conditional operation against the current entries and
+/// receipts. This is the single definition shared by every storage adapter
+/// AND the reference provider in the storage contract suite, so a condition
+/// bug cannot hide by being copied into both the oracle and the adapter
+/// under test.
+pub(crate) fn condition_matches(
+  entries: &std::collections::BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
+  receipts: &std::collections::BTreeMap<TransactionId, CommitReceipt>,
+  operation: &StoreOperation,
+) -> bool {
+  match operation {
+    StoreOperation::Check {
+      namespace,
+      key,
+      expected,
+    }
+    | StoreOperation::Put {
+      namespace,
+      key,
+      expected,
+      ..
+    } => expectation_matches(entries.get(&(namespace.clone(), key.clone())), expected),
+    StoreOperation::Delete {
+      namespace,
+      key,
+      expected,
+    } => entries
+      .get(&(namespace.clone(), key.clone()))
+      .is_some_and(|value| value.digest() == expected),
+    StoreOperation::ForgetReceipt {
+      transaction,
+      expected_operation_digest,
+    } => receipts
+      .get(transaction)
+      .is_some_and(|receipt| receipt.operation_digest() == expected_operation_digest),
+  }
+}
+
+fn expectation_matches(value: Option<&StoreValue>, expected: &StoreExpectation) -> bool {
+  match (value, expected) {
+    (None, StoreExpectation::Absent) => true,
+    (Some(value), StoreExpectation::Exact(digest)) => value.digest() == digest,
+    _ => false,
+  }
+}
+
 fn digest_store_operations(base_revision: &StoreRevision, operations: &[StoreOperation]) -> Digest {
   let mut hasher = Sha256::new();
   hasher.update(STORE_TRANSACTION_DOMAIN);

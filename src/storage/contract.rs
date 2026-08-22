@@ -1,5 +1,5 @@
 use std::{
-  collections::{BTreeMap, HashMap},
+  collections::BTreeMap,
   future,
   sync::{
     Arc, Mutex,
@@ -33,7 +33,7 @@ pub(crate) struct ReferenceState {
   generation: u64,
   open: bool,
   pub(crate) entries: BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
-  pub(crate) receipts: HashMap<TransactionId, CommitReceipt>,
+  pub(crate) receipts: BTreeMap<TransactionId, CommitReceipt>,
 }
 
 #[derive(Debug)]
@@ -51,7 +51,7 @@ impl ReferenceFactory {
         generation: 1,
         open: false,
         entries: BTreeMap::new(),
-        receipts: HashMap::new(),
+        receipts: BTreeMap::new(),
       })),
       commit_calls: Arc::new(AtomicUsize::new(0)),
     }
@@ -312,7 +312,9 @@ fn reference_commit(
   if !transaction
     .operations()
     .iter()
-    .all(|operation| condition_matches(&state, operation))
+    .all(|operation| {
+      crate::provider::condition_matches(&state.entries, &state.receipts, operation)
+    })
   {
     return Ok(CommitOutcome::Conflict);
   }
@@ -363,48 +365,6 @@ fn reference_commit(
     .receipts
     .insert(transaction.id().clone(), receipt.clone());
   Ok(CommitOutcome::Committed(receipt))
-}
-
-fn condition_matches(state: &ReferenceState, operation: &StoreOperation) -> bool {
-  match operation {
-    StoreOperation::Check {
-      namespace,
-      key,
-      expected,
-    }
-    | StoreOperation::Put {
-      namespace,
-      key,
-      expected,
-      ..
-    } => expectation_matches(
-      state.entries.get(&(namespace.clone(), key.clone())),
-      expected,
-    ),
-    StoreOperation::Delete {
-      namespace,
-      key,
-      expected,
-    } => state
-      .entries
-      .get(&(namespace.clone(), key.clone()))
-      .is_some_and(|value| value.digest() == expected),
-    StoreOperation::ForgetReceipt {
-      transaction,
-      expected_operation_digest,
-    } => state
-      .receipts
-      .get(transaction)
-      .is_some_and(|receipt| receipt.operation_digest() == expected_operation_digest),
-  }
-}
-
-fn expectation_matches(value: Option<&StoreValue>, expected: &StoreExpectation) -> bool {
-  match (value, expected) {
-    (None, StoreExpectation::Absent) => true,
-    (Some(value), StoreExpectation::Exact(digest)) => value.digest() == digest,
-    _ => false,
-  }
 }
 
 pub(super) async fn run_storage_contract<F>(fresh: F)

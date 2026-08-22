@@ -52,7 +52,7 @@ use crate::hex::{decode as hex_decode_bytes, encode as hex_encode};
 use super::document::{GenerationDocument, GenerationInput, LockHeader};
 use crate::{
   BoxFuture, CommitOutcome, CommitReceipt, Digest, DurabilityLevel, Error, ProviderErrorContext,
-  ProviderErrorKind, Result, StoreCapabilities, StoreEntry, StoreExpectation, StoreKey,
+  ProviderErrorKind, Result, StoreCapabilities, StoreEntry, StoreKey,
   StoreNamespace, StoreOperation, StoreRequirements, StoreRevision, StoreTransaction, StoreValue,
   TransactionId,
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
@@ -326,7 +326,9 @@ impl JsonStorage {
       || !transaction
         .operations()
         .iter()
-        .all(|operation| condition_matches(&state.entries, &state.receipts, operation))
+        .all(|operation| {
+          crate::provider::condition_matches(&state.entries, &state.receipts, operation)
+        })
     {
       return Ok(CommitOutcome::Conflict);
     }
@@ -481,46 +483,6 @@ impl JsonStorage {
       });
     }
     Ok(CommitOutcome::Committed(receipt))
-  }
-}
-
-fn condition_matches(
-  entries: &BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
-  receipts: &BTreeMap<TransactionId, CommitReceipt>, operation: &StoreOperation,
-) -> bool {
-  match operation {
-    StoreOperation::Check {
-      namespace,
-      key,
-      expected,
-    }
-    | StoreOperation::Put {
-      namespace,
-      key,
-      expected,
-      ..
-    } => expectation_matches(entries.get(&(namespace.clone(), key.clone())), expected),
-    StoreOperation::Delete {
-      namespace,
-      key,
-      expected,
-    } => entries
-      .get(&(namespace.clone(), key.clone()))
-      .is_some_and(|value| value.digest() == expected),
-    StoreOperation::ForgetReceipt {
-      transaction,
-      expected_operation_digest,
-    } => receipts
-      .get(transaction)
-      .is_some_and(|receipt| receipt.operation_digest() == expected_operation_digest),
-  }
-}
-
-fn expectation_matches(value: Option<&StoreValue>, expected: &StoreExpectation) -> bool {
-  match (value, expected) {
-    (None, StoreExpectation::Absent) => true,
-    (Some(value), StoreExpectation::Exact(digest)) => value.digest() == digest,
-    _ => false,
   }
 }
 
