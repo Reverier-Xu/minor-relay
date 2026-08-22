@@ -125,7 +125,7 @@ async fn supervise(
   }
 
   let mut supervisor = Supervisor::new(dependencies);
-  let mut recovery_timer = tokio::time::interval(std::time::Duration::from_millis(100));
+  let mut recovery_timer = tokio::time::interval(std::time::Duration::from_millis(500));
   recovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
   loop {
     tokio::select! {
@@ -265,6 +265,11 @@ struct Supervisor {
   recovery: crate::membership::recovery::RecoveryController,
   recovery_pending: usize,
   published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>>,
+  // Members this node has ever authenticated a session with: the recovery
+  // "known online" set. Recovery restores authenticated paths to exactly
+  // these members (edge-loss healing) and never dials strangers, so it
+  // cannot add edges beyond the caller-configured topology (SC-G05-P0-27).
+  recovery_history: std::collections::BTreeSet<NodeId>,
 }
 
 impl Supervisor {
@@ -380,6 +385,7 @@ impl Supervisor {
       recovery,
       recovery_pending: 0,
       published_endpoints,
+      recovery_history: std::collections::BTreeSet::new(),
     }
   }
 
@@ -464,7 +470,11 @@ impl Supervisor {
         let packet = packet.clone();
         let shutdown = shutdown.clone();
         let task = tokio::spawn(async move {
-          if let Ok(mut connection) = Connection::accept(tcp, config, rules, hint.as_ref()).await {
+          let accepted = Connection::accept(tcp, config, rules, hint.as_ref()).await;
+          let mut connection = match accepted {
+            Ok(connection) => connection,
+            Err(_) => return,
+          };
             match driver.respond(&mut connection).await {
               Ok(session) => {
                 // Keep the authenticated session open: it serves packet
@@ -483,7 +493,6 @@ impl Supervisor {
                 tracing::warn!(kind = ?error.kind(), context = %error, "session establishment failed");
               }
             }
-          }
         });
         if let Ok(mut tasks) = connection_tasks.lock() {
           tasks.push(task.abort_handle());
@@ -862,9 +871,13 @@ impl Supervisor {
   }
 
   /// Closes the authenticated session to one peer (SC-G05-P0-22 partition
-  /// simulation).
-  fn disconnect_peer(&self, peer: &NodeId) -> Result<()> {
-    crate::session::stream::retire_session(&self.dependencies.sessions, peer)
+  /// simulation) and removes it from the recovery known-online set: an
+  /// intentional disconnect is respected by recovery (a real edge loss, by
+  /// contrast, leaves the member online and gets healed on the next cycle).
+  fn disconnect_peer(&mut self, peer: &NodeId) -> Result<()> {
+    crate::session::stream::retire_session(&self.dependencies.sessions, peer)?;
+    self.recovery_history.remove(peer);
+    Ok(())
   }
 
   /// The public recovery observation: whether every known online member
@@ -882,17 +895,16 @@ impl Supervisor {
     )
   }
 
-  /// One recovery observation tick: feed the controller the durable online
-  /// set and the reachable sessions, then dial unreachable members whose
+  /// One recovery observation tick: feed the controller the known-online
+  /// set (members this node ever authenticated a session with) and the
+  /// current direct sessions, then dial unreachable members whose
   /// endpoints are published, through the configured bounded fan-out
   /// (SC-G05-P0-14/17/22: recovery restores authenticated path
-  /// connectivity and quiesces).
+  /// connectivity to known members and quiesces; it never dials strangers
+  /// or the local node, so it cannot add edges beyond the configured
+  /// topology).
   async fn recovery_tick(&mut self, tasks: &mut JoinSet<()>) -> Result<()> {
-    let context = self.context()?;
-    let store = context.store();
-    let bindings = crate::identity::trust::store::trusted_bindings(store).await?;
-    let online: std::collections::BTreeSet<NodeId> = bindings.keys().cloned().collect();
-    let reachable: std::collections::BTreeSet<NodeId> = self
+    let direct: std::collections::BTreeSet<NodeId> = self
       .dependencies
       .sessions
       .lock()
@@ -901,22 +913,31 @@ impl Supervisor {
       .filter(|(_, entry)| entry.alive())
       .map(|(peer, _)| peer.clone())
       .collect();
+    for peer in &direct {
+      self.recovery_history.insert(peer.clone());
+    }
+    let online = self.recovery_history.clone();
     let now = now_seconds();
-    self.recovery.observe(now, &online, &reachable);
+    self.recovery.observe(now, &online, &direct);
     if self.recovery.state() != crate::membership::recovery::RecoveryState::Recovering
       || !self.recovery.due(now)
       || self.recovery_pending >= self.dependencies.config.recovery().fan_out().max(1)
     {
       return Ok(());
     }
-    // Candidates are unreachable members with a published endpoint from
-    // their signed descriptor; reachability stays distinct from the active
-    // topology (SC-G05-P0-11).
+    // Candidates are unreachable known members with a published endpoint
+    // from their signed descriptor; reachability stays distinct from the
+    // active topology and recovery never dials strangers (SC-G05-P0-11/18).
+    let bindings = crate::identity::trust::store::trusted_bindings(self.context()?.store()).await?;
     let mut candidates = std::collections::BTreeSet::new();
-    for member in online.difference(&reachable) {
-      if let Some(public_key) = bindings.get(member)
-        && let Ok(Some(descriptor)) =
-          crate::membership::store::read_descriptor_ctx(store, member, public_key).await
+    for member in online.difference(&direct) {
+      let Some(public_key) = bindings.get(member) else {
+        continue;
+      };
+      let descriptor =
+        crate::membership::store::read_descriptor_ctx(self.context()?.store(), member, public_key)
+          .await;
+      if let Ok(Some(descriptor)) = descriptor
         && let Some(endpoint) = descriptor.endpoints().first()
       {
         candidates.insert((member.clone(), endpoint.clone()));

@@ -687,6 +687,33 @@ pub(crate) mod store {
     Ok(bindings)
   }
 
+  /// The trusted issuer anchor for snapshot verification: on the cluster
+  /// creator this is the creator's own binding; on a member it is the
+  /// issuer of this node's admission grant, resolved to its durable
+  /// binding. The grant is committed at adoption, so the scan is bounded
+  /// by the admission-grant population.
+  pub(crate) async fn trusted_issuer(
+    store: &MetadataStore, local: &NodeId,
+  ) -> Result<Option<(NodeId, PublicKey)>> {
+    let namespace = crate::identity::records::admission_grant_namespace()?;
+    let snapshot = store.snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut issuer = None;
+    while let Some(entry) = scan.next().await? {
+      let grant = crate::identity::records::AdmissionGrantV1::decode(entry.value().as_bytes())
+        .map_err(|_| crate::Error::invalid_input("admission grant decode"))?;
+      if grant.subject() == local {
+        issuer = Some(grant.issuer().clone());
+        break;
+      }
+    }
+    let Some(issuer) = issuer else {
+      return Ok(None);
+    };
+    let bindings = trusted_bindings(store).await?;
+    Ok(bindings.get(&issuer).cloned().map(|key| (issuer, key)))
+  }
+
   /// Commits one verified issuer-snapshot binding into the authoritative
   /// identity store so member-mode dialing and page verification can use
   /// it (the grant-carrying reconnect path). A node already bound to a

@@ -126,45 +126,67 @@ impl PacketConsumer for MembershipSyncConsumer {
     Box::pin(async move {
       let bytes = drain_body(packet.body()).await?;
       let payload = SyncPayload::decode(&bytes)?;
-      let store = self.context.store();
-      match payload {
-        SyncPayload::Page(encoded) => {
-          let trusted = trust_store::trusted_bindings(store).await?;
-          let page = MembershipPage::decode_and_verify(encoded.as_ref(), &trusted)?;
-          let _ = page_sync::apply_page_ctx(store, self.entropy.as_ref(), &page).await?;
-        }
-        SyncPayload::Snapshot(encoded) => {
-          let genesis = existing_cluster(&self.context)
-            .await?
-            .ok_or_else(|| Error::not_ready("local cluster"))?;
-          let snapshot = TrustSnapshotV1::decode_and_verify(
-            encoded.as_ref(),
-            genesis.cluster(),
-            genesis.creator(),
-            genesis.creator_key(),
-          )?;
-          trust_store::persist_snapshot_ctx(store, self.entropy.as_ref(), &snapshot).await?;
-          for binding in snapshot.bindings() {
-            trust_store::persist_binding_ctx(
-              store,
-              self.entropy.as_ref(),
-              binding.node(),
-              binding.key(),
-            )
-            .await?;
-            trust_store::adopt_binding_ctx(
-              store,
-              self.entropy.as_ref(),
-              binding.node(),
-              binding.key(),
-            )
-            .await?;
-          }
-        }
-      }
-      Ok(())
+      accept_payload(self, &payload).await
     })
   }
+}
+
+async fn accept_payload(consumer: &MembershipSyncConsumer, payload: &SyncPayload) -> Result<()> {
+  let store = consumer.context.store();
+  match payload {
+    SyncPayload::Page(encoded) => {
+      let trusted = trust_store::trusted_bindings(store).await?;
+      let page = MembershipPage::decode_and_verify(encoded.as_ref(), &trusted)?;
+      let _ = page_sync::apply_page_ctx(store, consumer.entropy.as_ref(), &page).await?;
+    }
+    SyncPayload::Snapshot(encoded) => {
+      // The trusted issuer is the cluster creator; a member (which holds a
+      // pointer but no genesis record) resolves it through its own
+      // admission grant's issuer binding instead.
+      let genesis = existing_cluster(&consumer.context).await.unwrap_or(None);
+      let trusted_issuer = match &genesis {
+        Some(genesis) => (genesis.creator().clone(), genesis.creator_key().clone()),
+        None => {
+          let local = consumer.context.identity().node().clone();
+          trust_store::trusted_issuer(store, &local)
+            .await?
+            .ok_or_else(|| Error::not_ready("local cluster"))?
+        }
+      };
+      let cluster = match &genesis {
+        Some(genesis) => genesis.cluster().clone(),
+        None => crate::identity::genesis::local_cluster(&consumer.context)
+          .await?
+          .ok_or_else(|| Error::not_ready("local cluster"))?
+          .cluster()
+          .clone(),
+      };
+      let snapshot = TrustSnapshotV1::decode_and_verify(
+        encoded.as_ref(),
+        &cluster,
+        &trusted_issuer.0,
+        &trusted_issuer.1,
+      )?;
+      trust_store::persist_snapshot_ctx(store, consumer.entropy.as_ref(), &snapshot).await?;
+      for binding in snapshot.bindings() {
+        trust_store::persist_binding_ctx(
+          store,
+          consumer.entropy.as_ref(),
+          binding.node(),
+          binding.key(),
+        )
+        .await?;
+        trust_store::adopt_binding_ctx(
+          store,
+          consumer.entropy.as_ref(),
+          binding.node(),
+          binding.key(),
+        )
+        .await?;
+      }
+    }
+  }
+  Ok(())
 }
 
 /// Reads one complete bounded body from an admitted sync stream.
@@ -211,6 +233,12 @@ pub(crate) async fn ensure_local_descriptor(
     if same_endpoints {
       return Ok(());
     }
+    // An empty candidate set never downgrades published endpoints: the
+    // startup tick fires before any listener exists and must not bump the
+    // revision (SC-G05-P0-28 endpoint stability).
+    if endpoints.is_empty() {
+      return Ok(());
+    }
   }
   let revision = existing
     .as_ref()
@@ -242,8 +270,12 @@ pub(crate) async fn refresh_issuer_snapshot(
   context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
 ) -> Result<Option<TrustSnapshotV1>> {
   let store = context.store();
-  let Some(genesis) = existing_cluster(context).await? else {
-    return Ok(None);
+  // A member holds a cluster pointer but no genesis record, so
+  // `existing_cluster` reports the missing genesis as corruption; either
+  // way only the cluster creator refreshes the snapshot.
+  let genesis = match existing_cluster(context).await {
+    Ok(Some(genesis)) => genesis,
+    Ok(None) | Err(_) => return Ok(None),
   };
   if genesis.creator() != context.identity().node() {
     return Ok(None);
@@ -266,12 +298,26 @@ pub(crate) async fn refresh_issuer_snapshot(
     }
     let revision = latest.revision().saturating_add(1);
     let snapshot = sign_snapshot(context, keys, entropy, &genesis, current, revision).await?;
-    trust_store::persist_snapshot_ctx(store, entropy.as_ref(), &snapshot).await?;
+    persist_snapshot_with_bindings(store, entropy, &snapshot).await?;
     return Ok(Some(snapshot));
   }
   let snapshot = sign_snapshot(context, keys, entropy, &genesis, current, 1).await?;
-  trust_store::persist_snapshot_ctx(store, entropy.as_ref(), &snapshot).await?;
+  persist_snapshot_with_bindings(store, entropy, &snapshot).await?;
   Ok(Some(snapshot))
+}
+
+/// Persists one verified snapshot plus its binding observations, so the
+/// issuer's own trust page and every receiver's page expose the exact
+/// binding set (SC-G05-P0-25).
+async fn persist_snapshot_with_bindings(
+  store: &crate::storage::MetadataStore, entropy: &Arc<dyn Entropy>, snapshot: &TrustSnapshotV1,
+) -> Result<()> {
+  trust_store::persist_snapshot_ctx(store, entropy.as_ref(), snapshot).await?;
+  for binding in snapshot.bindings() {
+    trust_store::persist_binding_ctx(store, entropy.as_ref(), binding.node(), binding.key())
+      .await?;
+  }
+  Ok(())
 }
 
 async fn sign_snapshot(
@@ -308,7 +354,13 @@ pub(crate) async fn sync_tick(
   sessions: &SessionTable, runtime: &RuntimeClient, local_endpoints: &[crate::Endpoint],
 ) -> Result<()> {
   let store = context.store();
-  ensure_local_descriptor(context, keys, entropy, local_endpoints.to_vec()).await?;
+  // Nothing to advertise at startup: the supervisor publishes the local
+  // descriptor (with endpoints) when a query or listener first needs it,
+  // so the anti-entropy loop never races a transient empty endpoint set
+  // into a revision bump.
+  if !local_endpoints.is_empty() {
+    ensure_local_descriptor(context, keys, entropy, local_endpoints.to_vec()).await?;
+  }
   let snapshot = refresh_issuer_snapshot(context, keys, entropy).await?;
   let page =
     page_sync::emit_page_ctx(store, None, crate::membership::page::DEFAULT_PAGE_LIMIT).await?;
