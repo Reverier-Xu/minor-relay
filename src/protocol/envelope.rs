@@ -1,6 +1,5 @@
+use super::wire::MAGIC_BYTES as MAGIC;
 use crate::{Error, Result};
-
-const MAGIC: [u8; 4] = *b"MRLY";
 pub(crate) const PRELUDE_LEN: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -64,8 +64,8 @@ use crate::{
   identity::signature::{body_digest, signature_message, verify_strict},
 };
 
-const PROTOCOL_MAGIC: &str = "MRLY";
-const BASE_SCHEMA_ID: u64 = 0x0001;
+const PROTOCOL_MAGIC: &str = crate::protocol::wire::MAGIC;
+const BASE_SCHEMA_ID: u64 = crate::protocol::wire::BASE_SCHEMA_ID as u64;
 const PROTOCOL_POSITIONS: u8 = 5;
 const GRANT_DELIVERY_POSITION: u8 = 6;
 const GENERATION_LEN: usize = 16;
@@ -486,31 +486,37 @@ impl Handshake {
   /// selection divergence before the machine advances.
   pub(crate) fn receive(&mut self, bytes: &[u8]) -> Result<(), HandshakeError> {
     validate_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
-    let (arity, position) = probe(bytes)?;
-    if arity != u64::from(position_arity(position)) {
+    let (arity, kind) = probe(bytes)?;
+    if arity != u64::from(position_arity(kind)) {
       return Err(HandshakeError::UnknownField);
     }
-    if position_sender(position) == self.config.role {
+    if position_sender(kind) == self.config.role {
       return Err(HandshakeError::RoleSwapped);
     }
-    if position == GRANT_DELIVERY_POSITION {
+    if kind == HandshakeKind::AdmissionGrantDelivery {
       return self.receive_grant_delivery(bytes);
     }
     if self.completed >= PROTOCOL_POSITIONS {
       return Err(HandshakeError::Terminal);
     }
+    let position = kind.position();
     if position <= self.completed {
       return Err(HandshakeError::Duplicate);
     }
     if position > self.completed + 1 {
       return Err(HandshakeError::OutOfOrder);
     }
-    match position {
-      1 => self.receive_initiator_hello(bytes)?,
-      2 => self.receive_responder_hello(bytes)?,
-      3 => self.receive_proof(bytes, SESSION_V1_RESPONDER_DOMAIN, ProofRole::Responder)?,
-      4 => self.receive_proof(bytes, SESSION_V1_INITIATOR_DOMAIN, ProofRole::Initiator)?,
-      _ => self.receive_confirmation(bytes)?,
+    match kind {
+      HandshakeKind::InitiatorHello => self.receive_initiator_hello(bytes)?,
+      HandshakeKind::ResponderHello => self.receive_responder_hello(bytes)?,
+      HandshakeKind::ResponderProof => {
+        self.receive_proof(bytes, SESSION_V1_RESPONDER_DOMAIN, ProofRole::Responder)?
+      }
+      HandshakeKind::InitiatorProof => {
+        self.receive_proof(bytes, SESSION_V1_INITIATOR_DOMAIN, ProofRole::Initiator)?
+      }
+      HandshakeKind::SelectionConfirmation => self.receive_confirmation(bytes)?,
+      HandshakeKind::AdmissionGrantDelivery => unreachable!(),
     }
     self.completed += 1;
     Ok(())
@@ -789,7 +795,7 @@ pub(crate) fn initiator_session_message(transcript: &[u8]) -> Vec<u8> {
   signature_message(SESSION_V1_INITIATOR_DOMAIN, transcript)
 }
 
-fn probe(bytes: &[u8]) -> Result<(u64, u8), HandshakeError> {
+fn probe(bytes: &[u8]) -> Result<(u64, HandshakeKind), HandshakeError> {
   let mut decoder = Decoder::new(bytes);
   let arity = decoder
     .array()
@@ -802,36 +808,24 @@ fn probe(bytes: &[u8]) -> Result<(u64, u8), HandshakeError> {
   let kind = decoder.u64().map_err(|_| HandshakeError::Malformed {
     context: "handshake message",
   })?;
-  let position = match kind {
-    KIND_INITIATOR_HELLO => 1,
-    KIND_RESPONDER_HELLO => 2,
-    KIND_RESPONDER_PROOF => 3,
-    KIND_INITIATOR_PROOF => 4,
-    KIND_SELECTION_CONFIRMATION => 5,
-    KIND_ADMISSION_GRANT_DELIVERY => GRANT_DELIVERY_POSITION,
-    _ => {
-      return Err(HandshakeError::Malformed {
-        context: "handshake message kind",
-      });
-    }
-  };
-  Ok((arity, position))
+  let handshake = HandshakeKind::ALL
+    .into_iter()
+    .find(|handshake| u64::from(handshake.kind_id()) == kind)
+    .ok_or(HandshakeError::Malformed {
+      context: "handshake message kind",
+    })?;
+  Ok((arity, handshake))
 }
 
-const fn position_sender(position: u8) -> Role {
-  match position {
-    1 | 4 => Role::Initiator,
+const fn position_sender(kind: HandshakeKind) -> Role {
+  match kind {
+    HandshakeKind::InitiatorHello | HandshakeKind::InitiatorProof => Role::Initiator,
     _ => Role::Responder,
   }
 }
 
-const fn position_arity(position: u8) -> u8 {
-  match position {
-    1 => 8,
-    2 => 6,
-    3 | 4 => 3,
-    _ => 2,
-  }
+const fn position_arity(kind: HandshakeKind) -> u8 {
+  kind.arity()
 }
 
 fn decode_wire<T>(bytes: &[u8]) -> Result<T, HandshakeError>

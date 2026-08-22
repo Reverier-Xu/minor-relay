@@ -57,7 +57,36 @@ impl HandshakeKind {
       Self::AdmissionGrantDelivery => 0x0006,
     }
   }
+
+  /// The lockstep exchange position (1..=6); position six is the join-only
+  /// post-authentication grant delivery.
+  pub(crate) const fn position(self) -> u8 {
+    match self {
+      Self::InitiatorHello => 1,
+      Self::ResponderHello => 2,
+      Self::ResponderProof => 3,
+      Self::InitiatorProof => 4,
+      Self::SelectionConfirmation => 5,
+      Self::AdmissionGrantDelivery => 6,
+    }
+  }
+
+  /// The deterministic-CBOR array arity of the message at this position.
+  pub(crate) const fn arity(self) -> u8 {
+    match self {
+      Self::InitiatorHello => 8,
+      Self::ResponderHello => 6,
+      Self::ResponderProof | Self::InitiatorProof => 3,
+      Self::SelectionConfirmation | Self::AdmissionGrantDelivery => 2,
+    }
+  }
 }
+
+/// The fixed protocol magic text, single-sourced so the transcript text
+/// form and the prelude byte form cannot diverge.
+pub(crate) const MAGIC: &str = "MRLY";
+/// The four prelude magic bytes, derived from the canonical [`MAGIC`] text.
+pub(crate) const MAGIC_BYTES: [u8; 4] = *b"MRLY";
 
 /// One published packet-stream message kind of base schema `0x0001`
 /// (ADR-0007).
