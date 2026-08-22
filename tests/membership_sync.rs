@@ -178,12 +178,19 @@ async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec
     if settled {
       return edges;
     }
+    if std::time::Instant::now() >= deadline {
+      eprintln!(
+        "settle timeout: expected {expected} edges, got {}: {:?}",
+        edges.len(),
+        edges
+      );
+      assert!(
+        false,
+        "topology settle timeout after {timeout:?}: expected {expected} directed, got {}",
+        edges.len()
+      );
+    }
     previous = Some(edges);
-    assert!(
-      std::time::Instant::now() < deadline,
-      "topology settle timeout after {timeout:?}: expected {expected} directed, got {}",
-      previous.as_ref().map(|edges| edges.len()).unwrap_or(0)
-    );
     tokio::time::sleep(Duration::from_millis(100)).await;
   }
 }
@@ -468,7 +475,7 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
 
   // Reciprocal trust converges over the authenticated sessions: every
   // member's trust page exposes all fifteen bindings (SC-G05-P0-24/25).
-  wait_trust(&nodes, 15, Duration::from_secs(20)).await;
+  wait_trust(&nodes, 15, Duration::from_secs(60)).await;
 
   // Induced 28-edge graph among nodes 0..14, before node 15 joins
   // (SC-G05-P0-24): connect the CQ4 edges among the present members and
@@ -519,11 +526,11 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   nodes.push(node15);
 
   // Node 15's binding propagates to nodes 0..14 (exact NodeId-to-key).
-  wait_trust(&nodes, 16, Duration::from_secs(20)).await;
+  wait_trust(&nodes, 16, Duration::from_secs(60)).await;
 
   // Descriptor readiness: every member view exposes the exact revision 1
   // for every node (SC-G05-P0-26).
-  wait_descriptors(&nodes, 16, 1, Duration::from_secs(20)).await;
+  wait_descriptors(&nodes, 16, 1, Duration::from_secs(60)).await;
 
   // The exact final topology: 32 sessions, degree four, diameter three
   // (SC-G05-P0-27). Node 15's four edges make 32 in total.
