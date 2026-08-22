@@ -1,14 +1,14 @@
-use std::{
-  any::{Any, TypeId},
-  sync::Arc,
-};
+use std::sync::Arc;
 
 use crate::{
   Command, ConnectMember, CreateCluster, Error, Event, EventOptions, EventSubscription,
   GetLocalNode, GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus, OutboundPacket,
   PacketMetadata, PacketPolicy, PacketTarget, ProtocolTag, Query, Result, RotateJoinCredential,
-  Shutdown, StopListener, TraceId, WaitForShutdown, api::Entropy,
-  extension_registry::ExtensionRegistry, packet::DIRECT_ROUTING_POLICY, runtime::RuntimeClient,
+  Shutdown, StopListener, TraceId, WaitForShutdown,
+  api::{BoxFuture, Entropy},
+  extension_registry::ExtensionRegistry,
+  packet::DIRECT_ROUTING_POLICY,
+  runtime::RuntimeClient,
 };
 
 #[derive(Clone)]
@@ -16,6 +16,102 @@ pub struct NodeHandle {
   runtime: RuntimeClient,
   entropy: Arc<dyn Entropy>,
   extensions: Arc<ExtensionRegistry>,
+}
+
+/// Executes one typed command against the runtime. Each command implements
+/// this itself, so the handle no longer hardcodes a per-kind TypeId dispatch
+/// table: adding a command requires exactly the struct in `operation.rs`
+/// plus its `DispatchCommand` impl, and the compiler rejects a command that
+/// forgets the impl.
+pub(crate) trait DispatchCommand: Command {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>>;
+}
+
+/// Executes one typed query against the runtime; see [`DispatchCommand`].
+pub(crate) trait DispatchQuery: Query {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>>;
+}
+
+impl DispatchCommand for Shutdown {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.shutdown().await })
+  }
+}
+
+impl DispatchCommand for CreateCluster {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.create_cluster().await })
+  }
+}
+
+impl DispatchCommand for RotateJoinCredential {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.rotate_join_credential().await })
+  }
+}
+
+impl DispatchCommand for Listen {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let endpoint = self.into_endpoint();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.listen(endpoint).await })
+  }
+}
+
+impl DispatchCommand for StopListener {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let listener = self.into_listener();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.stop_listener(listener).await })
+  }
+}
+
+impl DispatchCommand for JoinCluster {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let (receiver, credential) = self.into_parts();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.join_cluster(receiver, credential).await })
+  }
+}
+
+impl DispatchCommand for ConnectMember {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let (receiver, peer) = self.into_parts();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.connect_member(receiver, peer).await })
+  }
+}
+
+impl DispatchQuery for GetNodeStatus {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { Ok(runtime.status()) })
+  }
+}
+
+impl DispatchQuery for WaitForShutdown {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.wait_for_shutdown().await })
+  }
+}
+
+impl DispatchQuery for GetLocalNode {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.local_node().await })
+  }
+}
+
+impl DispatchQuery for GetRoute {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let handle = self.handle().clone();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.route_status(&handle) })
+  }
 }
 
 impl NodeHandle {
@@ -61,63 +157,17 @@ impl NodeHandle {
     ))
   }
 
-  pub async fn command<C: Command>(&self, command: C) -> Result<C::Output> {
-    let id = TypeId::of::<C>();
-    if id == TypeId::of::<Shutdown>() {
-      drop(command);
-      return cast_output(self.runtime.shutdown().await?);
-    }
-    if id == TypeId::of::<CreateCluster>() {
-      drop(command);
-      return cast_output(self.runtime.create_cluster().await?);
-    }
-    if id == TypeId::of::<RotateJoinCredential>() {
-      drop(command);
-      return cast_output(self.runtime.rotate_join_credential().await?);
-    }
-    if id == TypeId::of::<Listen>() {
-      let command = downcast_input::<C, Listen>(command)?;
-      return cast_output(self.runtime.listen(command.into_endpoint()).await?);
-    }
-    if id == TypeId::of::<StopListener>() {
-      let command = downcast_input::<C, StopListener>(command)?;
-      return cast_output(self.runtime.stop_listener(command.into_listener()).await?);
-    }
-    if id == TypeId::of::<JoinCluster>() {
-      let command = downcast_input::<C, JoinCluster>(command)?;
-      let (receiver, credential) = command.into_parts();
-      return cast_output(self.runtime.join_cluster(receiver, credential).await?);
-    }
-    if id == TypeId::of::<ConnectMember>() {
-      let command = downcast_input::<C, ConnectMember>(command)?;
-      let (receiver, peer) = command.into_parts();
-      return cast_output(self.runtime.connect_member(receiver, peer).await?);
-    }
-
-    drop(command);
-    Err(Error::unsupported("node command"))
+  /// Dispatches one typed command to the runtime. The bound is satisfied by
+  /// every crate-defined command; callers only name the concrete command
+  /// type.
+  #[allow(private_bounds)]
+  pub async fn command<C: Command + DispatchCommand>(&self, command: C) -> Result<C::Output> {
+    command.dispatch(&self.runtime).await
   }
 
-  pub async fn query<Q: Query>(&self, query: Q) -> Result<Q::Output> {
-    if TypeId::of::<Q>() == TypeId::of::<GetNodeStatus>() {
-      drop(query);
-      return cast_output(self.runtime.status());
-    }
-    if TypeId::of::<Q>() == TypeId::of::<WaitForShutdown>() {
-      drop(query);
-      return cast_output(self.runtime.wait_for_shutdown().await?);
-    }
-    if TypeId::of::<Q>() == TypeId::of::<GetLocalNode>() {
-      drop(query);
-      return cast_output(self.runtime.local_node().await?);
-    }
-    if TypeId::of::<Q>() == TypeId::of::<GetRoute>() {
-      let query = downcast_input::<Q, GetRoute>(query)?;
-      return cast_output(self.runtime.route_status(query.handle())?);
-    }
-
-    drop(query);
-    Err(Error::unsupported("node query"))
+  #[allow(private_bounds)]
+  pub async fn query<Q: Query + DispatchQuery>(&self, query: Q) -> Result<Q::Output> {
+    query.dispatch(&self.runtime).await
   }
 
   pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>> {
@@ -127,26 +177,4 @@ impl NodeHandle {
     }
     Err(Error::unsupported("node events"))
   }
-}
-
-fn downcast_input<Input, Target>(input: Input) -> Result<Target>
-where
-  Input: Send + 'static,
-  Target: Send + 'static, {
-  let erased: Box<dyn Any + Send> = Box::new(input);
-  erased
-    .downcast::<Target>()
-    .map(|output| *output)
-    .map_err(|_| Error::internal("typed bus input"))
-}
-
-fn cast_output<Output, Value>(value: Value) -> Result<Output>
-where
-  Output: Send + 'static,
-  Value: Any + Send, {
-  let erased: Box<dyn Any + Send> = Box::new(value);
-  erased
-    .downcast::<Output>()
-    .map(|output| *output)
-    .map_err(|_| Error::internal("typed bus output"))
 }
