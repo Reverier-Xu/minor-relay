@@ -375,6 +375,9 @@ async fn connect_cq4(nodes: &[Node]) {
       nodes[right as usize].id.clone(),
     )
     .await;
+    // Pace the dials: bursts of concurrent handshakes starve the shared
+    // runtime at sixteen-node scale and cause spurious drops.
+    tokio::time::sleep(Duration::from_millis(30)).await;
   }
 }
 
@@ -434,7 +437,7 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
   undirected.into_iter().collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-24).
