@@ -188,21 +188,29 @@ async fn accept_payload(consumer: &MembershipSyncConsumer, payload: &SyncPayload
         snapshot.revision()
       );
       trust_store::persist_snapshot_ctx(store, consumer.entropy.as_ref(), &snapshot).await?;
+      // Binding adoption is best effort per record: a transient store
+      // contention on one binding must not abort the remaining bindings of
+      // the snapshot; the next delivery retries what was skipped
+      // (anti-entropy repair, SC-G05-P0-07).
       for binding in snapshot.bindings() {
-        trust_store::persist_binding_ctx(
+        if let Err(error) = trust_store::persist_binding_ctx(
           store,
           consumer.entropy.as_ref(),
           binding.node(),
           binding.key(),
         )
-        .await?;
-        trust_store::adopt_binding_ctx(
+        .await
+        {
+          tracing::debug!(node = %binding.node(), kind = ?error.kind(), "trust binding persist skipped");
+          continue;
+        }
+        let _ = trust_store::adopt_binding_ctx(
           store,
           consumer.entropy.as_ref(),
           binding.node(),
           binding.key(),
         )
-        .await?;
+        .await;
       }
     }
   }
