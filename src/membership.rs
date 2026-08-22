@@ -15,14 +15,15 @@ use crate::{
 };
 
 /// The signature domain of one node descriptor.
+// TODO(G5-02): consumed when membership sync signs descriptors across
+// pages; until then the verification surface is exercised by the unit
+// suite.
+#[cfg(test)]
 pub(crate) const NODE_DESCRIPTOR_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/node-descriptor-v1";
 
 /// The durable schema, namespace, and key of one node descriptor record.
 pub(crate) const NODE_DESCRIPTOR_SCHEMA: &str = "relay.woooo.tech/schemas/node-descriptor-v1";
 pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "relay.woooo.tech/metadata/node-descriptor-v1";
-
-/// The CBOR limits for descriptor records (depth 2: descriptors nest
-/// endpoint strings).
 
 /// One owner-signed node descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
