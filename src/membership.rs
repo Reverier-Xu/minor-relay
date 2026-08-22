@@ -7,15 +7,11 @@
 //! skipped revisions cannot replace the current record, and a retained
 //! signed removal marker defeats reordered or replayed older descriptors.
 
-use std::sync::Arc;
-
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
 use crate::{
-  ClusterId, Endpoint, Error, NodeId, PublicKey, Result, Signature, StoreExpectation, StoreKey,
-  StoreNamespace, StoreOperation, StoreRequirements, StoreTransaction, StoreValue, TransactionId,
+  Endpoint, Error, NodeId, PublicKey, Result, Signature,
   protocol::{decode_canonical, encode_canonical},
-  provider::StorageFactory,
 };
 
 /// The signature domain of one node descriptor.
