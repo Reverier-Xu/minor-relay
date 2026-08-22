@@ -181,6 +181,7 @@ impl NodeDescriptorV1 {
 /// The bounded descriptor observation store.
 pub(crate) mod neighbor;
 pub(crate) mod page;
+pub(crate) mod recovery;
 
 pub(crate) mod store {
   use std::sync::Arc;
