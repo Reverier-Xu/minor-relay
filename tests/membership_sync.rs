@@ -111,10 +111,21 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
     if complete {
       return;
     }
-    assert!(
-      std::time::Instant::now() < deadline,
-      "trust convergence timeout after {timeout:?}"
-    );
+    if std::time::Instant::now() >= deadline {
+      for node in nodes {
+        let page = trust_page(node).await;
+        eprintln!(
+          "TRUST node {}: {} bindings {:?}",
+          node.id,
+          page.len(),
+          page
+            .iter()
+            .map(|view| view.node_id().as_str())
+            .collect::<Vec<_>>()
+        );
+      }
+      panic!("trust convergence timeout after {timeout:?}");
+    }
     tokio::time::sleep(Duration::from_millis(50)).await;
   }
 }

@@ -552,15 +552,20 @@ pub(crate) mod store {
   }
 
   /// Persists one verified snapshot over the running node's metadata
-  /// store (runtime path; never re-opens storage).
+  /// store (runtime path; never re-opens storage). Re-delivery of the
+  /// same revision is a no-op (idempotent).
   pub(crate) async fn persist_snapshot_ctx(
     store: &MetadataStore, entropy: &dyn Entropy, snapshot: &TrustSnapshotV1,
   ) -> Result<()> {
     let namespace = snapshot_namespace()?;
     let key = snapshot_key(snapshot.issuer(), snapshot.revision());
+    let current = store.snapshot().await?;
+    if current.get(&namespace, &key).await?.is_some() {
+      return Ok(());
+    }
     let transaction = store.prepare_transaction(
       TransactionId::generate(entropy)?,
-      store.snapshot().await?.revision().clone(),
+      current.revision().clone(),
       vec![StoreOperation::Put {
         namespace: namespace.clone(),
         key: key.clone(),
@@ -615,20 +620,27 @@ pub(crate) mod store {
   }
 
   /// Persists one verified nonconflicting binding over the running node's
-  /// metadata store.
+  /// metadata store. Idempotent: an already-present binding is left in
+  /// place, so concurrent snapshot deliveries and re-deliveries cannot
+  /// conflict and abort the remaining bindings of the snapshot.
   pub(crate) async fn persist_binding_ctx(
     store: &MetadataStore, entropy: &dyn Entropy, node: &NodeId, key: &PublicKey,
   ) -> Result<()> {
     let namespace = binding_namespace()?;
+    let store_key = StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec()));
+    let snapshot = store.snapshot().await?;
+    if snapshot.get(&namespace, &store_key).await?.is_some() {
+      return Ok(());
+    }
     let mut bytes = Vec::with_capacity(33);
     bytes.push(1);
     bytes.extend_from_slice(key.as_bytes());
     let transaction = store.prepare_transaction(
       TransactionId::generate(entropy)?,
-      store.snapshot().await?.revision().clone(),
+      snapshot.revision().clone(),
       vec![StoreOperation::Put {
         namespace: namespace.clone(),
-        key: StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec())),
+        key: store_key,
         expected: StoreExpectation::Absent,
         value: StoreValue::new(Arc::from(bytes)),
       }],
