@@ -119,9 +119,22 @@ total order verified by unit and integration tests.
   grant on all members, descriptor readiness, partition healing, and the
   metadata SLO lane (8-node: <10s). A 1,024-node functional/trend unit
   lane covers the seed.
-- 16-node harness requires a tolerant settle (double-confirmed edges,
-  convergent star closure, three-stable-sample settle) because the
-  transport drops handshakes under load; the verify lane is slow (~17m).
+- Fresh three-reviewer pass (2026-08-22): P1 recovery-pending monotonic
+  counter fixed (atomic in-flight bound released by the detached dial);
+  core protocol registration moved before ready (typed conflict, no
+  spawned-task panic); SLO lane times the full admission window and the
+  harness cross-checks exact NodeId-to-key and descriptor-digest agreement;
+  failure-matrix header/scenario citations narrowed to what is tested;
+  single canonical descriptor decoder; shared trusted-anchor resolver;
+  snapshot version and binding key substitution fail closed; the driver
+  threads the page cursor across ticks so descriptor sync converges beyond
+  sixteen members; plan_neighbors walks the cycle without a whole-
+  population allocation; the recovery simulation is cfg(test)-gated.
+- Residual gaps recorded: the counting-transport observation (SC-G05-P0-22)
+  is unit-only (the dial path does not consume the transport registry);
+  the failure matrix exercises duplicate delivery and partition healing
+  (reorder/endpoint-change/restart covered by descriptor-store unit tests
+  and the secure-join restart lane).
 
 ## Historical findings (pre-fix baseline)
 
