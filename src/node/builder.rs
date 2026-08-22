@@ -42,7 +42,17 @@ impl NodeBuilder {
   }
 
   pub async fn start(self) -> Result<NodeHandle> {
-    let extensions = Arc::new(self.extensions);
+    let mut extensions = self.extensions;
+    // The built-in WSS transport is always available; a caller registration
+    // for the same tag is a conflict, so only add it when absent.
+    let wss_tag = crate::transport::registry::WssTransport::tag();
+    if extensions.transport(&wss_tag).is_none() {
+      extensions.register_transport(
+        wss_tag,
+        std::sync::Arc::new(crate::transport::registry::WssTransport::new()),
+      )?;
+    }
+    let extensions = Arc::new(extensions);
     let client = spawn_runtime(RuntimeDependencies {
       storage_factory: self.storage,
       context: None,

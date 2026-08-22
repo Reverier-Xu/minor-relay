@@ -9,7 +9,11 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use crate::{Error, FeatureTag, IncomingPacket, ProtocolTag, Result, api::BoxFuture};
+use crate::{
+  DiscoveryTag, Error, FeatureTag, IncomingPacket, ProtocolTag, Result, TransportTag,
+  api::BoxFuture,
+  transport::{Discovery, Transport},
+};
 
 /// The immutable definition of one domain-qualified packet protocol: its
 /// tag and the feature that owns it. The owning feature must be selected
@@ -53,11 +57,50 @@ pub(crate) struct ProtocolRegistration {
 #[derive(Default)]
 pub struct ExtensionRegistry {
   protocols: BTreeMap<ProtocolTag, ProtocolRegistration>,
+  transports: BTreeMap<TransportTag, Arc<dyn Transport>>,
+  discoveries: BTreeMap<DiscoveryTag, Arc<dyn Discovery>>,
 }
 
 impl ExtensionRegistry {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Registers one transport implementation under its canonical tag. A
+  /// duplicate tag, a malformed or reserved tag, or a registration that
+  /// conflicts with an existing entry is rejected before use; the built-in
+  /// WSS transport is always present.
+  pub fn register_transport(
+    &mut self, tag: TransportTag, value: Arc<dyn Transport>,
+  ) -> Result<&mut Self> {
+    if self.transports.contains_key(&tag) {
+      return Err(Error::conflict("transport registration"));
+    }
+    self.transports.insert(tag, value);
+    Ok(self)
+  }
+
+  /// Registers one discovery implementation under its canonical tag, with
+  /// the same duplicate/reserved/conflict rules as transports.
+  pub fn register_discovery(
+    &mut self, tag: DiscoveryTag, value: Arc<dyn Discovery>,
+  ) -> Result<&mut Self> {
+    if self.discoveries.contains_key(&tag) {
+      return Err(Error::conflict("discovery registration"));
+    }
+    self.discoveries.insert(tag, value);
+    Ok(self)
+  }
+
+  /// The registered transport for one tag.
+  pub(crate) fn transport(&self, tag: &TransportTag) -> Option<&Arc<dyn Transport>> {
+    self.transports.get(tag)
+  }
+
+  /// The registered discovery for one tag.
+  #[cfg(test)]
+  pub(crate) fn discovery(&self, tag: &DiscoveryTag) -> Option<&Arc<dyn Discovery>> {
+    self.discoveries.get(tag)
   }
 
   /// Registers one packet protocol and its consumer. A duplicate protocol
@@ -94,6 +137,8 @@ impl fmt::Debug for ExtensionRegistry {
     formatter
       .debug_struct("ExtensionRegistry")
       .field("protocols", &self.protocols.len())
+      .field("transports", &self.transports.len())
+      .field("discoveries", &self.discoveries.len())
       .finish()
   }
 }

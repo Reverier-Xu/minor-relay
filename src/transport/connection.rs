@@ -155,6 +155,11 @@ impl Connection {
     &self.channel_binding
   }
 
+  /// The frame rules enforced on this connection.
+  pub(crate) const fn rules(&self) -> &FrameRules {
+    &self.rules
+  }
+
   /// The canonical admission source of the accepted connection; the
   /// initiator side carries none (its own node rate-limits inbound
   /// attempts).

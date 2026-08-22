@@ -28,11 +28,16 @@
 pub(crate) mod cert;
 pub(crate) mod connection;
 mod endpoint;
+pub(crate) mod registry;
 pub(crate) mod tls;
 pub(crate) mod verify;
 pub(crate) mod ws;
 
 pub use endpoint::Endpoint;
+pub use registry::{
+  ChannelBinding, Discovery, DiscoveryPage, EndpointCandidate, PageCursor, Transport,
+  TransportConnection, TransportListener,
+};
 
 /// Shared test harness for the transport module lanes.
 #[cfg(test)]

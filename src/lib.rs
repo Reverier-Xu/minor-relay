@@ -72,7 +72,10 @@ pub use provider::{
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
   StoreTransaction, StoreValue,
 };
-pub use transport::Endpoint;
+pub use transport::{
+  ChannelBinding, Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor, Transport,
+  TransportConnection, TransportListener,
+};
 pub use view::{
   AdmissionView, ClusterView, ListenerView, LocalNodeView, NodeStatus, ShutdownOutcome,
   ShutdownReason,
