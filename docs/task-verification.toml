@@ -400,14 +400,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G04-06"
 verification_id = "VERIFY-G04-06"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G04-06"
 owner_task = "T-G04-06"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g04-06-reconnect.sh"]
 timeout_seconds = 1800
 
 [[task]]
