@@ -309,6 +309,7 @@ mod tests {
 /// a deterministic membership/connectivity scenario and replays the exact
 /// decisions for a seed, matching the configured neighbor/fan-out and
 /// wall-clock backoff (SC-G05-P0-20).
+#[cfg(test)]
 pub(crate) mod simulation {
   use std::collections::BTreeSet;
 

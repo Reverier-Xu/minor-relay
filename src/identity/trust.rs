@@ -183,6 +183,11 @@ impl TrustSnapshotV1 {
     if wire.schema != TRUST_SNAPSHOT_SCHEMA || wire.record_version != 1 {
       return Err(crate::Error::invalid_input("trust snapshot schema"));
     }
+    // Only version 1 is known; an unknown version fails closed (the
+    // descriptor decoder's SC-G05-P0-05 precedent).
+    if wire.version != 1 {
+      return Err(crate::Error::invalid_input("trust snapshot version"));
+    }
     let cluster = ClusterId::parse(&wire.cluster)
       .map_err(|_| crate::Error::invalid_input("trust snapshot cluster"))?;
     if &cluster != expected_cluster {
@@ -630,7 +635,15 @@ pub(crate) mod store {
     let namespace = binding_namespace()?;
     let store_key = StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec()));
     let snapshot = store.snapshot().await?;
-    if snapshot.get(&namespace, &store_key).await?.is_some() {
+    if let Some(existing) = snapshot.get(&namespace, &store_key).await? {
+      // A re-keyed binding must not silently diverge: a known node with a
+      // different key is conflicting evidence and fails closed.
+      if existing.as_bytes().len() >= 33
+        && existing.as_bytes()[0] == 1
+        && existing.as_bytes()[1..33] != *key.as_bytes()
+      {
+        return Err(crate::Error::not_trusted("trust binding key substitution"));
+      }
       return Ok(());
     }
     let mut bytes = Vec::with_capacity(33);

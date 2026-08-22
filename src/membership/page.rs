@@ -214,58 +214,63 @@ pub(crate) mod sync {
   }
 }
 
-/// Adds a receiver-side verification helper that does not require a bound
-/// key up front (the page-level check supplies it).
+/// Decodes one descriptor wire and verifies its own signature, without a
+/// bound-key check (the caller supplies the trusted binding at the page or
+/// store level). This is the single canonical descriptor decoder: the
+/// store's `decode_and_verify` delegates here and then checks the bound
+/// key, so the wire rules and error strings live in exactly one place.
+/// A receiver-side decoder that does not require a bound key up front
+/// (the page-level or view-level check supplies it). Delegates to the
+/// single canonical decoder.
 impl NodeDescriptorV1 {
-  /// Decodes without a bound-key check; the caller verifies binding at the
-  /// page level. Used by the page emitter, which pages only local records.
   pub(crate) fn decode_and_verify_any(bytes: &[u8]) -> Result<NodeDescriptorV1> {
-    // Reuse the strict path with a placeholder key; the page receiver
-    // re-verifies with the trusted key before install.
-    let wire: super::DescriptorWire =
-      decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-        .map_err(|_| Error::invalid_input("node descriptor decode"))?;
-    if wire.schema != super::NODE_DESCRIPTOR_SCHEMA || wire.record_version != 1 {
-      return Err(Error::invalid_input("node descriptor schema"));
-    }
-    if wire.version != 1 {
-      return Err(Error::invalid_input("node descriptor version"));
-    }
-    let node =
-      NodeId::parse(&wire.node).map_err(|_| Error::invalid_input("node descriptor node"))?;
-    let public_key = PublicKey::from_bytes(
-      <[u8; 32]>::try_from(wire.public_key.as_ref())
-        .map_err(|_| Error::invalid_input("node descriptor key"))?,
-    );
-    let mut endpoints = Vec::with_capacity(wire.endpoints.len());
-    for text in &wire.endpoints {
-      endpoints.push(
-        crate::Endpoint::parse(text)
-          .map_err(|_| Error::invalid_input("node descriptor endpoint"))?,
-      );
-    }
-    let descriptor = NodeDescriptorV1::new(
-      node,
-      public_key.clone(),
-      endpoints,
-      wire.revision,
-      wire.removed,
-      wire.version,
-      crate::Signature::from_bytes({
-        let bytes: &[u8] = wire.signature.as_ref();
-        <[u8; 64]>::try_from(bytes)
-          .map_err(|_| Error::invalid_input("node descriptor signature"))?
-      }),
-    );
-    crate::identity::signature::verify_strict(
-      super::NODE_DESCRIPTOR_V1_DOMAIN,
-      &descriptor.encode_signed_body()?,
-      &public_key,
-      &descriptor.signature,
-      "node descriptor signature",
-    )?;
-    Ok(descriptor)
+    decode_descriptor(bytes)
   }
+}
+
+pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
+  let wire: super::DescriptorWire =
+    decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
+      .map_err(|_| Error::invalid_input("node descriptor decode"))?;
+  if wire.schema != super::NODE_DESCRIPTOR_SCHEMA || wire.record_version != 1 {
+    return Err(Error::invalid_input("node descriptor schema"));
+  }
+  // Only version 1 is known; an unknown version fails closed
+  // (SC-G05-P0-05).
+  if wire.version != 1 {
+    return Err(Error::invalid_input("node descriptor version"));
+  }
+  let node = NodeId::parse(&wire.node).map_err(|_| Error::invalid_input("node descriptor node"))?;
+  let public_key = PublicKey::from_bytes(
+    <[u8; 32]>::try_from(wire.public_key.as_ref())
+      .map_err(|_| Error::invalid_input("node descriptor key"))?,
+  );
+  let mut endpoints = Vec::with_capacity(wire.endpoints.len());
+  for text in &wire.endpoints {
+    endpoints.push(
+      crate::Endpoint::parse(text).map_err(|_| Error::invalid_input("node descriptor endpoint"))?,
+    );
+  }
+  let descriptor = NodeDescriptorV1::new(
+    node,
+    public_key.clone(),
+    endpoints,
+    wire.revision,
+    wire.removed,
+    wire.version,
+    crate::Signature::from_bytes({
+      let bytes: &[u8] = wire.signature.as_ref();
+      <[u8; 64]>::try_from(bytes).map_err(|_| Error::invalid_input("node descriptor signature"))?
+    }),
+  );
+  crate::identity::signature::verify_strict(
+    super::NODE_DESCRIPTOR_V1_DOMAIN,
+    &descriptor.encode_signed_body()?,
+    &public_key,
+    &descriptor.signature,
+    "node descriptor signature",
+  )?;
+  Ok(descriptor)
 }
 
 #[cfg(test)]

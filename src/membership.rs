@@ -14,10 +14,7 @@
 
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
-use crate::{
-  Endpoint, Error, NodeId, PublicKey, Result, Signature,
-  protocol::{decode_canonical, encode_canonical},
-};
+use crate::{Endpoint, Error, NodeId, PublicKey, Result, Signature, protocol::encode_canonical};
 
 /// The signature domain of one node descriptor.
 pub(crate) const NODE_DESCRIPTOR_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/node-descriptor-v1";
@@ -132,46 +129,16 @@ impl NodeDescriptorV1 {
 
   /// Decodes and verifies one descriptor against its bound key. Fails
   /// closed on signature mismatch, wrong schema/version, or a public key
-  /// that does not bind to the claimed node (SC-G05-P0-01).
+  /// that does not bind to the claimed node (SC-G05-P0-01). The wire
+  /// parsing is delegated to the single decoder in `page::decode` (the
+  /// page receiver's `decode_and_verify_any`), so the canonical rules and
+  /// error strings live in exactly one place.
   pub(crate) fn decode_and_verify(bytes: &[u8], bound_key: &PublicKey) -> Result<NodeDescriptorV1> {
-    let wire: DescriptorWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-      .map_err(|_| Error::invalid_input("node descriptor decode"))?;
-    if wire.schema != NODE_DESCRIPTOR_SCHEMA || wire.record_version != 1 {
-      return Err(Error::invalid_input("node descriptor schema"));
-    }
-    // Only version 1 is known; an unknown version fails closed
-    // (SC-G05-P0-05).
-    if wire.version != 1 {
-      return Err(Error::invalid_input("node descriptor version"));
-    }
-    let node =
-      NodeId::parse(&wire.node).map_err(|_| Error::invalid_input("node descriptor node"))?;
-    let public_key = PublicKey::from_bytes(
-      <[u8; 32]>::try_from(wire.public_key.as_ref())
-        .map_err(|_| Error::invalid_input("node descriptor key"))?,
-    );
-    if &public_key != bound_key {
+    let descriptor = crate::membership::page::decode_descriptor(bytes)?;
+    if descriptor.public_key() != bound_key {
       // The descriptor claims a node but is signed by a different key.
       return Err(Error::not_trusted("node descriptor key binding"));
     }
-    let mut endpoints = Vec::with_capacity(wire.endpoints.len());
-    for text in &wire.endpoints {
-      endpoints
-        .push(Endpoint::parse(text).map_err(|_| Error::invalid_input("node descriptor endpoint"))?);
-    }
-    let descriptor = Self::new(
-      node,
-      public_key,
-      endpoints,
-      wire.revision,
-      wire.removed,
-      wire.version,
-      Signature::from_bytes({
-        let bytes: &[u8] = wire.signature.as_ref();
-        <[u8; 64]>::try_from(bytes)
-          .map_err(|_| Error::invalid_input("node descriptor signature"))?
-      }),
-    );
     crate::identity::signature::verify_strict(
       NODE_DESCRIPTOR_V1_DOMAIN,
       &descriptor.encode_signed_body()?,
@@ -255,13 +222,15 @@ pub(crate) mod store {
     } else if descriptor.revision() != 1 {
       return Err(Error::conflict("node descriptor revision"));
     }
-    let expected = match store.snapshot().await?.get(&namespace, &key).await? {
+    // One snapshot view for both the per-key expectation and the CAS
+    // revision, so a concurrent writer cannot make them disagree.
+    let expected = match snapshot.get(&namespace, &key).await? {
       Some(current) => StoreExpectation::Exact(current.digest().clone()),
       None => StoreExpectation::Absent,
     };
     let transaction = store.prepare_transaction(
       TransactionId::generate(entropy)?,
-      store.snapshot().await?.revision().clone(),
+      snapshot.revision().clone(),
       vec![StoreOperation::Put {
         namespace,
         key,

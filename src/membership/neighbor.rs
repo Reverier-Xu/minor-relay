@@ -40,25 +40,33 @@ pub(crate) fn plan_neighbors(
   local: &NodeId, members: &BTreeSet<NodeId>, degree: usize,
 ) -> Result<NeighborPlan> {
   let degree = degree.clamp(1, 64);
-  let ordered: Vec<&NodeId> = members.iter().collect();
-  let Some(position) = ordered.iter().position(|member| *member == local) else {
+  if !members.contains(local) {
     // The local node is not part of the membership; it plans no neighbors.
     return Ok(NeighborPlan {
       neighbors: Vec::new(),
     });
-  };
+  }
+  // Walk the canonical cycle in place (no whole-population allocation):
+  // the next `degree` members after the local node, wrapping, skipping the
+  // local node itself (a singleton membership).
+  let position = members
+    .iter()
+    .position(|member| member == local)
+    .unwrap_or(0);
   let mut neighbors = Vec::with_capacity(degree);
-  for step in 1..=degree {
-    let next = ordered[(position + step) % ordered.len()];
+  let mut cursor = members.iter().cycle();
+  for _ in 0..=position {
+    cursor.next();
+  }
+  for next in cursor {
     if next == local {
-      // Skip self (possible only when the membership is a singleton).
       continue;
     }
     if !neighbors.contains(next) {
-      neighbors.push((*next).clone());
-    }
-    if neighbors.len() >= degree {
-      break;
+      neighbors.push(next.clone());
+      if neighbors.len() >= degree {
+        break;
+      }
     }
   }
   Ok(NeighborPlan { neighbors })

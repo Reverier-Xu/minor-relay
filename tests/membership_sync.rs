@@ -6,8 +6,10 @@
 //! reciprocal trust, exact signed descriptors, and the exact crossed-cube
 //! CQ4 topology (32 undirected sessions, degree four, diameter three)
 //! converge through public facade observations only. The failure matrix
-//! exercises partition healing, duplicate delivery, endpoint change, and
-//! process restart; the trend lane records the metadata convergence SLO.
+//! exercises duplicate delivery and partition healing (reorder, endpoint
+//! change, and full process restart are covered by the descriptor store's
+//! revision/replay unit tests and the secure-join restart lane); the trend
+//! lane records the metadata descriptor-completion SLO.
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
@@ -101,14 +103,34 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
   let deadline = std::time::Instant::now() + timeout;
   loop {
     let mut complete = true;
+    let mut views: Vec<Vec<minor_relay::TrustedIdentityView>> = Vec::new();
     for node in nodes {
       let page = trust_page(node).await;
       if page.len() < expected {
         complete = false;
         break;
       }
+      views.push(page);
     }
     if complete {
+      // Exact NodeId-to-key agreement (SC-G05-P0-24): every peer's view of
+      // a member carries the same public key as that member's self-view.
+      let mut keys: std::collections::BTreeMap<minor_relay::NodeId, Vec<minor_relay::PublicKey>> =
+        std::collections::BTreeMap::new();
+      for page in &views {
+        for view in page {
+          keys
+            .entry(view.node_id().clone())
+            .or_default()
+            .push(view.public_key().clone());
+        }
+      }
+      for (node, observed) in &keys {
+        assert!(
+          observed.windows(2).all(|pair| pair[0] == pair[1]),
+          "views disagree on the NodeId-to-key binding of {node}"
+        );
+      }
       return;
     }
     if std::time::Instant::now() >= deadline {
@@ -131,10 +153,12 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
 }
 
 /// Every node's membership page converges to `expected` descriptors, all
-/// at the expected owner revision.
+/// at the expected owner revision, and every node's view of the same
+/// member carries the same descriptor digest (SC-G05-P0-25).
 async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeout: Duration) {
   let deadline = std::time::Instant::now() + timeout;
   loop {
+    let mut pages = Vec::new();
     let mut complete = true;
     for node in nodes {
       let page = member_page(node).await;
@@ -142,8 +166,27 @@ async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeou
         complete = false;
         break;
       }
+      pages.push(page);
     }
     if complete {
+      // Cross-node digest agreement: every peer's view of member `id`
+      // exposes the identical descriptor digest.
+      let mut digests: std::collections::BTreeMap<minor_relay::NodeId, Vec<minor_relay::Digest>> =
+        std::collections::BTreeMap::new();
+      for page in &pages {
+        for view in page {
+          digests
+            .entry(view.node_id().clone())
+            .or_default()
+            .push(view.digest().clone());
+        }
+      }
+      for (node, views) in &digests {
+        assert!(
+          views.windows(2).all(|pair| pair[0] == pair[1]),
+          "views disagree on the descriptor digest of {node}"
+        );
+      }
       return;
     }
     assert!(
@@ -230,7 +273,7 @@ async fn wait_settled(
       stable_samples += 1;
       if stable_samples >= 3 {
         // The exact topology held for three consecutive samples: settled,
-        // with no extra or recovery edge (SC-G05-P0-27).
+        // with no extra or recovery edge (SC-G05-P0-26).
         return edges;
       }
     } else {
@@ -707,13 +750,18 @@ async fn membership_sync_failure_matrix_partition_healing() {
 async fn membership_sync_slo_trend_stays_below_bound() {
   // The trend lane records admission and descriptor completion from public
   // observations; every sample must stay below 10,000 ms (SC-G05-P0-30).
-  let nodes = build_cluster(8).await;
+  // The trend records the full admission-to-descriptor-completion window:
+  // the timer starts before the first join so admission time is included
+  // (SC-G05-P0-29). The strict <10 s bound is asserted on this 8-node
+  // sample; the sixteen-node lane (slower under load) is the convergence
+  // E2E rather than the SLO sample.
   let started = std::time::Instant::now();
+  let nodes = build_cluster(8).await;
   wait_descriptors(&nodes, 8, 1, Duration::from_secs(30)).await;
   let elapsed = started.elapsed();
   assert!(
     elapsed < Duration::from_secs(10),
-    "descriptor completion sample {elapsed:?} exceeds the 10,000 ms SLO"
+    "admission-to-descriptor-completion sample {elapsed:?} exceeds the 10,000 ms SLO"
   );
   for node in nodes {
     node.handle.command(Shutdown::new()).await.unwrap();

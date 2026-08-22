@@ -89,6 +89,23 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   )
   .await?;
   dependencies.context = Some(Arc::new(context));
+  // The core membership sync protocol is registered before the runtime is
+  // marked ready: a caller that registered the same tag fails `start`
+  // with a typed conflict instead of a spawned-task panic.
+  let sync_definition = crate::membership::sync::sync_protocol_definition()?;
+  let runtime_context = Arc::clone(
+    dependencies
+      .context
+      .as_ref()
+      .ok_or_else(|| Error::internal("runtime context"))?,
+  );
+  let sync_consumer = Arc::new(crate::membership::sync::MembershipSyncConsumer::new(
+    runtime_context,
+    dependencies.entropy.clone(),
+  ));
+  dependencies
+    .extensions
+    .register_core_protocol(sync_definition, sync_consumer)?;
   let routes = dependencies.routes.clone();
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (packet_tx, packet_rx) = mpsc::channel(CONTROL_CAPACITY);
@@ -263,7 +280,7 @@ struct Supervisor {
   route_capacity: usize,
   listeners: BTreeMap<crate::identity::ListenerId, (Endpoint, AbortHandle)>,
   recovery: crate::membership::recovery::RecoveryController,
-  recovery_pending: usize,
+  recovery_pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
   published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>>,
   // Members this node has ever authenticated a session with: the recovery
   // "known online" set. Recovery restores authenticated paths to exactly
@@ -313,18 +330,8 @@ impl Supervisor {
       Arc::new(std::sync::Mutex::new(JoinCredentialIssuer::new())),
       offer,
     );
-    // The membership sync protocol is core behavior, registered after the
-    // identity is provisioned; a caller cannot register the same tag.
-    let sync_definition = crate::membership::sync::sync_protocol_definition()
-      .unwrap_or_else(|_| unreachable!("membership sync protocol is valid"));
-    let sync_consumer = Arc::new(crate::membership::sync::MembershipSyncConsumer::new(
-      Arc::clone(&sync_context),
-      dependencies.entropy.clone(),
-    ));
-    dependencies
-      .extensions
-      .register_core_protocol(sync_definition, sync_consumer)
-      .unwrap_or_else(|_| unreachable!("membership sync protocol registers once"));
+    // The membership sync protocol was registered by `spawn_runtime`
+    // before the runtime was marked ready.
     let (shutdown_tx, _) = watch::channel(());
     let published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>> = Arc::default();
     // The anti-entropy driver pages descriptors and the issuer trust
@@ -350,6 +357,7 @@ impl Supervisor {
         let mut timer = tokio::time::interval(driver_interval);
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_snapshot_rev = 0_u64;
+        let mut last_page_cursor: Option<Vec<u8>> = None;
         loop {
           tokio::select! {
             changed = driver_shutdown.changed() => {
@@ -369,6 +377,7 @@ impl Supervisor {
                 &driver_runtime,
                 &endpoints,
                 &mut last_snapshot_rev,
+                &mut last_page_cursor,
               )
               .await;
             }
@@ -394,7 +403,7 @@ impl Supervisor {
       route_capacity,
       listeners: BTreeMap::new(),
       recovery,
-      recovery_pending: 0,
+      recovery_pending: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
       published_endpoints,
       recovery_history: std::collections::BTreeSet::new(),
       recovery_excluded: std::collections::BTreeSet::new(),
@@ -924,7 +933,12 @@ impl Supervisor {
     self.recovery.observe(now, &online, &direct);
     if self.recovery.state() != crate::membership::recovery::RecoveryState::Recovering
       || !self.recovery.due(now)
-      || self.recovery_pending >= self.dependencies.config.recovery().fan_out().max(1)
+      || {
+        self
+          .recovery_pending
+          .load(std::sync::atomic::Ordering::Relaxed)
+          >= self.dependencies.config.recovery().fan_out().max(1)
+      }
     {
       return Ok(());
     }
@@ -962,15 +976,22 @@ impl Supervisor {
         // loop never blocks on a handshake (each can take the full
         // authentication deadline); the result is reconciled by the next
         // observation tick.
-        self.recovery_pending = self.recovery_pending.saturating_add(1);
+        self
+          .recovery_pending
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let receiver = endpoint.clone();
         let peer = member.clone();
         let driver = self.driver.clone();
         let sessions = self.dependencies.sessions.clone();
         let packet = self.packet.clone();
         let shutdown = self.shutdown_tx.subscribe();
+        let pending = std::sync::Arc::clone(&self.recovery_pending);
         tokio::spawn(async move {
           let _ = dial_member(driver, sessions, packet, shutdown, receiver, &peer).await;
+          // Release the in-flight slot when the dial resolves, so recovery
+          // stays alive across repeated partition waves (the counter bounds
+          // in-flight dials, not lifetime volume).
+          pending.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
       }
     }
