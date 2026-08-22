@@ -1,0 +1,358 @@
+//! Session-carried membership sync (G5-05/06 wiring).
+//!
+//! An authenticated session carries two bounded sync payloads in one
+//! direction: a [`MembershipPage`] of signed node descriptors and the
+//! issuer-signed [`TrustSnapshotV1`] grant set. The receiver verifies
+//! every payload at its own strict surface before installing anything:
+//! descriptors must match the trusted bindings (SC-G05-P0-09), and a
+//! snapshot must verify against the cluster creator, the trusted issuer
+//! (the grant-carrying reconnect path). The issuer refreshes its snapshot
+//! when its admitted binding set changes, and every member pages its local
+//! descriptors, so reciprocal trust, exact descriptors, and topology
+//! converge over the same authenticated sessions the facade observes.
+
+use std::sync::Arc;
+
+use minicbor::{Decode, Encode, bytes::ByteVec};
+
+use crate::{
+  Error, IncomingPacket, NodeId, PacketBody, ProtocolTag, Result, TraceId,
+  api::{BoxFuture, Entropy},
+  extension_registry::{PacketConsumer, ProtocolDefinition},
+  identity::{
+    genesis::existing_cluster,
+    lifecycle::LocalIdentityContext,
+    signature::signature_message,
+    trust::{TrustBinding, TrustSnapshotV1, store as trust_store},
+  },
+  membership::page::{MembershipPage, sync as page_sync},
+  protocol::{decode_canonical, encode_canonical},
+  provider::KeyProvider,
+  runtime::RuntimeClient,
+  session::stream::SessionTable,
+};
+
+/// The canonical protocol tag of the membership sync stream.
+pub(crate) const MEMBERSHIP_SYNC_PROTOCOL: &str = "relay.woooo.tech/protocols/membership-sync";
+
+/// The wire schema of one sync payload.
+const SYNC_PAYLOAD_SCHEMA: &str = "relay.woooo.tech/schemas/membership-sync-payload-v1";
+
+/// Payload kinds: a membership page of descriptors, or an issuer-signed
+/// trust snapshot (grant set).
+pub(crate) const SYNC_KIND_PAGE: u8 = 1;
+pub(crate) const SYNC_KIND_SNAPSHOT: u8 = 2;
+
+/// The receiver-side body cap: one page is at most
+/// [`super::page::MAX_PAGE_DESCRIPTORS`] descriptors and one snapshot is
+/// a bounded binding list, so a generous but finite byte budget bounds a
+/// malicious stream (SC-G05-P0-09).
+const MAX_SYNC_BYTES: usize = 256 * 1_024;
+const MAX_SYNC_CHUNKS: usize = 4_096;
+
+/// One sync payload: an encoded membership page or an encoded issuer-signed
+/// trust snapshot. Signatures are verified at the payload-specific surface
+/// immediately before install.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SyncPayload {
+  /// An encoded [`MembershipPage`].
+  Page(ByteVec),
+  /// An encoded [`TrustSnapshotV1`].
+  Snapshot(ByteVec),
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct SyncPayloadWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  kind: u8,
+  #[n(2)]
+  payload: ByteVec,
+}
+
+impl SyncPayload {
+  pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+    let (kind, payload) = match self {
+      Self::Page(encoded) => (SYNC_KIND_PAGE, encoded.clone()),
+      Self::Snapshot(encoded) => (SYNC_KIND_SNAPSHOT, encoded.clone()),
+    };
+    encode_canonical(
+      &SyncPayloadWire {
+        schema: SYNC_PAYLOAD_SCHEMA.to_owned(),
+        kind,
+        payload,
+      },
+      crate::protocol::offer::OFFER_CBOR_LIMITS,
+    )
+  }
+
+  /// Decodes one payload, rejecting unknown schemas and kinds (fail
+  /// closed).
+  pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+    let wire: SyncPayloadWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
+      .map_err(|_| Error::invalid_input("membership sync payload"))?;
+    if wire.schema != SYNC_PAYLOAD_SCHEMA {
+      return Err(Error::invalid_input("membership sync payload schema"));
+    }
+    match wire.kind {
+      SYNC_KIND_PAGE => Ok(Self::Page(wire.payload)),
+      SYNC_KIND_SNAPSHOT => Ok(Self::Snapshot(wire.payload)),
+      _ => Err(Error::invalid_input("membership sync payload kind")),
+    }
+  }
+}
+
+/// The core receiver of membership sync streams over authenticated
+/// sessions. Every page descriptor is verified against the local trusted
+/// bindings before install; every snapshot is verified against the cluster
+/// creator before its bindings are adopted into the identity store
+/// (SC-G05-P0-09, the grant-carrying reconnect path).
+#[derive(Debug)]
+pub(crate) struct MembershipSyncConsumer {
+  context: Arc<LocalIdentityContext>,
+  entropy: Arc<dyn Entropy>,
+}
+
+impl MembershipSyncConsumer {
+  pub(crate) const fn new(context: Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>) -> Self {
+    Self { context, entropy }
+  }
+}
+
+impl PacketConsumer for MembershipSyncConsumer {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, Result<()>> {
+    Box::pin(async move {
+      let bytes = drain_body(packet.body()).await?;
+      let payload = SyncPayload::decode(&bytes)?;
+      let store = self.context.store();
+      match payload {
+        SyncPayload::Page(encoded) => {
+          let trusted = trust_store::trusted_bindings(store).await?;
+          let page = MembershipPage::decode_and_verify(encoded.as_ref(), &trusted)?;
+          let _ = page_sync::apply_page_ctx(store, self.entropy.as_ref(), &page).await?;
+        }
+        SyncPayload::Snapshot(encoded) => {
+          let genesis = existing_cluster(&self.context)
+            .await?
+            .ok_or_else(|| Error::not_ready("local cluster"))?;
+          let snapshot = TrustSnapshotV1::decode_and_verify(
+            encoded.as_ref(),
+            genesis.cluster(),
+            genesis.creator(),
+            genesis.creator_key(),
+          )?;
+          trust_store::persist_snapshot_ctx(store, self.entropy.as_ref(), &snapshot).await?;
+          for binding in snapshot.bindings() {
+            trust_store::persist_binding_ctx(
+              store,
+              self.entropy.as_ref(),
+              binding.node(),
+              binding.key(),
+            )
+            .await?;
+            trust_store::adopt_binding_ctx(
+              store,
+              self.entropy.as_ref(),
+              binding.node(),
+              binding.key(),
+            )
+            .await?;
+          }
+        }
+      }
+      Ok(())
+    })
+  }
+}
+
+/// Reads one complete bounded body from an admitted sync stream.
+async fn drain_body(body: &mut dyn PacketBody) -> Result<Vec<u8>> {
+  let mut bytes = Vec::new();
+  let mut chunks: usize = 0;
+  while let Some(chunk) = body.next_chunk().await? {
+    chunks = chunks.saturating_add(1);
+    if chunks > MAX_SYNC_CHUNKS || bytes.len().saturating_add(chunk.len()) > MAX_SYNC_BYTES {
+      return Err(Error::resource_exhausted("membership sync body"));
+    }
+    bytes.extend_from_slice(&chunk);
+  }
+  Ok(bytes)
+}
+
+/// The protocol definition that gates the sync stream on authenticated
+/// sessions: owned by the data-messages feature both sides select.
+pub(crate) fn sync_protocol_definition() -> Result<ProtocolDefinition> {
+  Ok(ProtocolDefinition::new(
+    ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?,
+    crate::FeatureTag::parse(crate::protocol::feature::DATA_MESSAGES)?,
+  ))
+}
+
+/// Ensures the local signed descriptor exists (revision 1) with the given
+/// endpoint candidates, so the anti-entropy tick can page it. Publishes a
+/// revision bump when the endpoint set changes and the caller requests it.
+pub(crate) async fn ensure_local_descriptor(
+  context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
+  endpoints: Vec<crate::Endpoint>,
+) -> Result<()> {
+  let store = context.store();
+  let node = context.identity().node().clone();
+  let public_key = context.identity().public_key().clone();
+  let existing = crate::membership::store::read_descriptor_ctx(store, &node, &public_key).await?;
+  if let Some(current) = &existing {
+    let same_endpoints = current.endpoints().len() == endpoints.len()
+      && current
+        .endpoints()
+        .iter()
+        .zip(&endpoints)
+        .all(|(left, right)| left == right);
+    if same_endpoints {
+      return Ok(());
+    }
+  }
+  let revision = existing
+    .as_ref()
+    .map_or(1, |current| current.revision().saturating_add(1));
+  let mut descriptor = crate::membership::NodeDescriptorV1::new(
+    node,
+    public_key,
+    endpoints,
+    revision,
+    false,
+    1,
+    crate::Signature::from_bytes([0; 64]),
+  );
+  let handle = context.identity().handle().clone();
+  let message = crate::identity::signature::signature_message(
+    crate::membership::NODE_DESCRIPTOR_V1_DOMAIN,
+    &descriptor.encode_signed_body()?,
+  );
+  let signature = keys.sign(&handle, &message).await?;
+  descriptor.set_signature(signature);
+  crate::membership::store::store_descriptor_ctx(store, entropy.as_ref(), &descriptor).await?;
+  Ok(())
+}
+
+/// The issuer refreshes its trust snapshot when its admitted binding set
+/// changed: enumerate the durable bindings, sign revision `latest + 1`,
+/// and persist. Non-creators are a no-op. Returns the latest snapshot.
+pub(crate) async fn refresh_issuer_snapshot(
+  context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
+) -> Result<Option<TrustSnapshotV1>> {
+  let store = context.store();
+  let Some(genesis) = existing_cluster(context).await? else {
+    return Ok(None);
+  };
+  if genesis.creator() != context.identity().node() {
+    return Ok(None);
+  }
+  let bindings = trust_store::trusted_bindings(store).await?;
+  let current: Vec<TrustBinding> = bindings
+    .into_iter()
+    .map(|(node, key)| TrustBinding::new(node, key))
+    .collect();
+  let latest = trust_store::latest_snapshot_ctx(
+    store,
+    genesis.cluster(),
+    genesis.creator(),
+    genesis.creator_key(),
+  )
+  .await?;
+  if let Some(latest) = latest {
+    if latest.bindings() == current.as_slice() {
+      return Ok(Some(latest));
+    }
+    let revision = latest.revision().saturating_add(1);
+    let snapshot = sign_snapshot(context, keys, entropy, &genesis, current, revision).await?;
+    trust_store::persist_snapshot_ctx(store, entropy.as_ref(), &snapshot).await?;
+    return Ok(Some(snapshot));
+  }
+  let snapshot = sign_snapshot(context, keys, entropy, &genesis, current, 1).await?;
+  trust_store::persist_snapshot_ctx(store, entropy.as_ref(), &snapshot).await?;
+  Ok(Some(snapshot))
+}
+
+async fn sign_snapshot(
+  context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
+  genesis: &crate::identity::records::ClusterGenesisV1, bindings: Vec<TrustBinding>, revision: u64,
+) -> Result<TrustSnapshotV1> {
+  let mut snapshot = TrustSnapshotV1::new(
+    genesis.cluster().clone(),
+    revision,
+    1,
+    genesis.creator().clone(),
+    genesis.creator_key().clone(),
+    bindings,
+    crate::Signature::from_bytes([0; 64]),
+  );
+  let handle = context.identity().handle().clone();
+  let message = signature_message(
+    crate::identity::trust::TRUST_SNAPSHOT_V1_DOMAIN,
+    &snapshot.encode_signed_body()?,
+  );
+  let signature = keys.sign(&handle, &message).await?;
+  snapshot.set_signature(signature);
+  let _ = entropy;
+  Ok(snapshot)
+}
+
+/// One anti-entropy tick: publish the local descriptor, refresh the issuer
+/// snapshot when this node is the creator, and push a bounded page plus the
+/// latest snapshot over every authenticated session. The work per tick is
+/// bounded: one page and one snapshot per session, nothing paged to
+/// exhaustion (SC-G05-P0-06).
+pub(crate) async fn sync_tick(
+  context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
+  sessions: &SessionTable, runtime: &RuntimeClient, local_endpoints: &[crate::Endpoint],
+) -> Result<()> {
+  let store = context.store();
+  ensure_local_descriptor(context, keys, entropy, local_endpoints.to_vec()).await?;
+  let snapshot = refresh_issuer_snapshot(context, keys, entropy).await?;
+  let page =
+    page_sync::emit_page_ctx(store, None, crate::membership::page::DEFAULT_PAGE_LIMIT).await?;
+  let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
+  let snapshot_payload = match snapshot {
+    Some(snapshot) => Some(SyncPayload::Snapshot(ByteVec::from(snapshot.encode()?))),
+    None => None,
+  };
+  let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
+  let peers: Vec<NodeId> = sessions
+    .lock()
+    .map_err(|_| Error::internal("session table"))?
+    .iter()
+    .filter(|(_, entry)| entry.alive())
+    .map(|(peer, _)| peer.clone())
+    .collect();
+  for peer in peers {
+    if let Some(payload) = &snapshot_payload {
+      let _ = send_payload(runtime, entropy, &peer, &protocol, payload).await;
+    }
+    let _ = send_payload(runtime, entropy, &peer, &protocol, &page_payload).await;
+  }
+  Ok(())
+}
+
+/// Sends one sync payload to `peer` over its authenticated session with a
+/// fire-and-forget admission: routing failures are dropped (the next tick
+/// retries) and never stall the anti-entropy loop.
+async fn send_payload(
+  runtime: &RuntimeClient, entropy: &Arc<dyn Entropy>, peer: &NodeId, protocol: &ProtocolTag,
+  payload: &SyncPayload,
+) -> Result<()> {
+  let trace_id = TraceId::generate(entropy.as_ref())?;
+  let body = Box::new(crate::packet::StaticBody::new(Arc::from(payload.encode()?)));
+  let (ack_notify, _ack) = tokio::sync::oneshot::channel();
+  let request = crate::packet::OutboundRequest {
+    trace_id,
+    destination: peer.clone(),
+    protocol: protocol.clone(),
+    metadata: crate::packet::PacketMetadata::new(),
+    body,
+    ack_notify,
+  };
+  // Fire-and-forget: the admission ack (or its absence) is retried by the
+  // next tick; a full routing queue drops the payload without blocking.
+  runtime.try_send_packet(request)
+}

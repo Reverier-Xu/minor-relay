@@ -129,20 +129,19 @@ impl MembershipPage {
 /// and applies received pages under strict validation.
 pub(crate) mod sync {
   use super::{MAX_PAGE_DESCRIPTORS, MembershipPage};
-  use crate::{Result, provider::StorageFactory};
+  use crate::{Result, api::Entropy, provider::StorageFactory, storage::MetadataStore};
 
-  /// Emits one bounded page of descriptors starting after `cursor`. The
+  /// Emits one bounded page over the running node's metadata store. The
   /// cursor is the last emitted node's text, so pages continue without
-  /// allocating the whole population.
-  pub(crate) async fn emit_page(
-    factory: &std::sync::Arc<dyn StorageFactory>, cursor: Option<&[u8]>, limit: usize,
+  /// allocating the whole population (SC-G05-P0-06).
+  pub(crate) async fn emit_page_ctx(
+    store: &MetadataStore, cursor: Option<&[u8]>, limit: usize,
   ) -> Result<MembershipPage> {
     let limit = limit.clamp(1, MAX_PAGE_DESCRIPTORS);
-    let storage = factory.open(crate::StoreRequirements::metadata()).await?;
     let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
       super::super::NODE_DESCRIPTOR_NAMESPACE,
     )?)?;
-    let snapshot = storage.snapshot().await?;
+    let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
     let mut descriptors = Vec::new();
     let mut last_key: Option<Vec<u8>> = None;
@@ -170,23 +169,24 @@ pub(crate) mod sync {
     MembershipPage::new(descriptors, if reached_end { None } else { last_key })
   }
 
-  /// Applies one received page: every descriptor is already verified by
-  /// `decode_and_verify`; the store accepts only the exact next revision,
-  /// so stale, repeated, downgraded, and replayed descriptors cannot
-  /// replace a newer record (SC-G05-P0-07/08).
-  pub(crate) async fn apply_page(
-    factory: &std::sync::Arc<dyn StorageFactory>, page: &MembershipPage,
+  /// Applies one received page over the running node's metadata store:
+  /// every descriptor is already verified by `decode_and_verify`; the
+  /// store accepts only the exact next revision, so stale, repeated,
+  /// downgraded, and replayed descriptors cannot replace a newer record
+  /// (SC-G05-P0-07/08).
+  pub(crate) async fn apply_page_ctx(
+    store: &MetadataStore, entropy: &dyn Entropy, page: &MembershipPage,
   ) -> Result<usize> {
     let mut applied = 0;
     for descriptor in page.descriptors() {
       // Skip descriptors we already have at an equal or higher revision.
       if let Ok(Some(current)) =
-        super::store::read_descriptor(factory, descriptor.node(), descriptor.public_key()).await
+        super::store::read_descriptor_ctx(store, descriptor.node(), descriptor.public_key()).await
         && current.revision() >= descriptor.revision()
       {
         continue;
       }
-      if super::store::store_descriptor(factory, descriptor)
+      if super::store::store_descriptor_ctx(store, entropy, descriptor)
         .await
         .is_ok()
       {
@@ -194,6 +194,23 @@ pub(crate) mod sync {
       }
     }
     Ok(applied)
+  }
+
+  /// Emits one bounded page of descriptors starting after `cursor` over a
+  /// standalone factory handle (unit/offline path).
+  pub(crate) async fn emit_page(
+    factory: &std::sync::Arc<dyn StorageFactory>, cursor: Option<&[u8]>, limit: usize,
+  ) -> Result<MembershipPage> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    emit_page_ctx(&store, cursor, limit).await
+  }
+
+  /// Applies one received page over a standalone factory handle.
+  pub(crate) async fn apply_page(
+    factory: &std::sync::Arc<dyn StorageFactory>, page: &MembershipPage,
+  ) -> Result<usize> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    apply_page_ctx(&store, &crate::api::SystemEntropy, page).await
   }
 }
 

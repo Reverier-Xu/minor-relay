@@ -81,6 +81,25 @@ impl RecoveryController {
     self.state
   }
 
+  /// The count of known online members still pending an authenticated
+  /// path (the unreachable set the controller is healing).
+  pub(crate) fn pending_count(&self) -> usize {
+    self.pending.len()
+  }
+
+  /// The wall-clock seconds of the next scheduled attempt, when recovery
+  /// is active; `None` when idle or connected.
+  pub(crate) fn next_attempt_seconds(&self, now: u64) -> Option<u64> {
+    if self.state != RecoveryState::Recovering {
+      return None;
+    }
+    Some(
+      self
+        .last_attempt_at
+        .saturating_add(self.backoff_seconds(now)),
+    )
+  }
+
   /// Feeds one observation of which members are reachable and which are
   /// known online. Recovery activates when known online members remain
   /// unreachable (SC-G05-P0-14); it quiesces when all are connected

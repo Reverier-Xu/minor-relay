@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::{
-  Command, ConnectMember, CreateCluster, Error, Event, EventOptions, EventSubscription,
-  GetLocalNode, GetMember, GetNodeStatus, GetRoute, JoinCluster, Listen, NodeStatus,
-  OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget, PageMembers, PageTopology,
-  ProtocolTag, Query, Result, RotateJoinCredential, Shutdown, StopListener, TraceId,
-  WaitForShutdown,
+  Command, ConnectMember, CreateCluster, DisconnectPeer, Error, Event, EventOptions,
+  EventSubscription, GetLocalNode, GetMember, GetNodeStatus, GetRoute, JoinCluster, Listen,
+  NodeStatus, OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget, PageMembers,
+  PageTopology, PageTrust, ProtocolTag, Query, Result, RotateJoinCredential, Shutdown,
+  StartRecovery, StopListener, TraceId, WaitForShutdown,
   api::{BoxFuture, Entropy},
   extension_registry::ExtensionRegistry,
   runtime::RuntimeClient,
@@ -131,6 +131,31 @@ impl DispatchQuery for PageTopology {
     let limit = page.limit();
     let runtime = runtime.clone();
     Box::pin(async move { runtime.page_topology(cursor, limit).await })
+  }
+}
+
+impl DispatchQuery for PageTrust {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.page_trust(cursor, limit).await })
+  }
+}
+
+impl DispatchCommand for StartRecovery {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.start_recovery().await })
+  }
+}
+
+impl DispatchCommand for DisconnectPeer {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let peer = self.peer().clone();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.disconnect_peer(peer).await })
   }
 }
 

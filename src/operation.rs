@@ -274,6 +274,68 @@ impl Query for PageTopology {
   type Output = crate::TopologyPage;
 }
 
+/// Pages the public trust observations (G5-06).
+pub struct PageTrust {
+  page: crate::PageSpec,
+}
+
+impl PageTrust {
+  pub fn new(page: crate::PageSpec) -> Self {
+    Self { page }
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for PageTrust {}
+
+impl Query for PageTrust {
+  type Output = crate::TrustPage;
+}
+
+/// Forces one bounded immediate recovery cycle and returns its view
+/// (G5-06).
+pub struct StartRecovery {
+  _private: (),
+}
+
+#[allow(clippy::new_without_default)]
+impl StartRecovery {
+  pub fn new() -> Self {
+    Self { _private: () }
+  }
+}
+
+impl private::Sealed for StartRecovery {}
+
+impl Command for StartRecovery {
+  type Output = crate::RecoveryView;
+}
+
+/// Closes the authenticated session to one peer (G5-06, partition
+/// simulation and failure matrix).
+pub struct DisconnectPeer {
+  peer: NodeId,
+}
+
+impl DisconnectPeer {
+  pub fn new(peer: NodeId) -> Self {
+    Self { peer }
+  }
+
+  pub(crate) const fn peer(&self) -> &NodeId {
+    &self.peer
+  }
+}
+
+impl private::Sealed for DisconnectPeer {}
+
+impl Command for DisconnectPeer {
+  type Output = ();
+}
+
 /// Queries the in-memory route status of one packet route handle
 /// (ADR-0007: bounded trace metadata only, no durability claim).
 pub struct GetRoute {

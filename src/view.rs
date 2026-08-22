@@ -323,3 +323,101 @@ impl PageSpec {
     self.limit
   }
 }
+
+// ---- G5 trust and recovery views (SC-G05-P0-24..30) ----
+
+/// The trust status of one observed identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TrustStatus {
+  /// The binding is trusted (verified from an admission grant or an
+  /// issuer-signed snapshot).
+  Trusted,
+  /// The binding was revoked (G9 wires revocation).
+  Revoked,
+}
+
+/// One public trust observation: an exact NodeId-to-key binding with its
+/// status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrustedIdentityView {
+  node_id: NodeId,
+  public_key: PublicKey,
+  status: TrustStatus,
+}
+
+impl TrustedIdentityView {
+  pub fn node_id(&self) -> &NodeId {
+    &self.node_id
+  }
+
+  pub fn public_key(&self) -> &PublicKey {
+    &self.public_key
+  }
+
+  pub const fn status(&self) -> TrustStatus {
+    self.status
+  }
+
+  pub(crate) const fn new(node_id: NodeId, public_key: PublicKey, status: TrustStatus) -> Self {
+    Self {
+      node_id,
+      public_key,
+      status,
+    }
+  }
+}
+
+/// One bounded page of trust observations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrustPage {
+  items: Vec<TrustedIdentityView>,
+  next: Option<crate::PageCursor>,
+}
+
+impl TrustPage {
+  pub fn items(&self) -> &[TrustedIdentityView] {
+    &self.items
+  }
+
+  pub fn next(&self) -> Option<&crate::PageCursor> {
+    self.next.as_ref()
+  }
+
+  pub(crate) fn new(items: Vec<TrustedIdentityView>, next: Option<crate::PageCursor>) -> Self {
+    Self { items, next }
+  }
+}
+
+/// The public view of one immediate recovery observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryView {
+  is_connected: bool,
+  unreachable_components: usize,
+  next_attempt_at: Option<std::time::SystemTime>,
+}
+
+impl RecoveryView {
+  pub const fn is_connected(&self) -> bool {
+    self.is_connected
+  }
+
+  pub const fn unreachable_components(&self) -> usize {
+    self.unreachable_components
+  }
+
+  pub const fn next_attempt_at(&self) -> Option<std::time::SystemTime> {
+    self.next_attempt_at
+  }
+
+  pub(crate) const fn new(
+    is_connected: bool, unreachable_components: usize,
+    next_attempt_at: Option<std::time::SystemTime>,
+  ) -> Self {
+    Self {
+      is_connected,
+      unreachable_components,
+      next_attempt_at,
+    }
+  }
+}

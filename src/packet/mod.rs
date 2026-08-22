@@ -158,6 +158,25 @@ pub trait PacketBody: fmt::Debug + Send + 'static {
   fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<Arc<[u8]>>>>;
 }
 
+/// A one-shot body that yields exactly one bounded chunk (core sync and
+/// control streams).
+#[derive(Debug)]
+pub(crate) struct StaticBody {
+  bytes: Option<Arc<[u8]>>,
+}
+
+impl StaticBody {
+  pub(crate) const fn new(bytes: Arc<[u8]>) -> Self {
+    Self { bytes: Some(bytes) }
+  }
+}
+
+impl PacketBody for StaticBody {
+  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<Arc<[u8]>>>> {
+    Box::pin(async move { Ok(self.bytes.take()) })
+  }
+}
+
 /// An outbound packet with its core-allocated [`TraceId`], created by
 /// [`NodeHandle::create_packet`] before any delivery work starts.
 pub struct OutboundPacket {

@@ -4,9 +4,7 @@ use crate::{Error, FeatureTag, Result};
 
 #[derive(Debug)]
 pub struct NodeConfig {
-  // TODO(G5): consumed by the anti-entropy loop when G5 lands.
   anti_entropy_interval: Duration,
-  // TODO(G5): consumed by the recovery state machine when G5 lands.
   recovery: RecoveryConfig,
   session_queue_messages: usize,
   // Wired by G4-04 as the summed encoded-byte budget of one session's
@@ -69,6 +67,17 @@ impl NodeConfig {
 
   pub(crate) const fn receipt_retention(&self) -> Duration {
     self.receipt_retention
+  }
+
+  /// The anti-entropy tick interval (consumed by the membership sync
+  /// driver; nonzero by construction).
+  pub(crate) const fn anti_entropy_interval(&self) -> Duration {
+    self.anti_entropy_interval
+  }
+
+  /// The recovery policy (consumed by the recovery controller).
+  pub(crate) const fn recovery(&self) -> RecoveryConfig {
+    self.recovery
   }
 
   pub(crate) const fn session_queue_messages(&self) -> usize {
@@ -221,6 +230,22 @@ impl RecoveryConfig {
       initial_backoff,
       maximum_backoff,
     })
+  }
+
+  pub(crate) const fn neighbors(&self) -> usize {
+    self.neighbors
+  }
+
+  pub(crate) const fn fan_out(&self) -> usize {
+    self.fan_out
+  }
+
+  pub(crate) fn initial_backoff_seconds(&self) -> u64 {
+    self.initial_backoff.as_secs().max(1)
+  }
+
+  pub(crate) fn maximum_backoff_seconds(&self) -> u64 {
+    self.maximum_backoff.as_secs().max(1)
   }
 }
 

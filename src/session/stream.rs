@@ -476,6 +476,21 @@ async fn liveness_observer(
 /// admissions fail exactly once with `StreamInterrupted`, and the retire
 /// signal closes its reader so the connection tears down after the winner
 /// is registered.
+/// Closes the authenticated session to `peer` from the node side: removes
+/// the entry so no further routing occurs and retires it so its reader and
+/// writer loops end (DisconnectPeer, SC-G05-P0-22 partition simulation).
+/// A missing or already-dead entry is a no-op.
+pub(crate) fn retire_session(table: &SessionTable, peer: &NodeId) -> Result<()> {
+  let entry = table
+    .lock()
+    .map_err(|_| crate::Error::internal("session table"))?
+    .remove(peer);
+  if let Some(entry) = entry {
+    retire(&entry);
+  }
+  Ok(())
+}
+
 fn retire(entry: &SessionEntry) {
   entry.alive.store(false, Ordering::SeqCst);
   if let Ok(mut pending) = entry.pending_acks.lock() {

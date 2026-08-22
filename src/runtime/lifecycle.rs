@@ -104,6 +104,18 @@ pub(crate) enum Control {
     limit: usize,
     reply: oneshot::Sender<Result<crate::TopologyPage>>,
   },
+  PageTrust {
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::TrustPage>>,
+  },
+  StartRecovery {
+    reply: oneshot::Sender<Result<crate::RecoveryView>>,
+  },
+  DisconnectPeer {
+    peer: NodeId,
+    reply: oneshot::Sender<Result<()>>,
+  },
 }
 
 #[derive(Clone)]
@@ -264,6 +276,34 @@ impl RuntimeClient {
         limit,
         reply,
       })
+      .await
+  }
+
+  /// Pages the public trust observations (G5-06).
+  pub(crate) async fn page_trust(
+    &self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::TrustPage> {
+    self
+      .send_command(|reply| Control::PageTrust {
+        cursor,
+        limit,
+        reply,
+      })
+      .await
+  }
+
+  /// Forces one bounded immediate recovery cycle and returns its view
+  /// (G5-06).
+  pub(crate) async fn start_recovery(&self) -> Result<crate::RecoveryView> {
+    self
+      .send_command(|reply| Control::StartRecovery { reply })
+      .await
+  }
+
+  /// Closes the authenticated session to one peer (G5-06).
+  pub(crate) async fn disconnect_peer(&self, peer: NodeId) -> Result<()> {
+    self
+      .send_command(|reply| Control::DisconnectPeer { peer, reply })
       .await
   }
 

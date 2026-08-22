@@ -124,6 +124,11 @@ impl TrustSnapshotV1 {
     &self.bindings
   }
 
+  /// Attaches the issuer signature after it has been produced.
+  pub(crate) fn set_signature(&mut self, signature: Signature) {
+    self.signature = signature;
+  }
+
   /// The canonical body the issuer signs.
   pub(crate) fn encode_signed_body(&self) -> Result<Vec<u8>> {
     encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
@@ -519,15 +524,15 @@ mod tests {
 /// The trust observation store: persists issuer-signed snapshots and
 /// serves bounded paged views over every binding (SC-G04-P0-17).
 pub(crate) mod store {
-  use std::sync::Arc;
+  use std::{collections::BTreeMap, sync::Arc};
 
   use super::{
     TRUST_BINDING_NAMESPACE, TRUST_SNAPSHOT_NAMESPACE, TrustBinding, TrustPage, TrustSnapshotV1,
   };
   use crate::{
     ClusterId, NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace,
-    StoreOperation, StoreRequirements, StoreTransaction, StoreValue, TransactionId,
-    provider::StorageFactory,
+    StoreOperation, StoreValue, TransactionId, api::Entropy, provider::StorageFactory,
+    storage::MetadataStore,
   };
 
   fn snapshot_namespace() -> Result<StoreNamespace> {
@@ -546,16 +551,16 @@ pub(crate) mod store {
     StoreKey::new(Arc::from(bytes))
   }
 
-  /// Persists one verified snapshot as a plain store value.
-  pub(crate) async fn persist_snapshot(
-    factory: &Arc<dyn StorageFactory>, snapshot: &TrustSnapshotV1,
+  /// Persists one verified snapshot over the running node's metadata
+  /// store (runtime path; never re-opens storage).
+  pub(crate) async fn persist_snapshot_ctx(
+    store: &MetadataStore, entropy: &dyn Entropy, snapshot: &TrustSnapshotV1,
   ) -> Result<()> {
-    let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = snapshot_namespace()?;
     let key = snapshot_key(snapshot.issuer(), snapshot.revision());
-    let transaction = StoreTransaction::new(
-      TransactionId::generate(&crate::api::SystemEntropy)?,
-      storage.snapshot().await?.revision().clone(),
+    let transaction = store.prepare_transaction(
+      TransactionId::generate(entropy)?,
+      store.snapshot().await?.revision().clone(),
       vec![StoreOperation::Put {
         namespace: namespace.clone(),
         key: key.clone(),
@@ -563,19 +568,18 @@ pub(crate) mod store {
         value: StoreValue::new(Arc::from(snapshot.encode()?)),
       }],
     )?;
-    let _ = storage.commit(transaction).await?;
+    let _ = store.commit(transaction).await?;
     Ok(())
   }
 
-  /// The highest-revision snapshot for one issuer, verified against the
-  /// caller's trusted context.
-  pub(crate) async fn latest_snapshot(
-    factory: &Arc<dyn StorageFactory>, expected_cluster: &ClusterId, trusted_issuer: &NodeId,
+  /// The highest-revision snapshot for one issuer over the running node's
+  /// metadata store, verified against the caller's trusted context.
+  pub(crate) async fn latest_snapshot_ctx(
+    store: &MetadataStore, expected_cluster: &ClusterId, trusted_issuer: &NodeId,
     trusted_issuer_key: &PublicKey,
   ) -> Result<Option<TrustSnapshotV1>> {
-    let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = snapshot_namespace()?;
-    let snapshot = storage.snapshot().await?;
+    let snapshot = store.snapshot().await?;
     // Scan only this issuer's keys ({issuer}/{revision:020}): a higher
     // revision snapshot from another issuer must never shadow the trusted
     // issuer's latest snapshot.
@@ -610,18 +614,18 @@ pub(crate) mod store {
     )?))
   }
 
-  /// Persists one verified nonconflicting binding.
-  pub(crate) async fn persist_binding(
-    factory: &Arc<dyn StorageFactory>, node: &NodeId, key: &PublicKey,
+  /// Persists one verified nonconflicting binding over the running node's
+  /// metadata store.
+  pub(crate) async fn persist_binding_ctx(
+    store: &MetadataStore, entropy: &dyn Entropy, node: &NodeId, key: &PublicKey,
   ) -> Result<()> {
-    let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = binding_namespace()?;
     let mut bytes = Vec::with_capacity(33);
     bytes.push(1);
     bytes.extend_from_slice(key.as_bytes());
-    let transaction = StoreTransaction::new(
-      TransactionId::generate(&crate::api::SystemEntropy)?,
-      storage.snapshot().await?.revision().clone(),
+    let transaction = store.prepare_transaction(
+      TransactionId::generate(entropy)?,
+      store.snapshot().await?.revision().clone(),
       vec![StoreOperation::Put {
         namespace: namespace.clone(),
         key: StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec())),
@@ -629,19 +633,19 @@ pub(crate) mod store {
         value: StoreValue::new(Arc::from(bytes)),
       }],
     )?;
-    let _ = storage.commit(transaction).await?;
+    let _ = store.commit(transaction).await?;
     Ok(())
   }
 
-  /// Paged trust observations: distinct bindings from verified snapshots,
-  /// deterministically ordered and bounded.
-  pub(crate) async fn paged_trust(
-    factory: &Arc<dyn StorageFactory>, offset: usize, limit: usize,
+  /// Paged trust observations over the running node's metadata store:
+  /// distinct bindings from verified snapshots, deterministically ordered
+  /// and bounded.
+  pub(crate) async fn paged_trust_ctx(
+    store: &MetadataStore, offset: usize, limit: usize,
   ) -> Result<TrustPage> {
-    let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = binding_namespace()?;
     let mut bindings: Vec<TrustBinding> = Vec::new();
-    let snapshot = storage.snapshot().await?;
+    let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
     while let Some(entry) = scan.next().await? {
       let bytes = entry.value().as_bytes();
@@ -661,6 +665,94 @@ pub(crate) mod store {
     let page: Vec<TrustBinding> = bindings.into_iter().skip(offset).take(limit).collect();
     let next = offset.checked_add(page.len()).filter(|end| *end < total);
     Ok(TrustPage::new(page, next))
+  }
+
+  /// The durable trusted bindings as observed from the local identity
+  /// store (`identity_binding_namespace`): every binding this node has
+  /// committed from a verified grant or snapshot adoption. This is the
+  /// authoritative trusted-keys map for membership page verification and
+  /// the recovery online set.
+  pub(crate) async fn trusted_bindings(
+    store: &MetadataStore,
+  ) -> Result<BTreeMap<NodeId, PublicKey>> {
+    let namespace = crate::identity::records::identity_binding_namespace()?;
+    let snapshot = store.snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut bindings = BTreeMap::new();
+    while let Some(entry) = scan.next().await? {
+      let binding = crate::identity::records::IdentityBindingV1::decode(entry.value().as_bytes())
+        .map_err(|_| crate::Error::invalid_input("trust binding decode"))?;
+      bindings.insert(binding.node().clone(), binding.public_key().clone());
+    }
+    Ok(bindings)
+  }
+
+  /// Commits one verified issuer-snapshot binding into the authoritative
+  /// identity store so member-mode dialing and page verification can use
+  /// it (the grant-carrying reconnect path). A node already bound to a
+  /// different key is a key-substitution conflict and fails closed.
+  pub(crate) async fn adopt_binding_ctx(
+    store: &MetadataStore, entropy: &dyn Entropy, node: &NodeId, key: &PublicKey,
+  ) -> Result<()> {
+    let (namespace, store_key) = crate::identity::records::identity_binding_key(node)?;
+    let snapshot = store.snapshot().await?;
+    if let Some(existing) = snapshot.get(&namespace, &store_key).await? {
+      let existing = crate::identity::records::IdentityBindingV1::decode(existing.as_bytes())
+        .map_err(|_| crate::Error::invalid_input("identity binding decode"))?;
+      if existing.public_key() != key {
+        return Err(crate::Error::not_trusted("trust binding key substitution"));
+      }
+      return Ok(());
+    }
+    let binding = crate::identity::records::IdentityBindingV1::new(node.clone(), key.clone());
+    let transaction = store.prepare_transaction(
+      TransactionId::generate(entropy)?,
+      snapshot.revision().clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: store_key,
+        expected: StoreExpectation::Absent,
+        value: StoreValue::new(Arc::from(binding.encode()?)),
+      }],
+    )?;
+    let _ = store.commit(transaction).await?;
+    Ok(())
+  }
+
+  /// Persists one verified snapshot as a plain store value over a
+  /// standalone factory handle.
+  pub(crate) async fn persist_snapshot(
+    factory: &Arc<dyn StorageFactory>, snapshot: &TrustSnapshotV1,
+  ) -> Result<()> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    persist_snapshot_ctx(&store, &crate::api::SystemEntropy, snapshot).await
+  }
+
+  /// The highest-revision snapshot for one issuer over a standalone
+  /// factory handle.
+  pub(crate) async fn latest_snapshot(
+    factory: &Arc<dyn StorageFactory>, expected_cluster: &ClusterId, trusted_issuer: &NodeId,
+    trusted_issuer_key: &PublicKey,
+  ) -> Result<Option<TrustSnapshotV1>> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    latest_snapshot_ctx(&store, expected_cluster, trusted_issuer, trusted_issuer_key).await
+  }
+
+  /// Persists one verified nonconflicting binding over a standalone
+  /// factory handle.
+  pub(crate) async fn persist_binding(
+    factory: &Arc<dyn StorageFactory>, node: &NodeId, key: &PublicKey,
+  ) -> Result<()> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    persist_binding_ctx(&store, &crate::api::SystemEntropy, node, key).await
+  }
+
+  /// Paged trust observations over a standalone factory handle.
+  pub(crate) async fn paged_trust(
+    factory: &Arc<dyn StorageFactory>, offset: usize, limit: usize,
+  ) -> Result<TrustPage> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    paged_trust_ctx(&store, offset, limit).await
   }
 }
 

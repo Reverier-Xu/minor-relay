@@ -51,12 +51,14 @@ pub(crate) struct ProtocolRegistration {
   pub(crate) consumer: Arc<dyn PacketConsumer>,
 }
 
-/// The node-local extension registry. Registrations are immutable for the
-/// node's lifetime and are installed through
-/// [`crate::NodeBuilder::extensions`].
+/// The node-local extension registry. Caller registrations are immutable
+/// for the node's lifetime and are installed through
+/// [`crate::NodeBuilder::extensions`]; core protocols are registered by
+/// the runtime at startup through
+/// [`ExtensionRegistry::register_core_protocol`].
 #[derive(Default)]
 pub struct ExtensionRegistry {
-  protocols: BTreeMap<ProtocolTag, ProtocolRegistration>,
+  protocols: std::sync::Mutex<BTreeMap<ProtocolTag, Arc<ProtocolRegistration>>>,
   transports: BTreeMap<TransportTag, Arc<dyn Transport>>,
   discoveries: BTreeMap<DiscoveryTag, Arc<dyn Discovery>>,
 }
@@ -108,27 +110,54 @@ impl ExtensionRegistry {
   pub fn register_protocol(
     &mut self, value: ProtocolDefinition, consumer: Arc<dyn PacketConsumer>,
   ) -> Result<&mut Self> {
-    if self.protocols.contains_key(&value.tag) {
-      return Err(Error::conflict("protocol registration"));
-    }
-    self.protocols.insert(
-      value.tag.clone(),
-      ProtocolRegistration {
-        definition: value,
-        consumer,
-      },
-    );
+    self.register_protocol_inner(value, consumer)?;
     Ok(self)
   }
 
+  /// Registers a core (runtime-owned) packet protocol after the node's
+  /// identity is provisioned; the same duplicate/conflict rules apply.
+  pub(crate) fn register_core_protocol(
+    &self, value: ProtocolDefinition, consumer: Arc<dyn PacketConsumer>,
+  ) -> Result<()> {
+    self.register_protocol_inner(value, consumer)
+  }
+
+  fn register_protocol_inner(
+    &self, value: ProtocolDefinition, consumer: Arc<dyn PacketConsumer>,
+  ) -> Result<()> {
+    let mut protocols = self
+      .protocols
+      .lock()
+      .map_err(|_| Error::internal("extension registry"))?;
+    if protocols.contains_key(&value.tag) {
+      return Err(Error::conflict("protocol registration"));
+    }
+    protocols.insert(
+      value.tag.clone(),
+      Arc::new(ProtocolRegistration {
+        definition: value,
+        consumer,
+      }),
+    );
+    Ok(())
+  }
+
   /// The registration for one protocol tag, when present.
-  pub(crate) fn protocol(&self, tag: &ProtocolTag) -> Option<&ProtocolRegistration> {
-    self.protocols.get(tag)
+  pub(crate) fn protocol(&self, tag: &ProtocolTag) -> Option<Arc<ProtocolRegistration>> {
+    self
+      .protocols
+      .lock()
+      .ok()
+      .and_then(|protocols| protocols.get(tag).cloned())
   }
 
   /// Whether the protocol tag is registered locally.
   pub(crate) fn has_protocol(&self, tag: &ProtocolTag) -> bool {
-    self.protocols.contains_key(tag)
+    self
+      .protocols
+      .lock()
+      .ok()
+      .is_some_and(|protocols| protocols.contains_key(tag))
   }
 }
 
@@ -136,7 +165,14 @@ impl fmt::Debug for ExtensionRegistry {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
     formatter
       .debug_struct("ExtensionRegistry")
-      .field("protocols", &self.protocols.len())
+      .field(
+        "protocols",
+        &self
+          .protocols
+          .lock()
+          .map(|protocols| protocols.len())
+          .unwrap_or(0),
+      )
       .field("transports", &self.transports.len())
       .field("discoveries", &self.discoveries.len())
       .finish()

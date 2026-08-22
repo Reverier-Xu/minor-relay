@@ -194,6 +194,7 @@ pub(crate) fn node_descriptor_digest(descriptor: &NodeDescriptorV1) -> Result<cr
 pub(crate) mod neighbor;
 pub(crate) mod page;
 pub(crate) mod recovery;
+pub(crate) mod sync;
 
 pub(crate) mod store {
   use std::sync::Arc;
@@ -201,7 +202,7 @@ pub(crate) mod store {
   use super::{NODE_DESCRIPTOR_NAMESPACE, NodeDescriptorV1};
   use crate::{
     Error, NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
-    StoreRequirements, StoreTransaction, StoreValue, TransactionId, provider::StorageFactory,
+    StoreValue, TransactionId, api::Entropy, provider::StorageFactory, storage::MetadataStore,
   };
 
   fn namespace() -> Result<StoreNamespace> {
@@ -212,14 +213,14 @@ pub(crate) mod store {
     StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec()))
   }
 
-  /// Reads the current descriptor for one node, if any.
-  pub(crate) async fn read_descriptor(
-    factory: &Arc<dyn StorageFactory>, node: &NodeId, bound_key: &PublicKey,
+  /// Reads the current descriptor for one node, if any, over the running
+  /// node's metadata store (the runtime path; never re-opens storage).
+  pub(crate) async fn read_descriptor_ctx(
+    store: &MetadataStore, node: &NodeId, bound_key: &PublicKey,
   ) -> Result<Option<NodeDescriptorV1>> {
-    let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = namespace()?;
     let key = descriptor_key(node);
-    let value = storage.snapshot().await?.get(&namespace, &key).await?;
+    let value = store.snapshot().await?.get(&namespace, &key).await?;
     let Some(value) = value else {
       return Ok(None);
     };
@@ -229,16 +230,17 @@ pub(crate) mod store {
     )?))
   }
 
-  /// Stores one descriptor. The revision must be exactly one greater than
-  /// the current record's revision; the first record starts at revision 1.
-  /// Same-revision, stale, and skipped revisions are rejected (SC-G05-P0-03).
-  pub(crate) async fn store_descriptor(
-    factory: &Arc<dyn StorageFactory>, descriptor: &NodeDescriptorV1,
+  /// Stores one descriptor over the running node's metadata store. The
+  /// revision must be exactly one greater than the current record's
+  /// revision; the first record starts at revision 1. Same-revision,
+  /// stale, and skipped revisions are rejected (SC-G05-P0-03).
+  pub(crate) async fn store_descriptor_ctx(
+    store: &MetadataStore, entropy: &dyn Entropy, descriptor: &NodeDescriptorV1,
   ) -> Result<()> {
-    let storage = factory.open(StoreRequirements::metadata()).await?;
     let namespace = namespace()?;
     let key = descriptor_key(descriptor.node());
-    let current = storage.snapshot().await?.get(&namespace, &key).await?;
+    let snapshot = store.snapshot().await?;
+    let current = snapshot.get(&namespace, &key).await?;
     if let Some(existing) = current {
       let existing =
         NodeDescriptorV1::decode_and_verify(existing.as_bytes(), descriptor.public_key())?;
@@ -253,15 +255,13 @@ pub(crate) mod store {
     } else if descriptor.revision() != 1 {
       return Err(Error::conflict("node descriptor revision"));
     }
-    // The store updates the same key; the expectation reflects the current
-    // value (or absence on first insert) so the commit is conditional.
-    let expected = match storage.snapshot().await?.get(&namespace, &key).await? {
+    let expected = match store.snapshot().await?.get(&namespace, &key).await? {
       Some(current) => StoreExpectation::Exact(current.digest().clone()),
       None => StoreExpectation::Absent,
     };
-    let transaction = StoreTransaction::new(
-      TransactionId::generate(&crate::api::SystemEntropy)?,
-      storage.snapshot().await?.revision().clone(),
+    let transaction = store.prepare_transaction(
+      TransactionId::generate(entropy)?,
+      store.snapshot().await?.revision().clone(),
       vec![StoreOperation::Put {
         namespace,
         key,
@@ -269,8 +269,25 @@ pub(crate) mod store {
         value: StoreValue::new(Arc::from(descriptor.encode()?)),
       }],
     )?;
-    let _ = storage.commit(transaction).await?;
+    let _ = store.commit(transaction).await?;
     Ok(())
+  }
+
+  /// Reads the current descriptor for one node over a standalone factory
+  /// handle (unit/offline path; the caller owns the opened store).
+  pub(crate) async fn read_descriptor(
+    factory: &Arc<dyn StorageFactory>, node: &NodeId, bound_key: &PublicKey,
+  ) -> Result<Option<NodeDescriptorV1>> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    read_descriptor_ctx(&store, node, bound_key).await
+  }
+
+  /// Stores one descriptor over a standalone factory handle.
+  pub(crate) async fn store_descriptor(
+    factory: &Arc<dyn StorageFactory>, descriptor: &NodeDescriptorV1,
+  ) -> Result<()> {
+    let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
+    store_descriptor_ctx(&store, &crate::api::SystemEntropy, descriptor).await
   }
 }
 

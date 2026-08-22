@@ -125,6 +125,8 @@ async fn supervise(
   }
 
   let mut supervisor = Supervisor::new(dependencies);
+  let mut recovery_timer = tokio::time::interval(std::time::Duration::from_millis(100));
+  recovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
   loop {
     tokio::select! {
       message = control.recv() => {
@@ -193,6 +195,18 @@ async fn supervise(
         let result = supervisor.page_topology(cursor, limit).await;
         let _ = reply.send(result);
       }
+      Control::PageTrust { cursor, limit, reply } => {
+        let result = supervisor.page_trust(cursor, limit).await;
+        let _ = reply.send(result);
+      }
+      Control::StartRecovery { reply } => {
+        let result = supervisor.start_recovery();
+        let _ = reply.send(result);
+      }
+      Control::DisconnectPeer { peer, reply } => {
+        let result = supervisor.disconnect_peer(&peer);
+        let _ = reply.send(result);
+      }
         }
       }
       request = packets.recv() => {
@@ -200,6 +214,9 @@ async fn supervise(
           continue;
         };
         let _ = supervisor.send_packet(request, &mut tasks);
+      }
+      _ = recovery_timer.tick() => {
+        let _ = supervisor.recovery_tick(&mut tasks).await;
       }
     }
   }
@@ -245,6 +262,9 @@ struct Supervisor {
   packet: Arc<SessionPacketContext>,
   route_capacity: usize,
   listeners: BTreeMap<crate::identity::ListenerId, (Endpoint, AbortHandle)>,
+  recovery: crate::membership::recovery::RecoveryController,
+  recovery_pending: usize,
+  published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>>,
 }
 
 impl Supervisor {
@@ -272,6 +292,7 @@ impl Supervisor {
       std::sync::Arc::new(crate::storage::receipt::HostWallClock),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
+    let sync_context = Arc::clone(&context);
     let driver = SessionDriver::new(
       context,
       dependencies.keys.clone(),
@@ -279,7 +300,75 @@ impl Supervisor {
       Arc::new(std::sync::Mutex::new(JoinCredentialIssuer::new())),
       offer,
     );
+    // The membership sync protocol is core behavior, registered after the
+    // identity is provisioned; a caller cannot register the same tag.
+    let sync_definition = crate::membership::sync::sync_protocol_definition()
+      .unwrap_or_else(|_| unreachable!("membership sync protocol is valid"));
+    let sync_consumer = Arc::new(crate::membership::sync::MembershipSyncConsumer::new(
+      Arc::clone(&sync_context),
+      dependencies.entropy.clone(),
+    ));
+    dependencies
+      .extensions
+      .register_core_protocol(sync_definition, sync_consumer)
+      .unwrap_or_else(|_| unreachable!("membership sync protocol registers once"));
     let (shutdown_tx, _) = watch::channel(());
+    let published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>> = Arc::default();
+    // The anti-entropy driver pages descriptors and the issuer trust
+    // snapshot over every authenticated session on the configured interval
+    // and stops on the shutdown signal (SC-G05-P0-22: streams metadata
+    // pages; bounded work per tick).
+    {
+      let driver_context = Arc::clone(&sync_context);
+      let driver_keys = dependencies.keys.clone();
+      let driver_entropy = dependencies.entropy.clone();
+      let driver_sessions = dependencies.sessions.clone();
+      let driver_runtime = crate::runtime::RuntimeClient::routing_only(
+        dependencies
+          .packet_tx
+          .clone()
+          .unwrap_or_else(|| unreachable!("packet channel is provisioned at startup")),
+        dependencies.routes.clone(),
+      );
+      let driver_endpoints = Arc::clone(&published_endpoints);
+      let driver_interval = dependencies.config.anti_entropy_interval();
+      let mut driver_shutdown = shutdown_tx.subscribe();
+      tokio::spawn(async move {
+        let mut timer = tokio::time::interval(driver_interval);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+          tokio::select! {
+            changed = driver_shutdown.changed() => {
+              let _ = changed;
+              break;
+            }
+            _ = timer.tick() => {
+              let endpoints: Vec<Endpoint> = driver_endpoints
+                .lock()
+                .map(|endpoints| endpoints.clone())
+                .unwrap_or_default();
+              let _ = crate::membership::sync::sync_tick(
+                &driver_context,
+                &driver_keys,
+                &driver_entropy,
+                &driver_sessions,
+                &driver_runtime,
+                &endpoints,
+              )
+              .await;
+            }
+          }
+        }
+      });
+    }
+    let recovery = crate::membership::recovery::RecoveryController::new(
+      crate::membership::recovery::RecoveryPolicy::new(
+        dependencies.config.recovery().neighbors(),
+        dependencies.config.recovery().fan_out(),
+        dependencies.config.recovery().initial_backoff_seconds(),
+        dependencies.config.recovery().maximum_backoff_seconds(),
+      ),
+    );
     Self {
       dependencies,
       shutdown_tx,
@@ -288,6 +377,9 @@ impl Supervisor {
       packet,
       route_capacity,
       listeners: BTreeMap::new(),
+      recovery,
+      recovery_pending: 0,
+      published_endpoints,
     }
   }
 
@@ -400,14 +492,25 @@ impl Supervisor {
     });
     let id = crate::identity::ListenerId::generate(self.dependencies.entropy.as_ref())?;
     self.listeners.insert(id.clone(), (bound.clone(), abort));
+    // Publish the bound endpoint so the next anti-entropy tick pages it in
+    // the local descriptor (recovery dials peers through published
+    // endpoints).
+    if let Ok(mut endpoints) = self.published_endpoints.lock()
+      && !endpoints.contains(&bound)
+    {
+      endpoints.push(bound.clone());
+    }
     Ok(ListenerView::new(id, bound))
   }
 
   fn stop_listener(&mut self, listener: &crate::identity::ListenerId) -> Result<()> {
-    let Some((_, abort)) = self.listeners.remove(listener) else {
+    let Some((endpoint, abort)) = self.listeners.remove(listener) else {
       return Err(Error::not_found("listener"));
     };
     abort.abort();
+    if let Ok(mut endpoints) = self.published_endpoints.lock() {
+      endpoints.retain(|candidate| candidate != &endpoint);
+    }
     Ok(())
   }
 
@@ -561,50 +664,22 @@ impl Supervisor {
   }
 
   /// Lazily publishes this node's own signed descriptor (revision 1) so
-  /// the public views always expose the local identity. Endpoints are
-  /// published by the listeners once G5-06 wires candidate publication.
+  /// the public views always expose the local identity, with the
+  /// published listener endpoints.
   async fn ensure_self_descriptor(&mut self) -> Result<()> {
     let context = self.context()?;
-    let node = context.identity().node().clone();
-    let public_key = context.identity().public_key().clone();
-    let store = context.store();
-    let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
-      crate::membership::NODE_DESCRIPTOR_NAMESPACE,
-    )?)?;
-    let key = crate::StoreKey::new(std::sync::Arc::from(node.as_str().as_bytes().to_vec()));
-    let snapshot = store.snapshot().await?;
-    if snapshot.get(&namespace, &key).await?.is_some() {
-      return Ok(());
-    }
-    let mut descriptor = crate::membership::NodeDescriptorV1::new(
-      node.clone(),
-      public_key.clone(),
-      Vec::new(),
-      1,
-      false,
-      1,
-      crate::Signature::from_bytes([0; 64]),
-    );
-    let handle = context.identity().handle().clone();
-    let keys = Arc::clone(&self.dependencies.keys);
-    let message = crate::identity::signature::signature_message(
-      crate::membership::NODE_DESCRIPTOR_V1_DOMAIN,
-      &descriptor.encode_signed_body()?,
-    );
-    let signature = keys.sign(&handle, &message).await?;
-    descriptor.set_signature(signature);
-    let transaction = store.prepare_transaction(
-      crate::TransactionId::generate(self.dependencies.entropy.as_ref())?,
-      snapshot.revision().clone(),
-      vec![crate::StoreOperation::Put {
-        namespace,
-        key,
-        expected: crate::StoreExpectation::Absent,
-        value: crate::StoreValue::new(std::sync::Arc::from(descriptor.encode()?)),
-      }],
-    )?;
-    let _ = store.commit(transaction).await?;
-    Ok(())
+    let endpoints = self
+      .published_endpoints
+      .lock()
+      .map(|endpoints| endpoints.clone())
+      .unwrap_or_default();
+    crate::membership::sync::ensure_local_descriptor(
+      &context,
+      &self.dependencies.keys,
+      &self.dependencies.entropy,
+      endpoints,
+    )
+    .await
   }
 
   /// One member's public observation from the signed descriptor store and
@@ -744,6 +819,129 @@ impl Supervisor {
     Ok(crate::TopologyPage::new(items, next))
   }
 
+  /// Pages the public trust observations (SC-G05-P0-25): the exact
+  /// NodeId-to-key bindings verified locally, deterministically ordered
+  /// and bounded.
+  async fn page_trust(
+    &mut self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::TrustPage> {
+    let limit = limit.clamp(1, 64);
+    let offset = cursor
+      .as_ref()
+      .map(|cursor| {
+        String::from_utf8_lossy(cursor.as_bytes())
+          .parse()
+          .unwrap_or(0)
+      })
+      .unwrap_or(0);
+    let context = self.context()?;
+    let observations =
+      crate::identity::trust::store::paged_trust_ctx(context.store(), offset, limit).await?;
+    let items = observations
+      .bindings()
+      .iter()
+      .map(|binding| {
+        crate::TrustedIdentityView::new(
+          binding.node().clone(),
+          binding.key().clone(),
+          crate::TrustStatus::Trusted,
+        )
+      })
+      .collect();
+    let next = observations
+      .next()
+      .map(|next| crate::PageCursor::new(std::sync::Arc::from(next.to_string().into_bytes())));
+    Ok(crate::TrustPage::new(items, next))
+  }
+
+  /// Forces one bounded immediate recovery cycle (SC-G05-P0-19) and
+  /// returns the public recovery view.
+  fn start_recovery(&mut self) -> Result<crate::RecoveryView> {
+    self.recovery.immediate(now_seconds());
+    Ok(self.recovery_view())
+  }
+
+  /// Closes the authenticated session to one peer (SC-G05-P0-22 partition
+  /// simulation).
+  fn disconnect_peer(&self, peer: &NodeId) -> Result<()> {
+    crate::session::stream::retire_session(&self.dependencies.sessions, peer)
+  }
+
+  /// The public recovery observation: whether every known online member
+  /// has an authenticated path, how many members remain unreachable, and
+  /// the next scheduled attempt.
+  fn recovery_view(&self) -> crate::RecoveryView {
+    let now = now_seconds();
+    crate::RecoveryView::new(
+      self.recovery.state() == crate::membership::recovery::RecoveryState::Connected,
+      self.recovery.pending_count(),
+      self
+        .recovery
+        .next_attempt_seconds(now)
+        .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+    )
+  }
+
+  /// One recovery observation tick: feed the controller the durable online
+  /// set and the reachable sessions, then dial unreachable members whose
+  /// endpoints are published, through the configured bounded fan-out
+  /// (SC-G05-P0-14/17/22: recovery restores authenticated path
+  /// connectivity and quiesces).
+  async fn recovery_tick(&mut self, tasks: &mut JoinSet<()>) -> Result<()> {
+    let context = self.context()?;
+    let store = context.store();
+    let bindings = crate::identity::trust::store::trusted_bindings(store).await?;
+    let online: std::collections::BTreeSet<NodeId> = bindings.keys().cloned().collect();
+    let reachable: std::collections::BTreeSet<NodeId> = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .iter()
+      .filter(|(_, entry)| entry.alive())
+      .map(|(peer, _)| peer.clone())
+      .collect();
+    let now = now_seconds();
+    self.recovery.observe(now, &online, &reachable);
+    if self.recovery.state() != crate::membership::recovery::RecoveryState::Recovering
+      || !self.recovery.due(now)
+      || self.recovery_pending >= self.dependencies.config.recovery().fan_out().max(1)
+    {
+      return Ok(());
+    }
+    // Candidates are unreachable members with a published endpoint from
+    // their signed descriptor; reachability stays distinct from the active
+    // topology (SC-G05-P0-11).
+    let mut candidates = std::collections::BTreeSet::new();
+    for member in online.difference(&reachable) {
+      if let Some(public_key) = bindings.get(member)
+        && let Ok(Some(descriptor)) =
+          crate::membership::store::read_descriptor_ctx(store, member, public_key).await
+        && let Some(endpoint) = descriptor.endpoints().first()
+      {
+        candidates.insert((member.clone(), endpoint.clone()));
+      }
+    }
+    let step = self.recovery.next_step(
+      now,
+      &candidates
+        .iter()
+        .map(|(member, _)| member.clone())
+        .collect(),
+    );
+    for (member, endpoint) in candidates {
+      if step.targets.contains(&member) {
+        self.recovery_pending = self.recovery_pending.saturating_add(1);
+        let receiver = endpoint.clone();
+        let peer = member.clone();
+        let _ = self.connect_member(receiver, peer.clone(), tasks).await;
+        self.recovery_pending = self.recovery_pending.saturating_sub(1);
+        self.recovery.connected(&peer);
+      }
+    }
+    Ok(())
+  }
+
   async fn local_node(&mut self) -> Result<LocalNodeView> {
     let context = self.context()?;
     let pointer = crate::identity::genesis::local_cluster(&context)
@@ -776,4 +974,13 @@ impl Supervisor {
     }
     Ok(())
   }
+}
+
+/// Host wall-clock seconds (the recovery controller's tick unit; re-read
+/// after every wake so rollback, freeze, and forward jumps are observed).
+fn now_seconds() -> u64 {
+  std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|duration| duration.as_secs())
+    .unwrap_or(0)
 }

@@ -57,9 +57,9 @@ pub use identity::{
 };
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{
-  Command, ConnectMember, CreateCluster, Event, GetLocalNode, GetMember, GetNodeStatus, GetRoute,
-  JoinCluster, Listen, PageMembers, PageTopology, Query, RotateJoinCredential, Shutdown,
-  StopListener, WaitForShutdown,
+  Command, ConnectMember, CreateCluster, DisconnectPeer, Event, GetLocalNode, GetMember,
+  GetNodeStatus, GetRoute, JoinCluster, Listen, PageMembers, PageTopology, PageTrust, Query,
+  RotateJoinCredential, Shutdown, StartRecovery, StopListener, WaitForShutdown,
 };
 pub use packet::{
   DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,
@@ -80,8 +80,8 @@ pub use transport::{
 };
 pub use view::{
   AdmissionView, ClusterView, ConnectivityStatus, ListenerView, LocalNodeView, MemberPage,
-  MemberView, NodeStatus, PageSpec, ShutdownOutcome, ShutdownReason, TopologyEdgeView,
-  TopologyPage,
+  MemberView, NodeStatus, PageSpec, RecoveryView, ShutdownOutcome, ShutdownReason,
+  TopologyEdgeView, TopologyPage, TrustPage, TrustStatus, TrustedIdentityView,
 };
 
 pub mod extension {
