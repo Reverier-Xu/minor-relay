@@ -1269,3 +1269,90 @@ async fn secure_join_join_after_listener_stop_fails_closed() {
   late.handle.command(Shutdown::new()).await.unwrap();
   receiver.handle.command(Shutdown::new()).await.unwrap();
 }
+
+// ---- T-G04-03 crossed-dial evidence (SC-G04-P0-09..11, E2E-03) ----
+
+/// E2E-03 / SC-G04-P0-09: simultaneous dials converge to one authenticated
+/// session. The receiver accepts the joiner (incoming) and then dials the
+/// joiner back (outgoing); the deterministic ownership rule keeps exactly
+/// one connection and the drained one tears down without breaking the
+/// surviving session's packet path.
+#[tokio::test]
+async fn secure_join_crossed_dial_converges_to_one_session() {
+  let receiver_collector = Arc::new(Collector::default());
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(200_000)),
+      protocol("test-echo"),
+      Arc::clone(&receiver_collector),
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let receiver_listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+
+  let joiner_collector = Arc::new(Collector::default());
+  let joiner = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(210_000)),
+      protocol("test-echo"),
+      Arc::clone(&joiner_collector),
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  let admission = joiner
+    .handle
+    .command(JoinCluster::new(
+      receiver_listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+
+  // The joiner now listens so the receiver can dial it back.
+  let joiner_listener = joiner
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+  let joiner_id = admission.admitted_node().clone();
+
+  // Crossed dial: the receiver dials the already-connected joiner while the
+  // incoming session from the join is still live.
+  let authenticated = receiver
+    .handle
+    .command(ConnectMember::new(
+      joiner_listener.endpoint().clone(),
+      joiner_id.clone(),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(authenticated, joiner_id);
+
+  // The surviving session must still carry packets in both directions; the
+  // drained connection must not break it.
+  for _ in 0..3 {
+    receiver_collector.packets.lock().unwrap().clear();
+    joiner_collector.packets.lock().unwrap().clear();
+    packet_round_trip(&joiner.handle, &receiver_id, &receiver_collector).await;
+    packet_round_trip(&receiver.handle, &joiner_id, &joiner_collector).await;
+  }
+
+  joiner.handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}
