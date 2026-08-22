@@ -135,7 +135,8 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
 /// Every node's membership page converges to `expected` descriptors, all
 /// at the expected owner revision.
 async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeout: Duration) {
-  let deadline = std::time::Instant::now() + timeout;
+  let started = std::time::Instant::now();
+  let deadline = started + timeout;
   loop {
     let mut complete = true;
     for node in nodes {
@@ -146,6 +147,10 @@ async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeou
       }
     }
     if complete {
+      eprintln!(
+        "DESCRIPTORS converged to {expected} in {:?}",
+        started.elapsed()
+      );
       return;
     }
     assert!(
