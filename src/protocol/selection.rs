@@ -251,7 +251,7 @@ struct SelectionWire {
 mod tests {
   use super::{
     super::{
-      feature::FeatureRegistry,
+      feature::{AUTH_ED25519_SESSION, DATA_MESSAGES, DIRECT_REQUEST, FeatureRegistry, ROUTED_DELIVERY, SESSION_CORE},
       offer::fixtures::{self, initiator_offer, responder_offer},
     },
     *,
@@ -298,11 +298,11 @@ mod tests {
         .map(|tag| tag.as_str())
         .collect::<Vec<_>>(),
       [
-        "relay.woooo.tech/features/auth-ed25519-session",
-        "relay.woooo.tech/features/data-messages",
-        "relay.woooo.tech/features/direct-request",
-        "relay.woooo.tech/features/routed-delivery",
-        "relay.woooo.tech/features/session-core",
+        AUTH_ED25519_SESSION,
+        DATA_MESSAGES,
+        DIRECT_REQUEST,
+        ROUTED_DELIVERY,
+        SESSION_CORE,
       ]
     );
     assert_eq!(
@@ -405,7 +405,7 @@ mod tests {
     assert_eq!(
       error,
       SelectionError::DigestMismatch {
-        label: "relay.woooo.tech/features/auth-ed25519-session".to_owned(),
+        label: AUTH_ED25519_SESSION.to_owned(),
       }
     );
 
@@ -438,16 +438,16 @@ mod tests {
     assert_eq!(
       error,
       SelectionError::DigestMismatch {
-        label: "relay.woooo.tech/features/auth-ed25519-session".to_owned(),
+        label: AUTH_ED25519_SESSION.to_owned(),
       }
     );
 
     // Step 3: dependency fixed point prunes unsatisfiable labels.
     let partial = FeatureOffer::new(
       vec![
-        supported_entry(&registry, "relay.woooo.tech/features/auth-ed25519-session"),
-        supported_entry(&registry, "relay.woooo.tech/features/session-core"),
-        supported_entry(&registry, "relay.woooo.tech/features/direct-request"),
+        supported_entry(&registry, AUTH_ED25519_SESSION),
+        supported_entry(&registry, SESSION_CORE),
+        supported_entry(&registry, DIRECT_REQUEST),
       ],
       vec![fixtures::feature("auth-ed25519-session")],
       vec![(fixtures::limit("in-flight-requests"), 256)],
@@ -464,7 +464,7 @@ mod tests {
     assert_eq!(
       error,
       SelectionError::MissingRequired {
-        label: "relay.woooo.tech/features/data-messages".to_owned(),
+        label: DATA_MESSAGES.to_owned(),
       }
     );
 

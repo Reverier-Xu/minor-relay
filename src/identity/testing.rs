@@ -29,7 +29,7 @@ use crate::{
 };
 
 pub(crate) const RETENTION: Duration = Duration::from_secs(3_600);
-pub(crate) const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
+pub(crate) use crate::storage::pending::PENDING_NAMESPACE;
 
 /// Deterministic entropy: fills produce base62 suffix values 1, 2, 3, ...;
 /// every test uses fewer than ten fills per id, so decimal zero-padding

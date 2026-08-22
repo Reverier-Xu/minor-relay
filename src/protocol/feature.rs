@@ -42,12 +42,23 @@ const BUILTIN_DOMAIN: &str = "relay.woooo.tech";
 const BUILTIN_TEST_OWNER: &str = "VERIFY-G03-01";
 const FINGERPRINT_SEED_PREFIX: &str = "relay.woooo.tech/crypto/feature-fingerprint-v1/";
 
-const AUTH_ED25519_SESSION: &str = "relay.woooo.tech/features/auth-ed25519-session";
-const SESSION_CORE: &str = "relay.woooo.tech/features/session-core";
-const DATA_MESSAGES: &str = "relay.woooo.tech/features/data-messages";
-const DIRECT_REQUEST: &str = "relay.woooo.tech/features/direct-request";
-const ROUTED_DELIVERY: &str = "relay.woooo.tech/features/routed-delivery";
-const DATA_BODY_BYTES_LIMIT: &str = "relay.woooo.tech/limits/data-body-bytes";
+pub(crate) const AUTH_ED25519_SESSION: &str = "relay.woooo.tech/features/auth-ed25519-session";
+pub(crate) const SESSION_CORE: &str = "relay.woooo.tech/features/session-core";
+pub(crate) const DATA_MESSAGES: &str = "relay.woooo.tech/features/data-messages";
+pub(crate) const DIRECT_REQUEST: &str = "relay.woooo.tech/features/direct-request";
+pub(crate) const ROUTED_DELIVERY: &str = "relay.woooo.tech/features/routed-delivery";
+pub(crate) const DATA_BODY_BYTES_LIMIT: &str = "relay.woooo.tech/limits/data-body-bytes";
+
+/// The five built-in feature labels in declaration order. Fixtures and
+/// tests reuse this single list so adding a built-in feature cannot
+/// silently desynchronize the offer and selection fixtures.
+pub(crate) const BUILTIN_FEATURE_LABELS: [&str; 5] = [
+  AUTH_ED25519_SESSION,
+  SESSION_CORE,
+  DATA_MESSAGES,
+  DIRECT_REQUEST,
+  ROUTED_DELIVERY,
+];
 const IN_FLIGHT_REQUESTS_LIMIT: &str = "relay.woooo.tech/limits/in-flight-requests";
 const DIRECT_REQUEST_PROTOCOL: &str = "relay.woooo.tech/protocols/direct-request";
 

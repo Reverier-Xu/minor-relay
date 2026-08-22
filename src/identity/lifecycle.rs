@@ -500,7 +500,7 @@ mod tests {
   };
 
   const RETENTION: Duration = Duration::from_secs(3_600);
-  const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
+  use crate::storage::pending::PENDING_NAMESPACE;
 
   // Entropy fills produce base62 suffix values 1, 2, 3, ...; every test uses
   // fewer than ten fills, so decimal zero-padding matches base62 encoding.

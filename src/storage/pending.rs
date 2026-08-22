@@ -37,7 +37,7 @@ use crate::{
   provider::{StorageFactory, StoreSnapshot},
 };
 
-const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
+pub(crate) const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
 const PENDING_SCHEMA: &str = "relay.woooo.tech/schemas/pending-transaction-v1";
 const RECORD_VERSION: u64 = 1;
 const MAX_PURPOSE_LEN: usize = 128;
@@ -786,8 +786,10 @@ mod tests {
   const PURPOSE: &str = "local-identity";
   const TRANSACTION: &str = "txn_0123456789abcdefghijk";
   const FORGOTTEN_TRANSACTION: &str = "txn_111111111111111111111";
-  const IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
-  const GENESIS_NAMESPACE: &str = "relay.woooo.tech/metadata/cluster-genesis-v1";
+  use crate::identity::records::{
+    CLUSTER_GENESIS_NAMESPACE as GENESIS_NAMESPACE,
+    LOCAL_IDENTITY_NAMESPACE as IDENTITY_NAMESPACE,
+  };
 
   fn namespace(value: &str) -> StoreNamespace {
     StoreNamespace::new(QualifiedTag::parse(value).unwrap()).unwrap()

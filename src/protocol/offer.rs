@@ -317,13 +317,7 @@ pub(crate) mod fixtures {
   use super::{super::feature::FeatureRegistry, FeatureOffer, FeatureTag, QualifiedTag};
   use crate::Digest;
 
-  pub(crate) const BUILTIN_FEATURES: [&str; 5] = [
-    "relay.woooo.tech/features/auth-ed25519-session",
-    "relay.woooo.tech/features/session-core",
-    "relay.woooo.tech/features/data-messages",
-    "relay.woooo.tech/features/direct-request",
-    "relay.woooo.tech/features/routed-delivery",
-  ];
+  pub(crate) const BUILTIN_FEATURES: [&str; 5] = crate::protocol::feature::BUILTIN_FEATURE_LABELS;
 
   pub(crate) fn feature(name: &str) -> FeatureTag {
     FeatureTag::parse(&format!("relay.woooo.tech/features/{name}")).unwrap()
