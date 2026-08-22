@@ -27,7 +27,10 @@ use futures_util::{
 use rustls::{ClientConfig, ConnectionCommon, ServerConfig, pki_types::ServerName};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
+use tokio_tungstenite::{
+  WebSocketStream,
+  tungstenite::{Bytes as WsBytes, Message as WsMessage},
+};
 
 use super::{ws, ws::JoinHint};
 use crate::{
@@ -74,6 +77,8 @@ pub(crate) struct Connection {
   channel_binding: [u8; CHANNEL_BINDING_LEN],
   join_hint: Option<JoinHint>,
   source: Option<crate::identity::admission_rate::AdmissionSource>,
+  /// UNIX-seconds of the last peer pong (keepalive liveness).
+  pong_last_seen: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Connection {
@@ -107,6 +112,7 @@ impl Connection {
       channel_binding,
       join_hint: None,
       source,
+      pong_last_seen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     })
   }
 
@@ -141,6 +147,7 @@ impl Connection {
       channel_binding,
       join_hint,
       source: None,
+      pong_last_seen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     })
   }
 
@@ -158,6 +165,26 @@ impl Connection {
   /// The frame rules enforced on this connection.
   pub(crate) const fn rules(&self) -> &FrameRules {
     &self.rules
+  }
+
+  /// Sends one WebSocket ping for keepalive.
+  // TODO(G4-06): the pre-split connection ping; the session writer owns
+  // keepalive today.
+  #[allow(dead_code)]
+  pub(crate) async fn ping(&mut self) -> Result<()> {
+    self
+      .stream
+      .send(WsMessage::Ping(WsBytes::new()))
+      .await
+      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportSend))
+  }
+
+  /// UNIX-seconds of the last peer pong.
+  #[allow(dead_code)]
+  pub(crate) fn pong_last_seen(&self) -> u64 {
+    self
+      .pong_last_seen
+      .load(std::sync::atomic::Ordering::Relaxed)
   }
 
   /// The canonical admission source of the accepted connection; the
@@ -222,7 +249,17 @@ impl Connection {
           }));
         }
         WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
-        WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+        WsMessage::Ping(_) => continue,
+        WsMessage::Pong(_) => {
+          // The peer answered a keepalive ping; record the liveness time
+          // (tungstenite answers pings itself, so this observes the
+          // peer's own pong responses).
+          let seconds = crate::storage::wall_clock_seconds();
+          self
+            .pong_last_seen
+            .store(seconds, std::sync::atomic::Ordering::Relaxed);
+          continue;
+        }
         WsMessage::Close(_) => return Ok(None),
         WsMessage::Frame(_) => return Err(Error::invalid_input("websocket raw frame")),
       }
@@ -242,14 +279,17 @@ impl Connection {
   /// the post-authentication session phase (ADR-0007 packet streams).
   pub(crate) fn into_split(self) -> (ConnectionWriter, ConnectionReader) {
     let (sink, stream) = self.stream.split();
+    let pong_last_seen = self.pong_last_seen;
     (
       ConnectionWriter {
         sink,
         rules: self.rules,
+        pong_last_seen: Arc::clone(&pong_last_seen),
       },
       ConnectionReader {
         stream,
         rules: self.rules,
+        pong_last_seen,
       },
     )
   }
@@ -266,9 +306,30 @@ impl core::fmt::Debug for Connection {
 pub(crate) struct ConnectionWriter {
   sink: SplitSink<WebSocketStream<TlsStream<TcpStream>>, WsMessage>,
   rules: FrameRules,
+  pong_last_seen: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ConnectionWriter {
+  /// Sends one WebSocket ping for keepalive.
+  // TODO(G4-06): the pre-split connection ping; the session writer owns
+  // keepalive today.
+  #[allow(dead_code)]
+  pub(crate) async fn ping(&mut self) -> Result<()> {
+    self
+      .sink
+      .send(WsMessage::Ping(WsBytes::new()))
+      .await
+      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportSend))
+  }
+
+  /// UNIX-seconds of the last peer pong.
+  #[allow(dead_code)]
+  pub(crate) fn pong_last_seen(&self) -> u64 {
+    self
+      .pong_last_seen
+      .load(std::sync::atomic::Ordering::Relaxed)
+  }
+
   /// Sends one base-schema wire message of `kind_id` with no flags.
   pub(crate) async fn send(&mut self, kind_id: u16, body: &[u8]) -> Result<()> {
     let body_len =
@@ -293,6 +354,7 @@ impl ConnectionWriter {
 pub(crate) struct ConnectionReader {
   stream: SplitStream<WebSocketStream<TlsStream<TcpStream>>>,
   rules: FrameRules,
+  pong_last_seen: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ConnectionReader {
@@ -329,7 +391,17 @@ impl ConnectionReader {
           }));
         }
         WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
-        WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+        WsMessage::Ping(_) => continue,
+        WsMessage::Pong(_) => {
+          // The peer answered a keepalive ping; record the liveness time
+          // (tungstenite answers pings itself, so this observes the
+          // peer's own pong responses).
+          let seconds = crate::storage::wall_clock_seconds();
+          self
+            .pong_last_seen
+            .store(seconds, std::sync::atomic::Ordering::Relaxed);
+          continue;
+        }
         WsMessage::Close(_) => return Ok(None),
         WsMessage::Frame(_) => return Err(Error::invalid_input("websocket raw frame")),
       }

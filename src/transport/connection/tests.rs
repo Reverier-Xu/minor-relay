@@ -133,6 +133,7 @@ fn framed(stream: WebSocketStream<TlsStream<TcpStream>>) -> Connection {
     channel_binding: [0; CHANNEL_BINDING_LEN],
     join_hint: None,
     source: None,
+    pong_last_seen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
   }
 }
 

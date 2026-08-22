@@ -17,7 +17,7 @@ use std::{
   collections::{BTreeMap, HashMap},
   sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
   },
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -32,6 +32,7 @@ use tracing::{debug, instrument, trace, warn};
 use super::driver::EstablishedSession;
 use crate::{
   Error, ErrorKind, NodeId, Result, TraceId,
+  api::BoxFuture,
   extension_registry::ExtensionRegistry,
   packet::{
     AckOutcome, ChannelBody, IncomingPacket, MAX_CHUNK_BYTES, OutboundRequest, PacketReplyContext,
@@ -61,23 +62,51 @@ pub(crate) type SessionTable = Arc<Mutex<BTreeMap<NodeId, SessionEntry>>>;
 pub(crate) type RouteTable = Arc<Mutex<BTreeMap<TraceId, RouteRecord>>>;
 
 /// The packet-handling context shared by every session of one node.
+/// The caller-selected session bounds (G4-04): outbound queue count and
+/// encoded-byte budgets, plus the wall-clock liveness deadlines.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SessionPolicy {
+  pub(crate) queue_messages: usize,
+  pub(crate) queue_bytes: usize,
+  pub(crate) idle_timeout: Duration,
+  pub(crate) keepalive_interval: Duration,
+  pub(crate) keepalive_timeout: Duration,
+}
+
+impl SessionPolicy {
+  pub(crate) fn new(
+    queue_messages: usize, queue_bytes: usize, idle_timeout: Duration,
+    keepalive_interval: Duration, keepalive_timeout: Duration,
+  ) -> Self {
+    Self {
+      queue_messages,
+      queue_bytes,
+      idle_timeout,
+      keepalive_interval,
+      keepalive_timeout,
+    }
+  }
+}
+
 pub(crate) struct SessionPacketContext {
   local: NodeId,
   registry: Arc<ExtensionRegistry>,
-  queue_messages: usize,
+  policy: SessionPolicy,
   runtime: crate::runtime::RuntimeClient,
+  clock: Arc<dyn crate::storage::receipt::WallClock>,
 }
 
 impl SessionPacketContext {
   pub(crate) fn new(
-    local: NodeId, registry: Arc<ExtensionRegistry>, queue_messages: usize,
-    runtime: crate::runtime::RuntimeClient,
+    local: NodeId, registry: Arc<ExtensionRegistry>, policy: SessionPolicy,
+    runtime: crate::runtime::RuntimeClient, clock: Arc<dyn crate::storage::receipt::WallClock>,
   ) -> Self {
     Self {
       local,
       registry,
-      queue_messages,
+      policy,
       runtime,
+      clock,
     }
   }
 
@@ -112,10 +141,81 @@ pub(crate) fn keep_connection(local: &NodeId, peer: &NodeId, direction: DialDire
   }
 }
 
+/// The shared admission state of one outbound session queue: the count of
+/// queued frames and their summed encoded bytes. Both bounds are checked
+/// before enqueue, and a rejected frame is never partially enqueued
+/// (SC-G04-P0-12).
+#[derive(Debug, Default)]
+struct QueueState {
+  count: AtomicUsize,
+  bytes: AtomicUsize,
+}
+
+/// The admission overhead of one queued frame beyond its body bytes.
+const FRAME_OVERHEAD: usize = 16;
+
+/// A bounded outbound frame sender. `send` atomically checks message count
+/// and summed encoded bytes against the caller-selected limits and returns
+/// a typed overload error at either boundary without partial enqueue.
+#[derive(Clone)]
+pub(crate) struct BoundedSender {
+  inner: mpsc::Sender<SessionFrame>,
+  state: Arc<QueueState>,
+  max_count: usize,
+  max_bytes: usize,
+}
+
+impl BoundedSender {
+  pub(crate) fn send(&self, frame: SessionFrame) -> BoxFuture<'_, Result<()>> {
+    let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
+    let reserved = {
+      let count = self.state.count.load(Ordering::Relaxed);
+      let queued_bytes = self.state.bytes.load(Ordering::Relaxed);
+      if count >= self.max_count || queued_bytes.saturating_add(bytes) > self.max_bytes {
+        None
+      } else {
+        self.state.count.fetch_add(1, Ordering::Relaxed);
+        self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
+        Some(bytes)
+      }
+    };
+    let Some(bytes) = reserved else {
+      return Box::pin(async move { Err(Error::overloaded("session queue")) });
+    };
+    let inner = self.inner.clone();
+    let state = Arc::clone(&self.state);
+    Box::pin(async move {
+      if inner.send(frame).await.is_err() {
+        // The queue closed after admission; release the reservation.
+        state.count.fetch_sub(1, Ordering::Relaxed);
+        state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+        return Err(Error::shutting_down("session queue"));
+      }
+      Ok(())
+    })
+  }
+}
+
+/// The receiving half that releases queue reservations as frames drain.
+pub(crate) struct BoundedReceiver {
+  inner: mpsc::Receiver<SessionFrame>,
+  state: Arc<QueueState>,
+}
+
+impl BoundedReceiver {
+  pub(crate) async fn recv(&mut self) -> Option<SessionFrame> {
+    let frame = self.inner.recv().await?;
+    let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
+    self.state.count.fetch_sub(1, Ordering::Relaxed);
+    self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+    Some(frame)
+  }
+}
+
 /// One established session's send-side handle in the session table.
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
-  frames: mpsc::Sender<SessionFrame>,
+  frames: BoundedSender,
   pending_acks: Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
   alive: Arc<AtomicBool>,
   direction: DialDirection,
@@ -140,10 +240,25 @@ pub(crate) async fn run_session(
 ) {
   let peer = session.peer().clone();
   let (writer, mut reader) = connection.into_split();
-  let (frames, frames_rx) = mpsc::channel(context.queue_messages);
+  let (frames_tx, frames_rx) = mpsc::channel(context.policy.queue_messages);
+  let queue_state = Arc::new(QueueState::default());
+  let frames = BoundedSender {
+    inner: frames_tx,
+    state: Arc::clone(&queue_state),
+    max_count: context.policy.queue_messages,
+    max_bytes: context.policy.queue_bytes,
+  };
+  let frames_rx = BoundedReceiver {
+    inner: frames_rx,
+    state: Arc::clone(&queue_state),
+  };
   let pending_acks = Arc::new(Mutex::new(HashMap::new()));
   let alive = Arc::new(AtomicBool::new(true));
   let (retire_tx, retire_rx) = watch::channel(());
+  let last_activity = Arc::new(std::sync::atomic::AtomicU64::new(clock_seconds(
+    context.clock.as_ref(),
+  )));
+  let (ping_tx, ping_rx) = watch::channel(());
   let entry = SessionEntry {
     frames: frames.clone(),
     pending_acks: Arc::clone(&pending_acks),
@@ -189,7 +304,7 @@ pub(crate) async fn run_session(
   }
 
   debug!("session established; serving packet streams");
-  let writer_task = tokio::spawn(run_writer(writer, frames_rx));
+  let writer_task = tokio::spawn(run_writer(writer, frames_rx, ping_rx));
   tokio::select! {
     () = read_loop(
       &mut reader,
@@ -197,6 +312,7 @@ pub(crate) async fn run_session(
       &context,
       &frames,
       &pending_acks,
+      &last_activity,
     ) => {
       trace!("session reader ended");
     }
@@ -205,6 +321,17 @@ pub(crate) async fn run_session(
     }
     () = retire_observer(retire_rx) => {
       trace!("session ended by deterministic replacement");
+    }
+    () = liveness_observer(
+      &last_activity,
+      &pending_acks,
+      context.clock.clone(),
+      context.policy.idle_timeout,
+      context.policy.keepalive_interval,
+      context.policy.keepalive_timeout,
+      &ping_tx,
+    ) => {
+      debug!("session closed by the liveness policy");
     }
   }
 
@@ -235,6 +362,74 @@ async fn retire_observer(mut signal: watch::Receiver<()>) {
   let _ = signal.changed().await;
 }
 
+/// UNIX-seconds from the injected wall clock.
+fn clock_seconds(clock: &dyn crate::storage::receipt::WallClock) -> u64 {
+  clock
+    .now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|duration| duration.as_secs())
+    .unwrap_or(0)
+}
+
+/// Enforces the session liveness policy on host wall time (SC-G04-P0-13/14):
+/// a session with no authenticated traffic or owned in-flight work for the
+/// idle deadline closes; a peer missing a keepalive result for the
+/// keepalive deadline closes. Wall-clock rollback or freeze delays both
+/// deadlines and a forward jump makes them immediately due.
+async fn liveness_observer(
+  last_activity: &Arc<std::sync::atomic::AtomicU64>,
+  pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  clock: Arc<dyn crate::storage::receipt::WallClock>, idle_timeout: Duration,
+  keepalive_interval: Duration, keepalive_timeout: Duration, ping_tx: &watch::Sender<()>,
+) {
+  if idle_timeout.is_zero() && keepalive_interval.is_zero() {
+    // No liveness policy configured; never resolves.
+    std::future::pending::<()>().await;
+    return;
+  }
+  let tick = std::cmp::min(
+    if idle_timeout.is_zero() {
+      Duration::MAX
+    } else {
+      idle_timeout
+    },
+    if keepalive_interval.is_zero() {
+      Duration::MAX
+    } else {
+      keepalive_interval
+    },
+  )
+  .min(Duration::from_secs(1))
+  .max(Duration::from_millis(10));
+  let mut last_ping = 0_u64;
+  loop {
+    tokio::time::sleep(tick).await;
+    let now = clock_seconds(clock.as_ref());
+    let last = last_activity.load(Ordering::Relaxed);
+    let has_work = pending_acks
+      .lock()
+      .map(|pending| !pending.is_empty())
+      .unwrap_or(false);
+    // Idle close only when no owned in-flight work remains.
+    if !idle_timeout.is_zero() && !has_work && now.saturating_sub(last) >= idle_timeout.as_secs() {
+      return;
+    }
+    if !keepalive_interval.is_zero()
+      && last_ping != 0
+      && now.saturating_sub(last_ping) >= keepalive_timeout.as_secs()
+    {
+      // The peer missed the keepalive result; close.
+      return;
+    }
+    if !keepalive_interval.is_zero()
+      && now.saturating_sub(last_ping) >= keepalive_interval.as_secs()
+    {
+      last_ping = now;
+      let _ = ping_tx.send(());
+    }
+  }
+}
+
 /// Drains a replaced session: it stops accepting new work, its pending
 /// admissions fail exactly once with `StreamInterrupted`, and the retire
 /// signal closes its reader so the connection tears down after the winner
@@ -251,27 +446,42 @@ fn retire(entry: &SessionEntry) {
 
 /// Writes queued session frames in order until the queue closes or the
 /// connection fails.
-async fn run_writer(mut writer: ConnectionWriter, mut frames: mpsc::Receiver<SessionFrame>) {
-  while let Some(frame) = frames.recv().await {
-    if writer
-      .send(frame.kind.kind_id(), &frame.body)
-      .await
-      .is_err()
-    {
-      warn!(kind = ?frame.kind, "session writer send failed");
-      return;
+async fn run_writer(
+  mut writer: ConnectionWriter, mut frames: BoundedReceiver, mut ping: watch::Receiver<()>,
+) {
+  loop {
+    tokio::select! {
+      frame = frames.recv() => {
+        let Some(frame) = frame else {
+          trace!("session writer channel closed");
+          return;
+        };
+        if writer
+          .send(frame.kind.kind_id(), &frame.body)
+          .await
+          .is_err()
+        {
+          warn!(kind = ?frame.kind, "session writer send failed");
+          return;
+        }
+        trace!(kind = ?frame.kind, "session frame sent");
+      }
+      () = async { let _ = ping.changed().await; } => {
+        if writer.ping().await.is_err() {
+          warn!("session keepalive ping failed");
+          return;
+        }
+      }
     }
-    trace!(kind = ?frame.kind, "session frame sent");
   }
-  trace!("session writer channel closed");
 }
 
 /// Serves incoming packet frames until the connection closes or a frame
 /// violates the wire contract (fail closed).
 async fn read_loop(
   reader: &mut ConnectionReader, session: &EstablishedSession, context: &SessionPacketContext,
-  frames: &mpsc::Sender<SessionFrame>,
-  pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  frames: &BoundedSender, pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  last_activity: &Arc<std::sync::atomic::AtomicU64>,
 ) {
   let mut incoming: HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)> = HashMap::new();
   let mut consumers = JoinSet::new();
@@ -287,6 +497,7 @@ async fn read_loop(
         break;
       }
     };
+    last_activity.store(clock_seconds(context.clock.as_ref()), Ordering::Relaxed);
     let Some(kind) = crate::protocol::wire::lookup_packet(message.schema_id, message.kind_id)
     else {
       // An established session carries packet kinds only.
@@ -360,8 +571,8 @@ async fn read_loop(
 /// acknowledges current-process admission (or the typed rejection).
 async fn admit_open(
   open: OpenFrame, session: &EstablishedSession, context: &SessionPacketContext,
-  frames: &mpsc::Sender<SessionFrame>,
-  incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>, consumers: &mut JoinSet<()>,
+  frames: &BoundedSender, incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>,
+  consumers: &mut JoinSet<()>,
 ) -> Result<()> {
   let trace_id = open.trace_id.clone();
   let ack_protocol = open.protocol.clone();
@@ -377,7 +588,7 @@ async fn admit_open(
           .selected_features()
           .contains(registration.definition.owning_feature()) =>
       {
-        if incoming.len() >= context.queue_messages {
+        if incoming.len() >= context.policy.queue_messages {
           AckStatus::Overloaded
         } else {
           let (stream, body) = mpsc::channel(INCOMING_STREAM_CHUNKS);
@@ -733,5 +944,234 @@ mod replacement_tests {
       let keep_incoming = keep_connection(&local, &peer, DialDirection::Incoming);
       assert_ne!(keep_outgoing, keep_incoming);
     }
+  }
+}
+
+#[cfg(test)]
+mod queue_tests {
+  use std::sync::Arc;
+
+  use futures_util::FutureExt;
+  use tokio::sync::mpsc;
+
+  use super::{BoundedReceiver, BoundedSender, FRAME_OVERHEAD, QueueState, SessionFrame};
+  use crate::{ErrorKind, protocol::wire::PacketKind};
+
+  fn frame(bytes: usize) -> SessionFrame {
+    SessionFrame {
+      kind: PacketKind::Chunk,
+      body: vec![0_u8; bytes],
+    }
+  }
+
+  fn queue(max_count: usize, max_bytes: usize) -> (BoundedSender, BoundedReceiver) {
+    let (tx, rx) = mpsc::channel(max_count);
+    let state = Arc::new(QueueState::default());
+    (
+      BoundedSender {
+        inner: tx,
+        state: Arc::clone(&state),
+        max_count,
+        max_bytes,
+      },
+      BoundedReceiver { inner: rx, state },
+    )
+  }
+
+  /// SC-G04-P0-12: count and byte bounds are checked atomically and a
+  /// rejected frame is never partially enqueued.
+  #[tokio::test]
+  async fn bounded_queue_rejects_at_either_boundary_without_partial_enqueue() {
+    let (sender, mut receiver) = queue(2, 1_000);
+
+    // Two frames fit the count bound.
+    sender.send(frame(10)).await.unwrap();
+    sender.send(frame(20)).await.unwrap();
+    // Third exceeds the count bound.
+    let error = sender.send(frame(5)).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Overloaded);
+    assert_eq!(error.context(), "session queue");
+
+    // Drain one; the queue admits again at the count boundary.
+    let _ = receiver.recv().await.unwrap();
+    sender.send(frame(5)).await.unwrap();
+
+    // Byte bound: a single oversized frame is rejected outright.
+    let (byte_sender, mut byte_receiver) = queue(16, FRAME_OVERHEAD + 32);
+    let error = byte_sender.send(frame(64)).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Overloaded);
+    // Nothing was enqueued by the rejected frame (a recv would hang).
+    assert!(byte_receiver.recv().now_or_never().is_none());
+  }
+
+  #[tokio::test]
+  async fn bounded_queue_recovers_after_drain() {
+    let (sender, mut receiver) = queue(1, 1_000);
+    sender.send(frame(10)).await.unwrap();
+    assert_eq!(
+      sender.send(frame(10)).await.unwrap_err().kind(),
+      ErrorKind::Overloaded
+    );
+    let _ = receiver.recv().await.unwrap();
+    sender.send(frame(10)).await.unwrap();
+    let _ = receiver.recv().await.unwrap();
+  }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+  use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, atomic::AtomicU64},
+    time::{Duration, UNIX_EPOCH},
+  };
+
+  use tokio::sync::watch;
+
+  use super::liveness_observer;
+  use crate::{TraceId, packet::AckOutcome, storage::contract::helpers::ManualClock};
+
+  fn no_pending() -> Arc<Mutex<HashMap<TraceId, tokio::sync::oneshot::Sender<AckOutcome>>>> {
+    Arc::new(Mutex::new(HashMap::new()))
+  }
+
+  /// SC-G04-P0-14: while host wall time advances normally, only sessions
+  /// without authenticated traffic or owned in-flight work close after the
+  /// configured idle deadline.
+  #[tokio::test(start_paused = true)]
+  async fn idle_closes_at_the_deadline_only_without_owned_work() {
+    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(100)));
+    let last_activity = Arc::new(AtomicU64::new(100));
+    let pending = no_pending();
+    let (ping_tx, _) = watch::channel(());
+    let handle = tokio::spawn({
+      let last_activity = Arc::clone(&last_activity);
+      let pending = Arc::clone(&pending);
+      let clock = clock.clone();
+      let ping_tx = ping_tx.clone();
+      async move {
+        liveness_observer(
+          &last_activity,
+          &pending,
+          clock,
+          Duration::from_secs(10),
+          Duration::ZERO,
+          Duration::ZERO,
+          &ping_tx,
+        )
+        .await
+      }
+    });
+
+    // Before the deadline the observer stays alive.
+    clock.set(UNIX_EPOCH + Duration::from_secs(109));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(!handle.is_finished());
+
+    // Owned in-flight work holds the session past the deadline.
+    let held = no_pending();
+    let held_handle = tokio::spawn({
+      let last_activity = Arc::clone(&last_activity);
+      let held = Arc::clone(&held);
+      let clock = clock.clone();
+      let ping_tx = ping_tx.clone();
+      async move {
+        liveness_observer(
+          &last_activity,
+          &held,
+          clock,
+          Duration::from_secs(10),
+          Duration::ZERO,
+          Duration::ZERO,
+          &ping_tx,
+        )
+        .await
+      }
+    });
+    clock.set(UNIX_EPOCH + Duration::from_secs(200));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(!held_handle.is_finished());
+
+    // At the deadline with no work the observer resolves.
+    clock.set(UNIX_EPOCH + Duration::from_secs(110));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    handle.await.unwrap();
+  }
+
+  /// SC-G04-P0-14 continuation: rollback or freeze delays closure and a
+  /// forward jump makes it immediately due.
+  #[tokio::test(start_paused = true)]
+  async fn idle_respects_clock_rollback_and_forward_jumps() {
+    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(100)));
+    let last_activity = Arc::new(AtomicU64::new(100));
+    let (ping_tx, _) = watch::channel(());
+    let pending = no_pending();
+    let handle = tokio::spawn({
+      let last_activity = Arc::clone(&last_activity);
+      let pending = Arc::clone(&pending);
+      let clock = clock.clone();
+      let ping_tx = ping_tx.clone();
+      async move {
+        liveness_observer(
+          &last_activity,
+          &pending,
+          clock,
+          Duration::from_secs(10),
+          Duration::ZERO,
+          Duration::ZERO,
+          &ping_tx,
+        )
+        .await
+      }
+    });
+
+    // Rollback keeps the session alive (deadline recedes).
+    clock.set(UNIX_EPOCH + Duration::from_secs(50));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(!handle.is_finished());
+
+    // A forward jump makes the deadline immediately due.
+    clock.set(UNIX_EPOCH + Duration::from_secs(500));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    handle.await.unwrap();
+  }
+
+  /// SC-G04-P0-13: a peer missing the keepalive result is closed after the
+  /// keepalive deadline.
+  #[tokio::test(start_paused = true)]
+  async fn keepalive_closes_a_peer_missing_the_result() {
+    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(1_000)));
+    let last_activity = Arc::new(AtomicU64::new(1_000));
+    let (ping_tx, mut ping_rx) = watch::channel(());
+    let pending = no_pending();
+    let handle = tokio::spawn({
+      let last_activity = Arc::clone(&last_activity);
+      let pending = Arc::clone(&pending);
+      let clock = clock.clone();
+      let ping_tx = ping_tx.clone();
+      async move {
+        liveness_observer(
+          &last_activity,
+          &pending,
+          clock,
+          Duration::ZERO,
+          Duration::from_secs(5),
+          Duration::from_secs(10),
+          &ping_tx,
+        )
+        .await
+      }
+    });
+
+    // After the keepalive interval a ping fires.
+    clock.set(UNIX_EPOCH + Duration::from_secs(1_005));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(ping_rx.changed().await.is_ok());
+
+    // The peer never answers: after the keepalive timeout the observer
+    // resolves (session closes).
+    clock.set(UNIX_EPOCH + Duration::from_secs(1_015));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    handle.await.unwrap();
   }
 }

@@ -27,12 +27,12 @@ const REFERENCE_TOKEN_WIDTH: usize = 32;
 const WALL_TIME_WIDTH: usize = 13;
 const NANOS_PER_SECOND: u32 = 1_000_000_000;
 
-pub(super) trait WallClock: fmt::Debug + Send + Sync + 'static {
+pub(crate) trait WallClock: fmt::Debug + Send + Sync + 'static {
   fn now(&self) -> SystemTime;
 }
 
 #[derive(Debug)]
-pub(super) struct HostWallClock;
+pub(crate) struct HostWallClock;
 
 impl WallClock for HostWallClock {
   fn now(&self) -> SystemTime {

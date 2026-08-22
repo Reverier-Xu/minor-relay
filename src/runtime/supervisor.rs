@@ -245,10 +245,17 @@ impl Supervisor {
       .unwrap_or_else(|_| unreachable!("builtin feature registry is valid"));
     let offer = node_offer(&registry, dependencies.config.required_features())
       .unwrap_or_else(|_| unreachable!("local feature offer is valid"));
+    let policy = crate::session::stream::SessionPolicy::new(
+      dependencies.config.session_queue_messages(),
+      dependencies.config.session_queue_bytes(),
+      dependencies.config.session_idle_timeout(),
+      dependencies.config.keepalive_interval(),
+      dependencies.config.keepalive_timeout(),
+    );
     let packet = Arc::new(SessionPacketContext::new(
       context.identity().node().clone(),
       dependencies.extensions.clone(),
-      dependencies.config.session_queue_messages(),
+      policy,
       crate::runtime::RuntimeClient::routing_only(
         dependencies
           .packet_tx
@@ -256,6 +263,7 @@ impl Supervisor {
           .unwrap_or_else(|| unreachable!("packet channel is provisioned at startup")),
         dependencies.routes.clone(),
       ),
+      std::sync::Arc::new(crate::storage::receipt::HostWallClock),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let driver = SessionDriver::new(

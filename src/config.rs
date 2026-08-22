@@ -9,8 +9,16 @@ pub struct NodeConfig {
   // TODO(G5): consumed by the recovery state machine when G5 lands.
   recovery: RecoveryConfig,
   session_queue_messages: usize,
-  // TODO(G4): consumed by the session byte budget when G4 lands.
+  // Wired by G4-04 as the summed encoded-byte budget of one session's
+  // outbound frame queue.
   session_queue_bytes: usize,
+  // Wired by G4-04: a session with no authenticated traffic or owned
+  // in-flight work for this long closes on host wall time. Zero disables.
+  session_idle_timeout: Duration,
+  // Wired by G4-04: the keepalive interval and the deadline after which a
+  // peer missing a keepalive result is closed. Zero disables keepalive.
+  keepalive_interval: Duration,
+  keepalive_timeout: Duration,
   // TODO(G6): consumed by the packet parser when G6 lands (the CBOR layer
   // enforces CborLimits today; ParserLimits is the public twin).
   parser_limits: ParserLimits,
@@ -67,6 +75,27 @@ impl NodeConfig {
     self.session_queue_messages
   }
 
+  /// The summed encoded-byte budget of one session's outbound frame queue.
+  pub(crate) const fn session_queue_bytes(&self) -> usize {
+    self.session_queue_bytes
+  }
+
+  /// The idle deadline after which a session with no authenticated traffic
+  /// or owned in-flight work closes.
+  pub(crate) const fn session_idle_timeout(&self) -> Duration {
+    self.session_idle_timeout
+  }
+
+  /// The keepalive interval (zero disables).
+  pub(crate) const fn keepalive_interval(&self) -> Duration {
+    self.keepalive_interval
+  }
+
+  /// The keepalive result deadline.
+  pub(crate) const fn keepalive_timeout(&self) -> Duration {
+    self.keepalive_timeout
+  }
+
   pub(crate) const fn trace_metadata_limits(&self) -> &TraceMetadataLimits {
     &self.trace_metadata_limits
   }
@@ -90,6 +119,9 @@ impl Default for NodeConfig {
       recovery: RecoveryConfig::default(),
       session_queue_messages: 256,
       session_queue_bytes: 8 * 1024 * 1024,
+      session_idle_timeout: Duration::from_secs(0),
+      keepalive_interval: Duration::from_secs(0),
+      keepalive_timeout: Duration::from_secs(0),
       parser_limits: ParserLimits::default(),
       trace_metadata_limits: TraceMetadataLimits::default(),
       receipt_retention: Duration::from_secs(30 * 24 * 60 * 60),
