@@ -398,6 +398,29 @@ pub(crate) async fn sync_tick(
   if !local_endpoints.is_empty() {
     ensure_local_descriptor(context, keys, entropy, local_endpoints.to_vec()).await?;
   }
+  // Before any member is admitted the node's store writes are quiescent
+  // (the supervisor's lazy paths publish the local descriptor on the first
+  // public query), keeping the admission commit sequence deterministic for
+  // fault-injecting providers.
+  let members = trust_store::trusted_bindings(store).await?;
+  let has_members = members.len() > 1;
+  if !has_members {
+    let page =
+      page_sync::emit_page_ctx(store, None, crate::membership::page::DEFAULT_PAGE_LIMIT).await?;
+    let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
+    let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
+    let peers: Vec<NodeId> = sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .iter()
+      .filter(|(_, entry)| entry.alive())
+      .map(|(peer, _)| peer.clone())
+      .collect();
+    for peer in peers {
+      let _ = send_payload(runtime, entropy, &peer, &protocol, &page_payload).await;
+    }
+    return Ok(());
+  }
   let snapshot = match refresh_issuer_snapshot(context, keys, entropy).await? {
     Some(snapshot) => Some(snapshot),
     // A member relays the highest verified issuer snapshot it holds, so
