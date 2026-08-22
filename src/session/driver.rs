@@ -110,6 +110,14 @@ pub(crate) fn handshake_frame_rules() -> Result<FrameRules> {
 }
 
 /// The shared node context every session driver run needs.
+/// The in-memory leaf certificate SPKI anchors learned during a join,
+/// keyed by peer node. Member-mode reconnects pin the peer's TLS leaf to
+/// this anchor, so a reconnect to the same listener cannot be replayed
+/// against a different certificate. Anchors are process-local by design:
+/// a fresh process re-joins before it reconnects as a member.
+#[derive(Default)]
+struct MemberSpkiTable(std::sync::Mutex<std::collections::BTreeMap<NodeId, Vec<u8>>>);
+
 #[derive(Clone)]
 pub(crate) struct SessionDriver {
   context: Arc<LocalIdentityContext>,
@@ -118,6 +126,7 @@ pub(crate) struct SessionDriver {
   issuer: Arc<Mutex<JoinCredentialIssuer>>,
   offer: FeatureOffer,
   limiter: crate::identity::admission_rate::AdmissionLimiter,
+  member_spkis: Arc<MemberSpkiTable>,
 }
 
 impl SessionDriver {
@@ -132,11 +141,28 @@ impl SessionDriver {
       issuer,
       offer,
       limiter: crate::identity::admission_rate::AdmissionLimiter::new(),
+      member_spkis: Arc::new(MemberSpkiTable::default()),
     }
   }
 
   pub(crate) fn issuer(&self) -> &Arc<Mutex<JoinCredentialIssuer>> {
     &self.issuer
+  }
+
+  /// Records the peer's leaf SPKI observed during a successful join, as the
+  /// trust anchor for later member-mode reconnect pinning.
+  pub(crate) fn record_peer_spki(&self, peer: &NodeId, spki: Vec<u8>) {
+    self
+      .member_spkis
+      .0
+      .lock()
+      .unwrap()
+      .insert(peer.clone(), spki);
+  }
+
+  /// The recorded leaf SPKI anchor for `peer`, when this process joined it.
+  pub(crate) fn peer_spki(&self, peer: &NodeId) -> Option<Vec<u8>> {
+    self.member_spkis.0.lock().unwrap().get(peer).cloned()
   }
 
   /// The current non-secret join hint for accepted connections: the local

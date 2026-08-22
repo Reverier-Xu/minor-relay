@@ -342,10 +342,16 @@ impl Supervisor {
           return;
         };
         // A transient hint failure must not kill the listener: skip this
-        // connection and keep accepting.
-        let Ok(hint) = driver.join_hint().await else {
+        // connection and keep accepting. The hint carries the listener's
+        // leaf SPKI as the member-mode reconnect pinning anchor.
+        let Ok(mut hint) = driver.join_hint().await else {
           continue;
         };
+        if let Some(hint) = hint.as_mut()
+          && let Ok(spki) = certificate.leaf_spki()
+        {
+          *hint = hint.clone().with_leaf_spki(spki.as_ref().to_vec());
+        }
         let config = config.clone();
         let driver = driver.clone();
         let sessions = sessions.clone();
@@ -406,6 +412,14 @@ impl Supervisor {
       .ok_or_else(|| Error::authentication_failed("join hint"))?;
     let secret = crate::protocol::credential::CredentialSecret::from_credential(&credential);
     let (session, view) = self.driver.join(&mut connection, &hint, secret).await?;
+    // Remember the peer's leaf SPKI from the join as the member-mode
+    // reconnect pinning anchor (THR-002 hardening).
+    let peer = session.peer().clone();
+    if !hint.leaf_spki().is_empty() {
+      self
+        .driver
+        .record_peer_spki(&peer, hint.leaf_spki().to_vec());
+    }
     // Keep the join session open so both sides can stream packets over it.
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
@@ -432,7 +446,16 @@ impl Supervisor {
           crate::ProviderErrorContext::TransportConnect,
         )
       })?;
-    let config = tls::join_client_config()?;
+    // Member reconnects pin the peer's TLS leaf to the SPKI anchor learned
+    // at join (same-listener reconnects); without an anchor this process
+    // falls back to the join-mode relaxation and the application proof
+    // layer remains the authenticator.
+    let config = match self.driver.peer_spki(&peer) {
+      Some(spki) => {
+        tls::member_client_config(rustls::pki_types::SubjectPublicKeyInfoDer::from(spki))?
+      }
+      None => tls::join_client_config()?,
+    };
     let server_name = receiver.server_name()?;
     let rules = crate::session::handshake_frame_rules()?;
     let mut connection = Connection::connect(tcp, config, server_name, rules).await?;

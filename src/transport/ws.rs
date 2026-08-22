@@ -37,6 +37,12 @@ pub(crate) const CLUSTER_HINT_HEADER: &str = "mrly-cluster";
 /// generation ID hint (32 lowercase hexadecimal characters).
 pub(crate) const GENERATION_HINT_HEADER: &str = "mrly-generation";
 
+/// The response header carrying the listener's current leaf certificate
+/// SubjectPublicKeyInfo (lowercase hexadecimal DER). The joiner pins this
+/// as the member-mode TLS trust anchor, so a reconnect to the same
+/// listener cannot be replayed against a different certificate.
+pub(crate) const SPKI_HINT_HEADER: &str = "mrly-leaf-spki";
+
 /// The non-secret join routing hints a listener publishes inside the TLS
 /// channel during the WebSocket upgrade.
 ///
@@ -49,6 +55,7 @@ pub(crate) const GENERATION_HINT_HEADER: &str = "mrly-generation";
 pub(crate) struct JoinHint {
   cluster: ClusterId,
   generation: [u8; 16],
+  leaf_spki: Vec<u8>,
 }
 
 impl JoinHint {
@@ -56,7 +63,19 @@ impl JoinHint {
     Self {
       cluster,
       generation,
+      leaf_spki: Vec::new(),
     }
+  }
+
+  /// Attaches the listener's current leaf certificate SPKI as the
+  /// member-mode trust anchor for reconnect pinning.
+  pub(crate) fn with_leaf_spki(mut self, spki: Vec<u8>) -> Self {
+    self.leaf_spki = spki;
+    self
+  }
+
+  pub(crate) fn leaf_spki(&self) -> &[u8] {
+    &self.leaf_spki
   }
 
   pub(crate) const fn cluster(&self) -> &ClusterId {
@@ -127,16 +146,25 @@ fn parse_hint(
   let error = || Error::invalid_input("websocket hint");
   let clusters: Vec<_> = headers.get_all(CLUSTER_HINT_HEADER).iter().collect();
   let generations: Vec<_> = headers.get_all(GENERATION_HINT_HEADER).iter().collect();
-  if clusters.is_empty() && generations.is_empty() {
+  let spkis: Vec<_> = headers.get_all(SPKI_HINT_HEADER).iter().collect();
+  if clusters.is_empty() && generations.is_empty() && spkis.is_empty() {
     return Ok(None);
   }
-  if clusters.len() != 1 || generations.len() != 1 {
+  if clusters.len() != 1 || generations.len() != 1 || spkis.len() > 1 {
     return Err(error());
   }
   let cluster =
     ClusterId::parse(clusters[0].to_str().map_err(|_| error())?).map_err(|_| error())?;
   let generation = parse_generation_hex(generations[0].to_str().map_err(|_| error())?)?;
-  Ok(Some(JoinHint::new(cluster, generation)))
+  let hint = JoinHint::new(cluster, generation);
+  let hint = match spkis.first() {
+    Some(spki) => hint.with_leaf_spki(crate::hex::decode(
+      spki.to_str().map_err(|_| error())?,
+      "websocket hint spki",
+    )?),
+    None => hint,
+  };
+  Ok(Some(hint))
 }
 
 // The tungstenite callback signature fixes the error type; the response
@@ -151,6 +179,11 @@ fn check_path(
       // Both hint values are canonical ASCII by construction; a failure to
       // encode them is an internal bug and rejects the upgrade outright
       // rather than emitting a partial hint.
+      let spki = if hint.leaf_spki().is_empty() {
+        None
+      } else {
+        HeaderValue::from_str(&crate::hex::encode(hint.leaf_spki())).ok()
+      };
       let (Ok(cluster), Ok(generation)) = (
         HeaderValue::from_str(hint.cluster().as_str()),
         HeaderValue::from_str(&generation_hex(hint.generation())),
@@ -162,6 +195,9 @@ fn check_path(
       let headers = response.headers_mut();
       headers.insert(CLUSTER_HINT_HEADER, cluster);
       headers.insert(GENERATION_HINT_HEADER, generation);
+      if let Some(spki) = spki {
+        headers.insert(SPKI_HINT_HEADER, spki);
+      }
     }
     return Ok(response);
   }

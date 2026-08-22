@@ -26,6 +26,14 @@ Amendment (T-G03-02 observability baseline): `tracing` is an approved production
 `tracing-subscriber` remains development-only for test diagnostics. ADR-0004 records the rationale;
 the dependency-graph baseline pins the exact resolution.
 
+Amendment (post-G3 quality review, 2026-08): `domain` 0.11 is an approved production dependency
+for DNS hostname grammar and label-length validation (endpoint and tag domains); IPv4/IPv6 literal
+validation uses the standard library's `std::net` parsers. Both replace hand-written canonical
+checks; DNS names are case-insensitive and are normalized to lowercase for storage and comparison.
+This amendment also records the P2 cleanup batch that removed thin wrappers, duplicated helpers,
+and hardcoded tables; see the project `.agents/skills/code-quality-review` findings for the full
+inventory.
+
 ## Observability Discipline
 
 From G3 onward every task instruments its owned paths with the approved `tracing` facade and keeps

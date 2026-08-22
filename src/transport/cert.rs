@@ -77,9 +77,15 @@ impl EphemeralCertificate {
   }
 
   /// The leaf certificate bytes.
-  #[allow(dead_code)] // verifier tests and G3-04 SPKI pinning.
   pub(crate) fn end_entity(&self) -> &CertificateDer<'static> {
     &self.cert
+  }
+
+  /// The leaf SubjectPublicKeyInfo, the member-mode TLS pinning anchor.
+  pub(crate) fn leaf_spki(&self) -> Result<rustls::pki_types::SubjectPublicKeyInfoDer<'static>> {
+    rustls::server::ParsedCertificate::try_from(self.end_entity())
+      .map(|parsed| parsed.subject_public_key_info())
+      .map_err(|_| Error::internal("ephemeral certificate spki"))
   }
 }
 
