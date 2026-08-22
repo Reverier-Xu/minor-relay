@@ -189,8 +189,8 @@ async fn secure_join_wrong_credential_fails_without_admission() {
 use std::sync::Mutex as StdMutex;
 
 use minor_relay::{
-  BoxFuture, ExtensionRegistry, IncomingPacket, PacketBody, PacketMetadata, PacketPolicy,
-  PacketTarget, ProtocolDefinition, ProtocolTag, QualifiedTag,
+  BoxFuture, ExtensionRegistry, GetRoute, IncomingPacket, PacketBody, PacketMetadata, PacketPolicy,
+  PacketTarget, ProtocolDefinition, ProtocolTag, QualifiedTag, RouteState,
 };
 
 #[derive(Debug)]
@@ -732,7 +732,7 @@ async fn secure_join_packets_flow_concurrently_in_both_directions() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
+  let _admission = joiner_handle
     .command(JoinCluster::new(
       listener.endpoint().clone(),
       issued.into_credential(),
@@ -808,7 +808,7 @@ async fn secure_join_derived_return_packet_reuses_trace_id() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
+  let _admission = joiner_handle
     .command(JoinCluster::new(
       listener.endpoint().clone(),
       issued.into_credential(),
@@ -878,7 +878,7 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
+  let _admission = joiner_handle
     .command(JoinCluster::new(
       listener.endpoint().clone(),
       issued.into_credential(),
@@ -1024,5 +1024,247 @@ async fn secure_join_admission_rate_window_refuses_before_signing() {
   );
 
   attacker.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}
+
+// ---- Real-world business scenarios (post-G3 review, 2026-08) ----
+//
+// Three end-to-end lanes that the secure-join suite did not previously
+// exercise as a whole process: single-use credential enforcement against a
+// copied credential, explicit interruption of an in-flight outbound stream
+// when the peer shuts down, and fail-closed join after the listener stops.
+
+/// THR-001 real-world lane: a join credential is single-use. Even when the
+/// credential bytes are copied (as they would be after a leak), the second
+/// join attempt on the same generation is refused without admission and
+/// without consuming another generation.
+#[tokio::test]
+async fn secure_join_copied_credential_cannot_join_twice() {
+  let receiver = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(120_000)),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+
+  // Snapshot the credential text first: the issuer hands it out once, and
+  // the legitimate joiner consumes the issued object.
+  let credential_text = issued.credential().expose_secret().to_owned();
+  let joiner = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(130_000)),
+  )
+  .await;
+  let _admission = joiner
+    .handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+
+  // A second node replays the copied credential bytes; the issuer must
+  // refuse without admitting a second subject for the same generation.
+  let second = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(140_000)),
+  )
+  .await;
+  let copied = JoinCredential::parse(&credential_text).unwrap();
+  let error = second
+    .handle
+    .command(JoinCluster::new(listener.endpoint().clone(), copied))
+    .await
+    .unwrap_err();
+  assert_eq!(error.kind(), ErrorKind::AuthenticationFailed);
+
+  second.handle.command(Shutdown::new()).await.unwrap();
+  joiner.handle.command(Shutdown::new()).await.unwrap();
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+}
+
+/// ADR-0007 / SC-G03-P0-06 real-world lane: when the receiving peer shuts
+/// down, an in-flight outbound stream ends with an explicit typed
+/// `StreamInterrupted` on the sender's route — core never reports the
+/// stream as delivered after the peer closes, and never hangs the sender.
+#[tokio::test]
+async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
+  let receiver_collector = Arc::new(Collector::default());
+  let receiver = Node {
+    handle: start_with_protocol(
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Arc::new(ScriptedKeys::full_at(150_000)),
+      protocol("test-echo"),
+      receiver_collector,
+    )
+    .await,
+    _keys: Arc::new(ScriptedKeys::full()),
+  };
+  let collector = Arc::new(Collector::default());
+  let joiner_handle = start_with_protocol(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(160_000)),
+    protocol("test-echo"),
+    collector.clone(),
+  )
+  .await;
+
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  let _admission = joiner_handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap();
+  let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
+  let receiver_id = receiver_view.node_id().clone();
+
+  // Start an outbound stream whose body stalls on its first chunk, then
+  // observe it through the async route handle: the admission ack resolves
+  // before the body finishes, so the explicit interruption is visible in
+  // the route state, not the send future.
+  let packet = joiner_handle
+    .create_packet(
+      PacketTarget::Exact(receiver_id),
+      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      policy(),
+      metadata(),
+    )
+    .unwrap();
+  let release = Arc::new(Notify::new());
+  let body = BlockingBody {
+    release: Arc::clone(&release),
+    released: false,
+  };
+  let route = packet.send_async(Box::new(body)).unwrap();
+
+  // Wait until the stream is admitted and streaming (the ack resolves
+  // before the body finishes), so the peer shutdown below is guaranteed to
+  // interrupt an in-flight stream rather than a queued request.
+  let mut streaming = false;
+  for _ in 0..4096 {
+    match joiner_handle.query(GetRoute::new(route.clone())).await {
+      // The supervisor inserts the record asynchronously after `send_async`
+      // queues the request; keep waiting until it exists.
+      Err(error) if error.kind() == ErrorKind::NotFound => {}
+      Ok(view) => {
+        if matches!(view.state(), RouteState::Streaming) {
+          streaming = true;
+          break;
+        }
+        if matches!(view.state(), RouteState::Failed(_)) {
+          break;
+        }
+      }
+      Err(error) => panic!("route query failed: {error:?}"),
+    }
+    tokio::task::yield_now().await;
+  }
+  assert!(
+    streaming,
+    "the stream must reach the streaming state before the peer shuts down"
+  );
+
+  // Terminate the peer while the body is still in flight, wait for the
+  // shutdown to propagate (the peer's session closes its frame channel),
+  // then release the stalled body so the route attempts to continue and
+  // observes the close.
+  receiver.handle.command(Shutdown::new()).await.unwrap();
+  tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  release.notify_one();
+
+  // The in-flight route must end with the explicit interruption state.
+  let mut terminal = None;
+  for _ in 0..4096 {
+    let view = joiner_handle
+      .query(GetRoute::new(route.clone()))
+      .await
+      .unwrap();
+    if matches!(view.state(), RouteState::Failed(_)) {
+      terminal = Some(view.state().clone());
+      break;
+    }
+    tokio::task::yield_now().await;
+  }
+  assert_eq!(
+    terminal,
+    Some(RouteState::Failed(ErrorKind::StreamInterrupted)),
+    "peer shutdown must interrupt the in-flight stream with a typed error"
+  );
+
+  joiner_handle.command(Shutdown::new()).await.unwrap();
+}
+
+/// Real-world lane: after the receiver stops listening, a late join attempt
+/// fails closed with a typed error instead of hanging or admitting.
+#[tokio::test]
+async fn secure_join_join_after_listener_stop_fails_closed() {
+  let receiver = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(170_000)),
+  )
+  .await;
+  receiver.handle.command(CreateCluster::new()).await.unwrap();
+  let issued = receiver
+    .handle
+    .command(RotateJoinCredential::new())
+    .await
+    .unwrap();
+  let listener = receiver
+    .handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  receiver
+    .handle
+    .command(minor_relay::StopListener::new(listener.id().clone()))
+    .await
+    .unwrap();
+
+  let late = start(
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Arc::new(ScriptedKeys::full_at(180_000)),
+  )
+  .await;
+  let error = late
+    .handle
+    .command(JoinCluster::new(
+      listener.endpoint().clone(),
+      issued.into_credential(),
+    ))
+    .await
+    .unwrap_err();
+  assert!(
+    matches!(
+      error.kind(),
+      ErrorKind::Io | ErrorKind::AuthenticationFailed | ErrorKind::StreamInterrupted
+    ),
+    "late join must fail closed with a typed error, got {:?}",
+    error.kind()
+  );
+
+  late.handle.command(Shutdown::new()).await.unwrap();
   receiver.handle.command(Shutdown::new()).await.unwrap();
 }
