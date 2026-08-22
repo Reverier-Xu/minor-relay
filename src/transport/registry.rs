@@ -299,16 +299,11 @@ impl WssTransport {
   }
 
   /// The canonical tag of the built-in transport.
-  pub(crate) fn tag() -> TransportTag {
-    // The built-in tag is a fixed canonical constant; parsing is total for
-    // this literal, so map the impossible failure to an internal error and
-    // fall back to the same constant.
+  pub(crate) fn tag() -> Result<TransportTag> {
+    // The literal is a fixed canonical constant; parse once and surface the
+    // impossible failure as an internal error instead of panicking.
     TransportTag::parse("relay.woooo.tech/transports/wss")
-      .ok()
-      .unwrap_or_else(|| {
-        TransportTag::parse("relay.woooo.tech/transports/wss")
-          .unwrap_or_else(|_| unreachable!("built-in tag is canonical"))
-      })
+      .map_err(|_| crate::Error::internal("built-in transport tag"))
   }
 }
 
@@ -559,8 +554,8 @@ mod tests {
   fn extension_registry_defaults_to_the_builtin_wss_transport() {
     let mut registry = ExtensionRegistry::new();
     registry
-      .register_transport(WssTransport::tag(), Arc::new(WssTransport::new()))
+      .register_transport(WssTransport::tag().unwrap(), Arc::new(WssTransport::new()))
       .unwrap();
-    assert!(registry.transport(&WssTransport::tag()).is_some());
+    assert!(registry.transport(&WssTransport::tag().unwrap()).is_some());
   }
 }

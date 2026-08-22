@@ -45,7 +45,7 @@ impl NodeBuilder {
     let mut extensions = self.extensions;
     // The built-in WSS transport is always available; a caller registration
     // for the same tag is a conflict, so only add it when absent.
-    let wss_tag = crate::transport::registry::WssTransport::tag();
+    let wss_tag = crate::transport::registry::WssTransport::tag()?;
     if extensions.transport(&wss_tag).is_none() {
       extensions.register_transport(
         wss_tag,

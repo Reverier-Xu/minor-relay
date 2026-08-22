@@ -86,6 +86,18 @@ impl SessionPolicy {
       keepalive_timeout,
     }
   }
+
+  /// Builds the session bounds from the node configuration, so a session
+  /// knob is declared once in `NodeConfig` and not copied field-by-field.
+  pub(crate) fn from_config(config: &crate::NodeConfig) -> Self {
+    Self::new(
+      config.session_queue_messages(),
+      config.session_queue_bytes(),
+      config.session_idle_timeout(),
+      config.keepalive_interval(),
+      config.keepalive_timeout(),
+    )
+  }
 }
 
 pub(crate) struct SessionPacketContext {
@@ -318,7 +330,7 @@ pub(crate) async fn run_session(
   }
 
   debug!("session established; serving packet streams");
-  let writer_task = tokio::spawn(run_writer(writer, frames_rx, ping_rx));
+  let mut writer_task = tokio::spawn(run_writer(writer, frames_rx, ping_rx));
   tokio::select! {
     () = read_loop(
       &mut reader,
@@ -346,6 +358,12 @@ pub(crate) async fn run_session(
       &ping_tx,
     ) => {
       debug!("session closed by the liveness policy");
+    }
+    _ = &mut writer_task => {
+      // A writer that ends (send/ping failure) must tear the session down;
+      // otherwise a half-open connection would keep its table entry and
+      // every outbound packet would fail forever.
+      trace!("session writer ended");
     }
   }
 

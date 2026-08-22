@@ -14,7 +14,6 @@
 //! without selecting a winner.
 
 use minicbor::{Decode, Encode, bytes::ByteVec};
-use sha2::{Digest as ShaDigest, Sha256};
 
 use crate::{
   ClusterId, Digest, NodeId, PublicKey, Result, Signature,
@@ -294,8 +293,9 @@ pub(crate) fn page_bindings(
 
 /// The digest of one snapshot's canonical signed body, for receipts.
 pub(crate) fn snapshot_digest(snapshot: &TrustSnapshotV1) -> Result<Digest> {
-  let body = snapshot.encode_signed_body()?;
-  Ok(Digest::from_bytes(Sha256::digest(&body).into()))
+  Ok(crate::identity::signature::body_digest(
+    &snapshot.encode_signed_body()?,
+  ))
 }
 
 #[cfg(test)]
