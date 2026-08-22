@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::{NodeId, Result};
+use crate::NodeId;
 
 /// The caller-configured recovery policy (wired from `NodeConfig`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
