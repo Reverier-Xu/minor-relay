@@ -450,8 +450,14 @@ impl Supervisor {
     let connection_tasks = self.connection_tasks.clone();
     let abort = tasks.spawn(async move {
       loop {
-        let Ok((tcp, _)) = listener.accept().await else {
-          return;
+        let (tcp, _) = match listener.accept().await {
+          Ok(accepted) => accepted,
+          // A transient accept failure (fd exhaustion, backlog reset) must
+          // not kill the listener: back off briefly and keep accepting.
+          Err(_) => {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+          }
         };
         // A transient hint failure must not kill the listener: skip this
         // connection and keep accepting. The hint carries the listener's
