@@ -224,13 +224,16 @@ async fn close_star_sessions(nodes: &[Node], issuer: usize) {
 /// Waits for a settled topology: the exact directed edge count observed
 /// for two consecutive samples (a quiescent window, so transient recovery
 /// dials resolve before the assertion).
-async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec<(u8, u8)> {
+async fn wait_settled(
+  nodes: &[Node], expected: &std::collections::BTreeSet<(u8, u8)>, timeout: Duration,
+) -> Vec<(u8, u8)> {
   let deadline = std::time::Instant::now() + timeout;
-  let mut stable: Vec<(u8, u8)> = Vec::new();
+  let mut stable: std::collections::BTreeSet<(u8, u8)> = std::collections::BTreeSet::new();
   let mut stable_samples = 0;
   loop {
     let edges = collected_topology(nodes).await;
-    if edges.len() == expected && edges == stable {
+    let set: std::collections::BTreeSet<(u8, u8)> = edges.iter().copied().collect();
+    if set == *expected && set == stable {
       stable_samples += 1;
       if stable_samples >= 3 {
         // The exact topology held for three consecutive samples: settled,
@@ -238,28 +241,22 @@ async fn wait_settled(nodes: &[Node], expected: usize, timeout: Duration) -> Vec
         return edges;
       }
     } else {
-      if stable_samples > 0 && edges != stable {
-        eprintln!("FLAP prev={:?} now={:?}", stable, edges);
-      }
-      stable = edges.clone();
+      stable = set.clone();
       stable_samples = 1;
-      if edges.len() > expected {
-        // A redundant edge reappeared (an in-flight recovery dial landing
-        // after its disconnect): re-close the issuer's redundant stars and
-        // keep settling. The exclusion keeps the recovery from re-spawning
-        // new dials, so this terminates.
+      if set.len() > expected.len() {
+        // A redundant star edge reappeared (an in-flight recovery dial
+        // landing after its disconnect): re-close the issuer's redundant
+        // stars and keep settling. The exclusion keeps the recovery from
+        // re-spawning new dials, so this terminates.
         close_star_sessions(nodes, 0).await;
       }
     }
     if std::time::Instant::now() >= deadline {
-      eprintln!(
-        "settle timeout: expected {expected} edges, got {}: {:?}",
-        edges.len(),
-        edges
-      );
       panic!(
-        "topology settle timeout after {timeout:?}: expected {expected} edges, got {}",
-        edges.len()
+        "topology settle timeout after {timeout:?}: expected {} edges, got {}\nset={:?}",
+        expected.len(),
+        set.len(),
+        edges
       );
     }
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -578,13 +575,13 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   eprintln!("STAGE cq4-15 dials done");
   close_star_sessions(&nodes, 0).await;
   eprintln!("STAGE stars closed");
-  let induced = wait_settled(&nodes, 28, Duration::from_secs(45)).await;
-  eprintln!("STAGE induced settle done");
-  assert_eq!(induced.len(), 28, "induced 28-edge graph among 0..14");
   let expected_induced: std::collections::BTreeSet<(u8, u8)> = cq4_edges()
     .into_iter()
     .filter(|(left, right)| *left < 15 && *right < 15)
     .collect();
+  let induced = wait_settled(&nodes, &expected_induced, Duration::from_secs(45)).await;
+  eprintln!("STAGE induced settle done");
+  assert_eq!(induced.len(), 28, "induced 28-edge graph among 0..14");
   let actual_induced: std::collections::BTreeSet<(u8, u8)> = induced.iter().copied().collect();
   assert_eq!(
     actual_induced, expected_induced,
@@ -629,7 +626,8 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // (SC-G05-P0-27). Node 15's four edges make 32 in total.
   connect_cq4(&nodes).await;
   close_star_sessions(&nodes, 0).await;
-  let edges = wait_settled(&nodes, 32, Duration::from_secs(15)).await;
+  let expected_full: std::collections::BTreeSet<(u8, u8)> = cq4_edges().into_iter().collect();
+  let edges = wait_settled(&nodes, &expected_full, Duration::from_secs(45)).await;
   assert_exact_cq4(&edges);
 
   for node in nodes {
@@ -655,7 +653,9 @@ async fn membership_sync_failure_matrix_partition_healing() {
   close_star_sessions(&nodes, 0).await;
   tokio::time::sleep(Duration::from_millis(300)).await;
   tokio::time::sleep(Duration::from_millis(800)).await;
-  wait_settled(&nodes, 4, Duration::from_secs(15)).await;
+  let expected_4: std::collections::BTreeSet<(u8, u8)> =
+    [(0, 1), (0, 2), (1, 3), (2, 3)].into_iter().collect();
+  wait_settled(&nodes, &expected_4, Duration::from_secs(15)).await;
 
   // Duplicate delivery: a second connect to the same peer converges to one
   // authenticated session (no duplicate edge).
@@ -707,7 +707,9 @@ async fn membership_sync_failure_matrix_partition_healing() {
   wait_connected(&nodes, 1, 0, Duration::from_secs(15)).await;
 
   // The exact topology returns: the 4-cycle's 4 undirected sessions.
-  let edges = wait_settled(&nodes, 4, Duration::from_secs(15)).await;
+  let expected_4: std::collections::BTreeSet<(u8, u8)> =
+    [(0, 1), (0, 2), (1, 3), (2, 3)].into_iter().collect();
+  let edges = wait_settled(&nodes, &expected_4, Duration::from_secs(15)).await;
   assert_eq!(edges.len(), 4, "4 undirected sessions after healing");
   for node in nodes {
     node.handle.command(Shutdown::new()).await.unwrap();
