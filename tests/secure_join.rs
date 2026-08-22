@@ -732,7 +732,7 @@ async fn secure_join_packets_flow_concurrently_in_both_directions() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let _admission = joiner_handle
+  let admission = joiner_handle
     .command(JoinCluster::new(
       listener.endpoint().clone(),
       issued.into_credential(),
@@ -808,7 +808,7 @@ async fn secure_join_derived_return_packet_reuses_trace_id() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let _admission = joiner_handle
+  let admission = joiner_handle
     .command(JoinCluster::new(
       listener.endpoint().clone(),
       issued.into_credential(),
@@ -878,7 +878,7 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let _admission = joiner_handle
+  let admission = joiner_handle
     .command(JoinCluster::new(
       listener.endpoint().clone(),
       issued.into_credential(),
