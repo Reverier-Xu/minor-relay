@@ -270,6 +270,10 @@ struct Supervisor {
   // these members (edge-loss healing) and never dials strangers, so it
   // cannot add edges beyond the caller-configured topology (SC-G05-P0-27).
   recovery_history: std::collections::BTreeSet<NodeId>,
+  // Intentionally disconnected peers: recovery never heals them until an
+  // explicit reconnect (a new session to the peer) restores the
+  // relationship (SC-G05-P0-27 no-extra-edge).
+  recovery_excluded: std::collections::BTreeSet<NodeId>,
 }
 
 impl Supervisor {
@@ -386,6 +390,7 @@ impl Supervisor {
       recovery_pending: 0,
       published_endpoints,
       recovery_history: std::collections::BTreeSet::new(),
+      recovery_excluded: std::collections::BTreeSet::new(),
     }
   }
 
@@ -852,6 +857,9 @@ impl Supervisor {
   fn disconnect_peer(&mut self, peer: &NodeId) -> Result<()> {
     crate::session::stream::retire_session(&self.dependencies.sessions, peer)?;
     self.recovery_history.remove(peer);
+    // An intentional disconnect is never re-healed until the relationship
+    // is deliberately re-established (a new session to the peer).
+    self.recovery_excluded.insert(peer.clone());
     Ok(())
   }
 
@@ -890,6 +898,9 @@ impl Supervisor {
       .collect();
     for peer in &direct {
       self.recovery_history.insert(peer.clone());
+      // A deliberate new session restores an intentionally disconnected
+      // relationship: recovery may heal it again.
+      self.recovery_excluded.remove(peer);
     }
     let online = self.recovery_history.clone();
     let now = now_seconds();
@@ -906,6 +917,9 @@ impl Supervisor {
     let bindings = crate::identity::trust::store::trusted_bindings(self.context()?.store()).await?;
     let mut candidates = std::collections::BTreeSet::new();
     for member in online.difference(&direct) {
+      if self.recovery_excluded.contains(member) {
+        continue;
+      }
       let Some(public_key) = bindings.get(member) else {
         continue;
       };

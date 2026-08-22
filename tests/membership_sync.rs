@@ -98,7 +98,8 @@ where
 
 /// Every node's trust page converges to at least `expected` bindings.
 async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
-  let deadline = std::time::Instant::now() + timeout;
+  let started = std::time::Instant::now();
+  let deadline = started + timeout;
   loop {
     let mut complete = true;
     for node in nodes {
@@ -109,6 +110,7 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
       }
     }
     if complete {
+      eprintln!("TRUST converged to {expected} in {:?}", started.elapsed());
       return;
     }
     if std::time::Instant::now() >= deadline {
