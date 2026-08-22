@@ -161,32 +161,12 @@ async fn accept_payload(consumer: &MembershipSyncConsumer, payload: &SyncPayload
           .cluster()
           .clone(),
       };
-      let snapshot = match TrustSnapshotV1::decode_and_verify(
+      let snapshot = TrustSnapshotV1::decode_and_verify(
         encoded.as_ref(),
         &cluster,
         &trusted_issuer.0,
         &trusted_issuer.1,
-      ) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-          eprintln!(
-            "SNAP reject node={} issuer={} rev={:?} err={error:?}",
-            consumer.context.identity().node(),
-            trusted_issuer.0,
-            String::from_utf8_lossy(encoded.as_ref())
-              .chars()
-              .take(8)
-              .collect::<String>()
-          );
-          return Err(error);
-        }
-      };
-      eprintln!(
-        "SNAP accept node={} bindings={} rev={}",
-        consumer.context.identity().node(),
-        snapshot.bindings().len(),
-        snapshot.revision()
-      );
+      )?;
       trust_store::persist_snapshot_ctx(store, consumer.entropy.as_ref(), &snapshot).await?;
       // Binding adoption is best effort per record: a transient store
       // contention on one binding must not abort the remaining bindings of

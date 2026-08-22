@@ -98,8 +98,7 @@ where
 
 /// Every node's trust page converges to at least `expected` bindings.
 async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
-  let started = std::time::Instant::now();
-  let deadline = started + timeout;
+  let deadline = std::time::Instant::now() + timeout;
   loop {
     let mut complete = true;
     for node in nodes {
@@ -110,7 +109,6 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
       }
     }
     if complete {
-      eprintln!("TRUST converged to {expected} in {:?}", started.elapsed());
       return;
     }
     if std::time::Instant::now() >= deadline {
@@ -135,8 +133,7 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
 /// Every node's membership page converges to `expected` descriptors, all
 /// at the expected owner revision.
 async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeout: Duration) {
-  let started = std::time::Instant::now();
-  let deadline = started + timeout;
+  let deadline = std::time::Instant::now() + timeout;
   loop {
     let mut complete = true;
     for node in nodes {
@@ -147,10 +144,6 @@ async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeou
       }
     }
     if complete {
-      eprintln!(
-        "DESCRIPTORS converged to {expected} in {:?}",
-        started.elapsed()
-      );
       return;
     }
     assert!(
@@ -560,27 +553,22 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-24).
   let mut nodes = build_cluster(15).await;
-  eprintln!("STAGE joins done");
 
   // Reciprocal trust converges over the authenticated sessions: every
   // member's trust page exposes all fifteen bindings (SC-G05-P0-24/25).
   wait_trust(&nodes, 15, Duration::from_secs(60)).await;
-  eprintln!("STAGE trust15 done");
 
   // Induced 28-edge graph among nodes 0..14, before node 15 joins
   // (SC-G05-P0-24): connect the CQ4 edges among the present members and
   // close the redundant join-star sessions, then settle to the exact edge
   // set.
   connect_cq4(&nodes).await;
-  eprintln!("STAGE cq4-15 dials done");
   close_star_sessions(&nodes, 0).await;
-  eprintln!("STAGE stars closed");
   let expected_induced: std::collections::BTreeSet<(u8, u8)> = cq4_edges()
     .into_iter()
     .filter(|(left, right)| *left < 15 && *right < 15)
     .collect();
   let induced = wait_settled(&nodes, &expected_induced, Duration::from_secs(45)).await;
-  eprintln!("STAGE induced settle done");
   assert_eq!(induced.len(), 28, "induced 28-edge graph among 0..14");
   let actual_induced: std::collections::BTreeSet<(u8, u8)> = induced.iter().copied().collect();
   assert_eq!(
@@ -597,7 +585,6 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   let secret = issued.credential().expose_secret().to_owned();
   join_with_retry(&node15, nodes[0].endpoint.clone(), &secret).await;
   node15.id = node_id(&node15).await;
-  eprintln!("STAGE node15 joined");
   let node15_handle = node15.handle.clone();
   wait_until(
     move || {
