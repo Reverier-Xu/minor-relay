@@ -514,10 +514,27 @@ impl MatrixRun {
   }
 }
 
+/// The fault-matrix scenario topology, single-sourced so the scenario and
+/// its evidence fixture cannot drift: node count, directed links in policy
+/// order, partition count, and the readdress endpoint.
+pub(crate) const MATRIX_NODE_COUNT: u64 = 4;
+pub(crate) const MATRIX_LINKS: [(u64, u64); 8] = [
+  (1, 2),
+  (2, 3),
+  (3, 4),
+  (4, 1),
+  (1, 4),
+  (2, 4),
+  (1, 3),
+  (4, 2),
+];
+pub(crate) const MATRIX_PARTITION_COUNT: u32 = 3;
+pub(crate) const MATRIX_READDRESS_ENDPOINT: u32 = 99;
+
 pub(crate) fn run_fault_matrix_seed(seed: u64) -> SimResult<MatrixRun> {
   let limits = crate::simulation::topology::SimulationLimits::new(4, 8, 64, 8_192, 512, 256)?;
   let mut topology = Topology::new(limits);
-  for value in 1..=4_u64 {
+  for value in 1..=MATRIX_NODE_COUNT {
     topology.add_node(NodeKey::new(value), AddressId::new(value as u32 * 10))?;
   }
 
@@ -529,6 +546,20 @@ pub(crate) fn run_fault_matrix_seed(seed: u64) -> SimResult<MatrixRun> {
   let restarted = LinkKey::new(NodeKey::new(2), NodeKey::new(4));
   let readdressed = LinkKey::new(NodeKey::new(1), NodeKey::new(3));
   let joint = LinkKey::new(NodeKey::new(4), NodeKey::new(2));
+  debug_assert_eq!(
+    [
+      loss,
+      duplicate,
+      reorder,
+      partitioned,
+      reverse,
+      restarted,
+      readdressed,
+      joint
+    ]
+    .map(|link| (link.from().value(), link.to().value())),
+    MATRIX_LINKS
+  );
   topology.add_link(loss, matrix_policy(1, 0, 1_000_000, 0, 0, 0)?)?;
   topology.add_link(duplicate, matrix_policy(1, 0, 0, 1_000_000, 0, 0)?)?;
   topology.add_link(reorder, matrix_policy(1, 0, 0, 0, 1_000_000, 10)?)?;

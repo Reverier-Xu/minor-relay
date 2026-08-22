@@ -4,10 +4,15 @@ use crate::{Error, FeatureTag, Result};
 
 #[derive(Debug)]
 pub struct NodeConfig {
+  // TODO(G5): consumed by the anti-entropy loop when G5 lands.
   anti_entropy_interval: Duration,
+  // TODO(G5): consumed by the recovery state machine when G5 lands.
   recovery: RecoveryConfig,
   session_queue_messages: usize,
+  // TODO(G4): consumed by the session byte budget when G4 lands.
   session_queue_bytes: usize,
+  // TODO(G6): consumed by the packet parser when G6 lands (the CBOR layer
+  // enforces CborLimits today; ParserLimits is the public twin).
   parser_limits: ParserLimits,
   trace_metadata_limits: TraceMetadataLimits,
   receipt_retention: Duration,
@@ -126,7 +131,9 @@ impl Default for ParserLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TraceMetadataLimits {
   active: usize,
+  // TODO(G6): consumed by the route-status retention when G6 lands.
   terminal: usize,
+  // TODO(G6): consumed by the route-status retention when G6 lands.
   retention: Duration,
 }
 

@@ -53,6 +53,11 @@ pub(crate) type SessionTable = Arc<Mutex<BTreeMap<NodeId, SessionEntry>>>;
 /// The shared node-local route table: bounded in-memory trace metadata
 /// (ADR-0007: identity, selected node, progress, terminal state — never
 /// payload bytes, no durability claim).
+// TODO(M6): these route records and the forwarding paths below are
+// routing-domain code (roadmap: "Packet targets, load balancing, routes,
+// stream forwarding, trace status"). They move to a dedicated `routing`
+// module when M6 lands; keep session framing and route state separate
+// until then.
 pub(crate) type RouteTable = Arc<Mutex<BTreeMap<TraceId, RouteRecord>>>;
 
 /// The packet-handling context shared by every session of one node.

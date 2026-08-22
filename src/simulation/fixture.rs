@@ -26,26 +26,22 @@ impl ScenarioFixture {
     }
   }
 
+  /// Builds the evidence fixture for the fault-matrix scenario. The
+  /// topology derives from the shared scenario constants, so a change to
+  /// the scenario cannot silently desynchronize failure-artifact aliases.
   pub(crate) fn network_fault_matrix() -> Result<Self, SourceError> {
     let mut fixture = Self::empty();
-    for value in 1..=4_u64 {
+    for value in 1..=crate::simulation::network::MATRIX_NODE_COUNT {
       fixture.register_node(NodeKey::new(value))?;
       fixture.register_endpoint(AddressId::new(value as u32 * 10))?;
     }
-    fixture.register_endpoint(AddressId::new(99))?;
-    for (from, to) in [
-      (1, 2),
-      (2, 3),
-      (3, 4),
-      (4, 1),
-      (1, 4),
-      (2, 4),
-      (1, 3),
-      (4, 2),
-    ] {
+    fixture.register_endpoint(AddressId::new(
+      crate::simulation::network::MATRIX_READDRESS_ENDPOINT,
+    ))?;
+    for (from, to) in crate::simulation::network::MATRIX_LINKS {
       fixture.register_path(LinkKey::new(NodeKey::new(from), NodeKey::new(to)))?;
     }
-    for value in 1..=3_u32 {
+    for value in 1..=crate::simulation::network::MATRIX_PARTITION_COUNT {
       fixture.register_fault(PartitionId::new(value))?;
     }
     Ok(fixture)
@@ -299,6 +295,50 @@ mod tests {
     event::{DropReason, EventRecord, FrameId},
     topology::{AddressId, LinkKey, NodeKey, PartitionId},
   };
+
+  #[test]
+  fn simulation_matrix_fixture_matches_the_scenario_topology() {
+    let fixture = super::ScenarioFixture::network_fault_matrix().unwrap();
+    // The fixture registers exactly the scenario's nodes, links, partitions,
+    // and the readdress endpoint; any drift desynchronizes artifact aliases.
+    for value in 1..=crate::simulation::network::MATRIX_NODE_COUNT {
+      assert!(
+        fixture.nodes.resolve(NodeKey::new(value)).is_ok(),
+        "node {value}"
+      );
+      assert!(
+        fixture
+          .endpoints
+          .resolve(AddressId::new(value as u32 * 10))
+          .is_ok(),
+        "endpoint {value}"
+      );
+    }
+    for (from, to) in crate::simulation::network::MATRIX_LINKS {
+      assert!(
+        fixture
+          .paths
+          .resolve(LinkKey::new(NodeKey::new(from), NodeKey::new(to)))
+          .is_ok(),
+        "link {from}->{to}"
+      );
+    }
+    for value in 1..=crate::simulation::network::MATRIX_PARTITION_COUNT {
+      assert!(
+        fixture.faults.resolve(PartitionId::new(value)).is_ok(),
+        "fault {value}"
+      );
+    }
+    assert!(
+      fixture
+        .endpoints
+        .resolve(AddressId::new(
+          crate::simulation::network::MATRIX_READDRESS_ENDPOINT
+        ))
+        .is_ok(),
+      "readdress endpoint"
+    );
+  }
 
   fn all_records() -> Vec<EventRecord> {
     let left = NodeKey::new(1);

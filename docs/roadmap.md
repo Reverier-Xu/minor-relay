@@ -179,6 +179,9 @@ Exit gate:
 - Alternate-peer reconnect is credential-free after admission.
 - Slow peers and replacement races release all bounded resources.
 
+Reserved config: `NodeConfig::session_queue_bytes` is the session byte budget that M4 wires
+(see `TODO(G4)` in `src/config.rs`).
+
 ### M5: Membership, Topology, and Recovery
 
 Add signed monotonic node metadata, paged membership/topology observations, incremental policy inputs,
@@ -192,6 +195,9 @@ Exit gate:
 - 16-node functional/SLO readiness and 1,024-node functional/trend evidence pass without a ceiling claim.
 - No membership, trust, topology, or policy API requires one whole-population allocation.
 
+Reserved config: `NodeConfig::anti_entropy_interval` and `RecoveryConfig` are consumed by the
+anti-entropy loop and recovery state machine that M5 wires (see `TODO(G5)` in `src/config.rs`).
+
 ### M6: Multi-Hop Packet Streams
 
 Add exact-node and matching-node-label targets, caller-selected load balancing/routing, ordered constant-memory
@@ -204,6 +210,11 @@ Exit gate:
 - Sync delivery returns current-process admission acknowledgement or a typed route error.
 - Async status reports selection, progress, and terminal state; restart stores no body and continues no
   stream.
+
+Reserved config: `NodeConfig::parser_limits` (the public twin of the enforced `CborLimits`) and
+`TraceMetadataLimits::terminal`/`retention` are consumed by the packet parser and route-status
+retention that M6 wires (see `TODO(G6)` in `src/config.rs`). The routing-domain code currently
+parked in `session/stream.rs` moves to its own module here (see `TODO(M6)`).
 
 ### M7: Core Metadata Convergence
 

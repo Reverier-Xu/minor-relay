@@ -166,6 +166,12 @@ impl NodeHandle {
     query.dispatch(&self.runtime).await
   }
 
+  /// Subscribes to node events.
+  ///
+  /// TODO(M9): the typed event bus is not wired until the M9 facade
+  /// closure; this call is part of the reserved public surface and
+  /// currently returns `Unsupported`. `EventOptions` validation stays in
+  /// place so the wiring lands without API changes.
   pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>> {
     let _ = options;
     if self.runtime.status() != NodeStatus::Running {
