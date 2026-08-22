@@ -102,17 +102,7 @@ mod tests {
   use rustls::SupportedCipherSuite;
 
   use super::{crypto_provider, join_client_config, server_config};
-  use crate::{api::Entropy, transport::cert::EphemeralCertificate};
-
-  #[derive(Debug)]
-  struct SeedEntropy(u8);
-
-  impl Entropy for SeedEntropy {
-    fn fill(&self, output: &mut [u8]) -> crate::Result<()> {
-      output.fill(self.0);
-      Ok(())
-    }
-  }
+  use crate::transport::{cert::EphemeralCertificate, testing::SeedEntropy};
 
   #[test]
   fn tls_transport_provider_offers_only_tls13_cipher_suites() {

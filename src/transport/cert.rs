@@ -95,17 +95,7 @@ mod tests {
   use rustls::{pki_types::PrivatePkcs8KeyDer, server::ParsedCertificate};
 
   use super::{ED25519_PKCS8_PREFIX, EphemeralCertificate, SEED_LEN};
-  use crate::api::Entropy;
-
-  #[derive(Debug)]
-  struct SeedEntropy(u8);
-
-  impl Entropy for SeedEntropy {
-    fn fill(&self, output: &mut [u8]) -> crate::Result<()> {
-      output.fill(self.0);
-      Ok(())
-    }
-  }
+  use crate::transport::testing::SeedEntropy;
 
   fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
     haystack

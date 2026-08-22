@@ -327,7 +327,7 @@ impl Supervisor {
     let bound = listener
       .local_addr()
       .map_err(|_| Error::internal("listener address"))?;
-    let bound = Endpoint::parse(&format!("wss://{bound}"))?;
+    let bound = crate::transport::Endpoint::from_socket_addr(bound);
     let certificate = EphemeralCertificate::generate(self.dependencies.entropy.as_ref())?;
     let config = tls::server_config(&certificate)?;
     let rules = crate::session::handshake_frame_rules()?;

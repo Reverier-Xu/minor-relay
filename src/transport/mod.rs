@@ -33,3 +33,29 @@ pub(crate) mod verify;
 pub(crate) mod ws;
 
 pub use endpoint::Endpoint;
+
+/// Shared test harness for the transport module lanes.
+#[cfg(test)]
+pub(crate) mod testing {
+  use rustls::pki_types::ServerName;
+
+  use crate::api::Entropy;
+
+  /// Deterministic entropy filling every requested byte with one seed
+  /// value; shared so certificate, tls, verifier, and connection tests
+  /// cannot drift in how they seed ephemeral keys.
+  #[derive(Debug)]
+  pub(crate) struct SeedEntropy(pub u8);
+
+  impl Entropy for SeedEntropy {
+    fn fill(&self, output: &mut [u8]) -> crate::Result<()> {
+      output.fill(self.0);
+      Ok(())
+    }
+  }
+
+  /// The TLS SNI used by verifier and connection loopback tests.
+  pub(crate) fn server_name() -> ServerName<'static> {
+    ServerName::try_from("receiver.test").unwrap().to_owned()
+  }
+}

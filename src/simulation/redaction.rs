@@ -69,8 +69,8 @@ mod tests {
     ];
     let manifest = EvidenceManifest::new(
       ProducerKind::Simulation,
-      EvidenceId::new("SC-G01-P0-04").unwrap(),
-      EvidenceId::new("simulation-network-fault-matrix").unwrap(),
+      EvidenceId::new(crate::simulation::artifact::MATRIX_SCENARIO_ID).unwrap(),
+      EvidenceId::new(crate::simulation::artifact::MATRIX_TEST_ID).unwrap(),
       Some(1),
       FailureClass::Invariant,
       EvidenceId::new("forbidden-field").unwrap(),

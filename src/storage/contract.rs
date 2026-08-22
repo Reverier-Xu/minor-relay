@@ -10,9 +10,9 @@ use std::{
 
 use crate::{
   BoxFuture, CommitOutcome, CommitReceipt, Digest, DurabilityLevel, Error, NodeId,
-  ProviderErrorContext, ProviderErrorKind, QualifiedTag, ReconcileOutcome, Result,
-  StoreCapabilities, StoreEntry, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
-  StoreRequirements, StoreRevision, StoreTransaction, StoreValue, TransactionId,
+  ProviderErrorContext, ProviderErrorKind, ReconcileOutcome, Result, StoreCapabilities, StoreEntry,
+  StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
+  StoreTransaction, StoreValue, TransactionId,
   identity::records::{identity_binding_key, local_identity_key},
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
   storage::{
@@ -2367,18 +2367,7 @@ pub(crate) fn required_capabilities() -> StoreCapabilities {
     .exclusive_lifetime_lock(true)
 }
 
-fn namespace(suffix: &str) -> StoreNamespace {
-  StoreNamespace::new(QualifiedTag::parse(&format!("relay.woooo.tech/metadata/{suffix}")).unwrap())
-    .unwrap()
-}
-
-fn store_key(value: &[u8]) -> StoreKey {
-  StoreKey::new(Arc::from(value))
-}
-
-fn value(bytes: &[u8]) -> StoreValue {
-  StoreValue::new(Arc::from(bytes))
-}
+use super::test_util::{key as store_key, namespace, value};
 
 fn transaction(
   index: u8, base_revision: StoreRevision, operations: Vec<StoreOperation>,

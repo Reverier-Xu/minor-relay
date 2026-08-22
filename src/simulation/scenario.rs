@@ -26,7 +26,7 @@ mod tests {
         "test",
         "--locked",
         "--lib",
-        "simulation::network::tests::simulation_network_fault_matrix_replay_exact_seed",
+        crate::simulation::artifact::MATRIX_REPLAY_TEST_FILTER,
         "--",
         "--ignored",
         "--exact",

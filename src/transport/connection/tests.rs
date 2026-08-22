@@ -6,7 +6,7 @@ use std::sync::Arc;
 use futures_util::SinkExt;
 use rustls::{
   ProtocolVersion, ServerConfig, SignatureAlgorithm, SignatureScheme,
-  pki_types::{CertificateDer, ServerName},
+  pki_types::CertificateDer,
   server::{ClientHello, ParsedCertificate, ResolvesServerCert},
   sign::{CertifiedKey, Signer, SigningKey},
   version::TLS13,
@@ -18,23 +18,13 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 use super::{CHANNEL_BINDING_LEN, Connection, EXPORTER_LABEL, FrameRules};
 use crate::{
   ClusterId, ErrorKind, Result,
-  api::Entropy,
   transport::{
     cert::EphemeralCertificate,
+    testing::{SeedEntropy, server_name},
     tls::{crypto_provider, join_client_config, member_client_config, server_config},
     ws::{self, JoinHint, MAX_MESSAGE_BYTES},
   },
 };
-
-#[derive(Debug)]
-struct SeedEntropy(u8);
-
-impl Entropy for SeedEntropy {
-  fn fill(&self, output: &mut [u8]) -> Result<()> {
-    output.fill(self.0);
-    Ok(())
-  }
-}
 
 fn rules() -> FrameRules {
   FrameRules {
@@ -43,10 +33,6 @@ fn rules() -> FrameRules {
     receive_limit: 1_024,
     is_declared: |schema, kind| schema == 1 && kind == 1,
   }
-}
-
-fn server_name() -> ServerName<'static> {
-  ServerName::try_from("127.0.0.1").unwrap().to_owned()
 }
 
 fn certificate(seed: u8) -> EphemeralCertificate {

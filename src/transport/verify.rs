@@ -144,25 +144,16 @@ mod tests {
   use rustls::{
     SignatureScheme,
     client::danger::ServerCertVerifier,
-    pki_types::{CertificateDer, ServerName, UnixTime},
+    pki_types::{CertificateDer, UnixTime},
     server::ParsedCertificate,
   };
 
   use super::{BootstrapCertVerifier, TrustMode};
-  use crate::{
-    api::Entropy,
-    transport::{cert::EphemeralCertificate, tls::crypto_provider},
+  use crate::transport::{
+    cert::EphemeralCertificate,
+    testing::{SeedEntropy, server_name},
+    tls::crypto_provider,
   };
-
-  #[derive(Debug)]
-  struct SeedEntropy(u8);
-
-  impl Entropy for SeedEntropy {
-    fn fill(&self, output: &mut [u8]) -> crate::Result<()> {
-      output.fill(self.0);
-      Ok(())
-    }
-  }
 
   fn verifier(mode: TrustMode) -> BootstrapCertVerifier {
     BootstrapCertVerifier::new(crypto_provider().signature_verification_algorithms, mode)
@@ -170,10 +161,6 @@ mod tests {
 
   fn certificate(seed: u8) -> EphemeralCertificate {
     EphemeralCertificate::generate(&SeedEntropy(seed)).unwrap()
-  }
-
-  fn server_name() -> ServerName<'static> {
-    ServerName::try_from("receiver.test").unwrap().to_owned()
   }
 
   #[test]

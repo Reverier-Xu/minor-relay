@@ -114,13 +114,21 @@ fn synthetic_fixture_provenance() -> Result<TrustedProvenance, FailureCaptureErr
   })
 }
 
+/// Evidence identifiers and file prefix for the network fault-matrix
+/// scenario, single-sourced here so the manifest, file naming, replay
+/// filter, and redaction lanes cannot desynchronize on a rename.
+pub(crate) const MATRIX_SCENARIO_ID: &str = "SC-G01-P0-04";
+pub(crate) const MATRIX_TEST_ID: &str = "simulation-network-fault-matrix";
+pub(crate) const MATRIX_FILE_PREFIX: &str = "simulation-network-fault-matrix";
+pub(crate) const MATRIX_REPLAY_TEST_FILTER: &str =
+  "simulation::network::tests::simulation_network_fault_matrix_replay_exact_seed";
+
 fn matrix_manifest(
   seed: u64, failure: MatrixFailure, provenance: TrustedProvenance,
 ) -> Result<EvidenceManifest, FailureCaptureError> {
   let scenario =
-    EvidenceId::new("SC-G01-P0-04").map_err(|_| FailureCaptureError::InvalidMetadata)?;
-  let test = EvidenceId::new("simulation-network-fault-matrix")
-    .map_err(|_| FailureCaptureError::InvalidMetadata)?;
+    EvidenceId::new(MATRIX_SCENARIO_ID).map_err(|_| FailureCaptureError::InvalidMetadata)?;
+  let test = EvidenceId::new(MATRIX_TEST_ID).map_err(|_| FailureCaptureError::InvalidMetadata)?;
   let invariant =
     EvidenceId::new(failure.diagnostic()).map_err(|_| FailureCaptureError::InvalidMetadata)?;
   EvidenceManifest::new(
@@ -189,7 +197,7 @@ fn write_failure_artifact_with_sync(
 ) -> Result<PathBuf, FailureCaptureError> {
   let directory = ensure_failure_artifact_directory(repository_root, &mut sync_directory)?;
   let path = directory.join(format!(
-    "simulation-network-fault-matrix-{}-seed-{seed}.json",
+    "{MATRIX_FILE_PREFIX}-{}-seed-{seed}.json",
     failure.diagnostic()
   ));
   publish_new_file_with_sync(

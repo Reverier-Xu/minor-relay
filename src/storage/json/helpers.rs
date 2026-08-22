@@ -14,8 +14,7 @@ use super::document::GenerationDocument;
 #[cfg(unix)]
 use crate::{CommitOutcome, CommitReceipt, StoreRequirements, provider::Storage};
 use crate::{
-  QualifiedTag, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRevision,
-  StoreTransaction, StoreValue, TransactionId, provider::StorageFactory,
+  StoreExpectation, StoreOperation, StoreRevision, StoreTransaction, provider::StorageFactory,
 };
 
 pub(crate) fn tempdir() -> TempDir {
@@ -37,22 +36,7 @@ pub(crate) fn limited_factory(
   ))
 }
 
-pub(crate) fn namespace(name: &str) -> StoreNamespace {
-  StoreNamespace::new(QualifiedTag::parse(&format!("relay.woooo.tech/metadata/{name}")).unwrap())
-    .unwrap()
-}
-
-pub(crate) fn key(bytes: &[u8]) -> StoreKey {
-  StoreKey::new(Arc::from(bytes))
-}
-
-pub(crate) fn value(bytes: &[u8]) -> StoreValue {
-  StoreValue::new(Arc::from(bytes))
-}
-
-pub(crate) fn transaction_id(index: u64) -> TransactionId {
-  TransactionId::parse(&format!("txn_{index:021}")).unwrap()
-}
+pub(crate) use super::super::test_util::{key, namespace, transaction_id, value};
 
 pub(crate) fn put_transaction(
   index: u64, base: StoreRevision, entries: &[(&str, &[u8])],

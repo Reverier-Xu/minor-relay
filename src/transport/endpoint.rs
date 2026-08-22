@@ -84,10 +84,31 @@ impl Endpoint {
     self.port
   }
 
-  /// The `host:port` authority used for dialing and the WebSocket `Host`
-  /// header.
+  /// The canonical `host:port` authority used for dialing and the
+  /// WebSocket `Host` header.
   pub(crate) fn authority(&self) -> &str {
     &self.canonical[SCHEME.len()..]
+  }
+
+  /// Builds the endpoint for an already-bound socket address, preserving
+  /// the exact canonical text form (bracketed IPv6, explicit port). Used
+  /// after binding a wildcard/port-zero listener, where the caller only
+  /// learns the real address from the OS.
+  pub(crate) fn from_socket_addr(address: std::net::SocketAddr) -> Self {
+    let (host, bracketed) = match address.ip() {
+      std::net::IpAddr::V4(ip) => (ip.to_string(), false),
+      std::net::IpAddr::V6(ip) => (ip.to_string(), true),
+    };
+    let canonical = if bracketed {
+      format!("{SCHEME}[{host}]:{}", address.port())
+    } else {
+      format!("{SCHEME}{host}:{}", address.port())
+    };
+    Self {
+      canonical,
+      host,
+      port: address.port(),
+    }
   }
 
   /// The TLS server name for this endpoint's host.

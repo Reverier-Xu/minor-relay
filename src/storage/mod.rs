@@ -375,6 +375,9 @@ impl MetadataStore {
   }
 }
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 #[cfg(feature = "json")]
 pub(crate) mod json;
 #[allow(dead_code)]
