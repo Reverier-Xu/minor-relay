@@ -1,6 +1,11 @@
 //! Issuer-signed trust snapshots (G4-05, consumed by the membership sync
 //! lane in G5).
 //!
+//! The offline/factory store surfaces (persist_snapshot, latest_snapshot,
+//! persist_binding, paged_trust) are exercised by the unit suite; the
+//! runtime paths use the context-store variants.
+#![allow(dead_code)]
+//!
 //! A [`TrustSnapshotV1`] is one signed, ordered set of `NodeId`-to-`PublicKey`
 //! bindings: the issuer signs the canonical body (cluster, strictly
 //! increasing revision, version, ordered bindings), and every recipient
