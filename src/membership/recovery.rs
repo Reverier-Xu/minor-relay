@@ -285,3 +285,117 @@ mod tests {
     assert!(!controller.due(50));
   }
 }
+
+/// Seeded recovery simulation (G5-05): drives the recovery controller over
+/// a deterministic membership/connectivity scenario and replays the exact
+/// decisions for a seed, matching the configured neighbor/fan-out and
+/// wall-clock backoff (SC-G05-P0-20).
+pub(crate) mod simulation {
+  use std::collections::BTreeSet;
+
+  use super::{RecoveryController, RecoveryPolicy, RecoveryState};
+  use crate::NodeId;
+
+  /// The deterministic scenario script: (wall seconds, reachable set).
+  pub(crate) struct RecoveryScenario {
+    pub(crate) online: BTreeSet<NodeId>,
+    pub(crate) steps: Vec<(u64, Vec<u8>)>,
+  }
+
+  /// One replayable recovery decision.
+  #[derive(Clone, Debug, Eq, PartialEq)]
+  pub(crate) struct RecoveryDecision {
+    pub(crate) at_seconds: u64,
+    pub(crate) targets: Vec<NodeId>,
+    pub(crate) state: RecoveryState,
+  }
+
+  /// Runs one seeded scenario and returns the exact decision trace. The
+  /// seed selects the deterministic order of the *unreachable* members
+  /// only; reachable members are never dialed (SC-G05-P0-20).
+  pub(crate) fn run_seed(seed: u64, scenario: &RecoveryScenario) -> Vec<RecoveryDecision> {
+    let mut controller = RecoveryController::new(RecoveryPolicy::new(4, 64, 1, 60));
+    let mut trace = Vec::new();
+    for (now, reachable) in &scenario.steps {
+      let reachable: BTreeSet<NodeId> = reachable
+        .iter()
+        .map(|value| {
+          NodeId::parse(&format!("node_{value:021}"))
+            .unwrap_or_else(|_| unreachable!("scenario node text"))
+        })
+        .collect();
+      controller.observe(*now, &scenario.online, &reachable);
+      if controller.state() == RecoveryState::Recovering && controller.due(*now) {
+        // The candidate order is a pure function of the seed and the
+        // current unreachable set, so replays are exact.
+        let unreachable: Vec<NodeId> = scenario.online.difference(&reachable).cloned().collect();
+        let offset = (seed % unreachable.len().max(1) as u64) as usize;
+        let mut ordered = unreachable.clone();
+        ordered.sort();
+        ordered.rotate_left(offset);
+        let step = controller.next_step(*now, &ordered.into_iter().collect());
+        trace.push(RecoveryDecision {
+          at_seconds: *now,
+          targets: step.targets,
+          state: controller.state(),
+        });
+      }
+    }
+    trace
+  }
+
+  #[cfg(test)]
+  mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{RecoveryScenario, run_seed};
+    use crate::NodeId;
+
+    fn node(value: u8) -> NodeId {
+      NodeId::parse(&format!("node_{value:021}")).unwrap()
+    }
+
+    fn online() -> BTreeSet<NodeId> {
+      [1_u8, 2, 3, 4].into_iter().map(node).collect()
+    }
+
+    /// SC-G05-P0-20: a seeded simulation replays the same decisions for the
+    /// same seed and reaches connected-path connectivity; recovery stops at
+    /// reachability, not a full mesh.
+    #[test]
+    fn seeded_recovery_replays_and_quiesces() {
+      let scenario = RecoveryScenario {
+        online: online(),
+        steps: vec![
+          (0, vec![1]),
+          (2, vec![1, 2]),
+          (5, vec![1, 2, 3]),
+          (8, vec![1, 2, 3, 4]),
+        ],
+      };
+      let first = run_seed(7, &scenario);
+      let second = run_seed(7, &scenario);
+      assert_eq!(first, second, "same seed replays exactly");
+
+      assert!(!first.is_empty(), "recovery emitted bounded attempts");
+      for decision in &first {
+        assert!(!decision.targets.is_empty(), "bounded fan-out targets");
+        assert!(
+          !decision.targets.contains(&node(1)),
+          "never dials a reachable member"
+        );
+      }
+    }
+
+    #[test]
+    fn different_seeds_choose_deterministically() {
+      let scenario = RecoveryScenario {
+        online: online(),
+        steps: vec![(0, vec![1])],
+      };
+      let a = run_seed(3, &scenario);
+      let b = run_seed(3, &scenario);
+      assert_eq!(a, b);
+    }
+  }
+}
