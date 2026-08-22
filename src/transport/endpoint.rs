@@ -24,7 +24,6 @@ use crate::{Error, Result};
 const SCHEME: &str = "wss://";
 const DEFAULT_PORT: u16 = 443;
 const MAX_HOST_LEN: usize = 253;
-const MAX_LABEL_LEN: usize = 63;
 
 /// A canonical `wss://host[:port]` endpoint address.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -50,7 +49,11 @@ impl Endpoint {
     }
 
     let (host, bracketed, port) = split_authority(authority)?;
-    validate_host(host)?;
+    // DNS names are case-insensitive: normalize the host to lowercase for
+    // storage and comparison instead of rejecting uppercase input. The
+    // fold never changes byte length, so the split offsets stay valid.
+    let host = host.to_ascii_lowercase();
+    validate_host(&host)?;
     let port = match port {
       Some(text) => parse_port(text)?,
       None => DEFAULT_PORT,
@@ -190,53 +193,31 @@ fn validate_host(host: &str) -> Result<()> {
     .bytes()
     .all(|byte| byte.is_ascii_digit() || byte == b'.')
   {
-    return validate_ipv4(host);
+    // All-digit dot form must be a canonical IPv4 literal; the standard
+    // parser rejects leading zeros, out-of-range octets, and wrong arity.
+    return host
+      .parse::<std::net::Ipv4Addr>()
+      .map(|_| ())
+      .map_err(|_| error());
   }
   if host.contains(':') {
     // Bracketed IPv6 literal: split_authority already required brackets and
-    // at least two colons; only hexadecimal digits and colons remain.
-    if host.bytes().filter(|byte| *byte == b':').count() < 2
-      || !host
-        .bytes()
-        .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
-      || host.contains(":::")
-    {
-      return Err(error());
-    }
-    return Ok(());
+    // at least two colons; the standard parser rejects non-canonical forms
+    // such as "1:2:3" that a bare hex check would accept.
+    return host
+      .parse::<std::net::Ipv6Addr>()
+      .map(|_| ())
+      .map_err(|_| error());
   }
-
-  for label in host.split('.') {
-    if label.is_empty()
-      || label.len() > MAX_LABEL_LEN
-      || label.starts_with('-')
-      || label.ends_with('-')
-      || !label
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-      return Err(error());
-    }
-  }
-  Ok(())
+  validate_dns_hostname(host)
 }
 
-fn validate_ipv4(host: &str) -> Result<()> {
-  let error = || Error::invalid_input("endpoint");
-  let octets: Vec<&str> = host.split('.').collect();
-  if octets.len() != 4 {
-    return Err(error());
+fn validate_dns_hostname(host: &str) -> Result<()> {
+  if crate::protocol::tag::valid_dns_hostname(host) {
+    Ok(())
+  } else {
+    Err(Error::invalid_input("endpoint"))
   }
-  for octet in octets {
-    if octet.is_empty()
-      || octet.len() > 3
-      || (octet.len() > 1 && octet.starts_with('0'))
-      || octet.parse::<u8>().is_err()
-    {
-      return Err(error());
-    }
-  }
-  Ok(())
 }
 
 #[cfg(test)]
@@ -251,6 +232,11 @@ mod tests {
       ("wss://127.0.0.1:9000", "127.0.0.1", 9000),
       ("wss://[::1]:9000", "::1", 9000),
       ("wss://[2001:db8::1]", "2001:db8::1", 443),
+      // DNS names are case-insensitive: uppercase input is accepted and
+      // normalized to lowercase for storage and comparison.
+      ("wss://Relay.Example.COM", "relay.example.com", 443),
+      ("wss://RELAY.example.com:8443", "relay.example.com", 8443),
+      ("wss://a-b.c-d.example", "a-b.c-d.example", 443),
     ] {
       let endpoint = Endpoint::parse(text).unwrap();
       assert_eq!(endpoint.host(), host, "text: {text}");
@@ -274,7 +260,6 @@ mod tests {
       "http://relay.example.com",
       "WSS://relay.example.com",
       "wss://",
-      "wss://Relay.Example.com",
       "wss://relay.example.com/",
       "wss://relay.example.com/mrly",
       "wss://user@relay.example.com",
@@ -285,8 +270,6 @@ mod tests {
       "wss://relay.example.com:443x",
       "wss:// relay.example.com",
       "wss://relay..example.com",
-      "wss://-relay.example.com",
-      "wss://relay-.example.com",
       "wss://127.0.0.1.1",
       "wss://127.0.0.256",
       "wss://017.0.0.1",

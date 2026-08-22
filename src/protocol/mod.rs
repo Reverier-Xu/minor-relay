@@ -5,7 +5,7 @@ pub(crate) mod feature;
 pub(crate) mod handshake;
 pub(crate) mod offer;
 pub(crate) mod selection;
-mod tag;
+pub(crate) mod tag;
 pub(crate) mod wire;
 
 pub(crate) use cbor::{CborLimits, decode_canonical, encode_canonical, validate_canonical};

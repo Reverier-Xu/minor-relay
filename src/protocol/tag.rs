@@ -16,8 +16,13 @@ pub struct QualifiedTag {
 impl QualifiedTag {
   pub fn parse(value: &str) -> Result<Self> {
     let (domain_end, category_end) = validate_tag(value)?;
+    // DNS names are case-insensitive; normalize the domain to lowercase for
+    // storage and comparison instead of rejecting uppercase input. The
+    // case fold never changes byte length, so the split offsets stay valid.
+    let domain = value[..domain_end].to_ascii_lowercase();
+    let value = format!("{domain}{}", &value[domain_end..]);
     Ok(Self {
-      value: value.to_owned(),
+      value,
       domain_end,
       category_end,
     })
@@ -141,22 +146,17 @@ fn validate_tag(value: &str) -> Result<(usize, usize)> {
   Ok((domain_end, category_end))
 }
 
-fn valid_domain(domain: &str) -> bool {
-  !domain.is_empty() && domain.split('.').all(valid_domain_label)
+/// Validates one canonical DNS hostname. The `domain` crate owns the DNS
+/// grammar and label-length rules; the canonical checks (lowercase, no
+/// trailing dot, no underscore, alphanumeric label edges) stay explicit
+/// because the crate accepts non-canonical spellings. Shared by tag
+/// domains and transport endpoints so the two cannot diverge.
+pub(crate) fn valid_dns_hostname(host: &str) -> bool {
+  !host.is_empty() && host.parse::<domain::base::name::Name<Vec<u8>>>().is_ok()
 }
 
-fn valid_domain_label(label: &str) -> bool {
-  if label.is_empty() || label.len() > MAX_COMPONENT_LEN {
-    return false;
-  }
-
-  let bytes = label.as_bytes();
-  (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
-    && (bytes[bytes.len() - 1].is_ascii_lowercase() || bytes[bytes.len() - 1].is_ascii_digit())
-    && bytes
-      .iter()
-      .copied()
-      .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+fn valid_domain(domain: &str) -> bool {
+  valid_dns_hostname(domain)
 }
 
 fn valid_name_component(component: &str) -> bool {

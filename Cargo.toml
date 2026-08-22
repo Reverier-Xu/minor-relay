@@ -15,6 +15,7 @@ json    = ["dep:fs4", "dep:rustix", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 base64 = { version = "0.23", default-features = false, features = ["std"] }
+domain = "0.11"
 ed25519-dalek = { version = "3.0", default-features = false, features = [
   "fast",
   "rand_core",
