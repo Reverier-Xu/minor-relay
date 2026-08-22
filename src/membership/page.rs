@@ -7,15 +7,12 @@
 //! peers to the highest valid revision, and rejects dishonest pages
 //! (unsigned data, revision downgrades, looping cursors, over-capacity).
 
-use std::sync::Arc;
-
 use minicbor::{Decode, Encode};
 
 use super::{NodeDescriptorV1, store};
 use crate::{
   Error, NodeId, PublicKey, Result,
   protocol::{decode_canonical, encode_canonical},
-  provider::StorageFactory,
 };
 
 /// The schema of one membership sync page.
