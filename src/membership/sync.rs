@@ -378,10 +378,21 @@ async fn sign_snapshot(
 /// latest snapshot over every authenticated session. The work per tick is
 /// bounded: one page and one snapshot per session, nothing paged to
 /// exhaustion (SC-G05-P0-06).
+/// The driver's per-node anti-entropy continuation state.
+#[derive(Default)]
+pub(crate) struct SyncCursor {
+  /// The last snapshot revision sent, so unchanged grant sets are not
+  /// re-sent every tick.
+  pub(crate) snapshot_rev: u64,
+  /// The last membership page cursor, so descriptor sync continues across
+  /// ticks and converges beyond a single page.
+  pub(crate) page: Option<Vec<u8>>,
+}
+
 pub(crate) async fn sync_tick(
   context: &Arc<LocalIdentityContext>, keys: &Arc<dyn KeyProvider>, entropy: &Arc<dyn Entropy>,
   sessions: &SessionTable, runtime: &RuntimeClient, local_endpoints: &[crate::Endpoint],
-  last_snapshot_rev: &mut u64, last_page_cursor: &mut Option<Vec<u8>>,
+  cursor: &mut SyncCursor,
 ) -> Result<()> {
   let store = context.store();
   // Nothing to advertise at startup: the supervisor publishes the local
@@ -400,11 +411,11 @@ pub(crate) async fn sync_tick(
   if !has_members {
     let page = page_sync::emit_page_ctx(
       store,
-      last_page_cursor.as_deref(),
+      cursor.page.as_deref(),
       crate::membership::page::DEFAULT_PAGE_LIMIT,
     )
     .await?;
-    *last_page_cursor = page.cursor().map(|cursor| cursor.to_vec());
+    cursor.page = page.cursor().map(|value| value.to_vec());
     let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
     let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
     let peers: Vec<NodeId> = sessions
@@ -428,18 +439,18 @@ pub(crate) async fn sync_tick(
   };
   let page = page_sync::emit_page_ctx(
     store,
-    last_page_cursor.as_deref(),
+    cursor.page.as_deref(),
     crate::membership::page::DEFAULT_PAGE_LIMIT,
   )
   .await?;
-  *last_page_cursor = page.cursor().map(|cursor| cursor.to_vec());
+  cursor.page = page.cursor().map(|value| value.to_vec());
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
   // A snapshot is sent only when its revision advanced: the grant set is
   // unchanged most ticks, and re-sending the same revision to every
   // session every tick floods the store with idempotent commits.
   let snapshot_payload = match snapshot {
-    Some(snapshot) if snapshot.revision() != *last_snapshot_rev => {
-      *last_snapshot_rev = snapshot.revision();
+    Some(snapshot) if snapshot.revision() != cursor.snapshot_rev => {
+      cursor.snapshot_rev = snapshot.revision();
       Some(SyncPayload::Snapshot(ByteVec::from(snapshot.encode()?)))
     }
     _ => None,

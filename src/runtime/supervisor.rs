@@ -356,8 +356,7 @@ impl Supervisor {
       tokio::spawn(async move {
         let mut timer = tokio::time::interval(driver_interval);
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_snapshot_rev = 0_u64;
-        let mut last_page_cursor: Option<Vec<u8>> = None;
+        let mut sync_cursor = crate::membership::sync::SyncCursor::default();
         loop {
           tokio::select! {
             changed = driver_shutdown.changed() => {
@@ -376,8 +375,7 @@ impl Supervisor {
                 &driver_sessions,
                 &driver_runtime,
                 &endpoints,
-                &mut last_snapshot_rev,
-                &mut last_page_cursor,
+                &mut sync_cursor,
               )
               .await;
             }
