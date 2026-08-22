@@ -154,13 +154,17 @@ async fn close_star_sessions(nodes: &[Node], issuer: usize) {
     }
     let neighbors = cq4_neighbors(issuer as u8);
     if !neighbors.contains(&(index as u8)) {
-      let _ = node
-        .handle
-        .command(DisconnectPeer::new(nodes[issuer].id.clone()))
-        .await;
+      // Disconnect the issuer side first: removing the peer from the
+      // issuer's recovery history before the connection close propagates
+      // prevents the recovery controller from perceiving the intentional
+      // disconnect as an edge loss and re-dialing it.
       let _ = nodes[issuer]
         .handle
         .command(DisconnectPeer::new(node.id.clone()))
+        .await;
+      let _ = node
+        .handle
+        .command(DisconnectPeer::new(nodes[issuer].id.clone()))
         .await;
     }
   }
