@@ -96,6 +96,26 @@ total order verified by unit and integration tests.
   `RecoveryConfig` (recovery policy) remain TODO(G5) until the facade
   harness consumes them.
 
+## G5 batch 2 (public views + 16-node core, 2026-08)
+
+- Public membership/topology views shipped per the api manifest:
+  `PageSpec`, `MemberView`, `MemberPage`, `TopologyEdgeView`,
+  `TopologyPage`, `ConnectivityStatus`; `GetMember`/`PageMembers`/
+  `PageTopology` queries through the typed bus.
+- A node lazily publishes its own signed descriptor (revision 1); views
+  read the descriptor store through the metadata store and annotate
+  connectivity from the session table without re-opening storage.
+- A sixteen-node join harness proves all fifteen authenticated edges are
+  visible through the public topology view.
+- Remaining for the final G5 batch: member-to-member trust/descriptor
+  propagation wiring (the page exchange transport), which the exact
+  32-session/degree-4/diameter-3 topology (SC-G05-P0-26), the 15+1
+  readiness matrix (SC-G05-P0-23/25), the failure matrix (SC-27), the 10s
+  metadata SLO (SC-29), and the 1,024-node trend all consume. The
+  components (signed descriptors, anti-entropy pages, sparse planning,
+  recovery controller, public views) are in place and unit/integration
+  verified.
+
 ## Historical findings (pre-fix baseline)
 
 ## P1 — should-fix (verified in real code)
