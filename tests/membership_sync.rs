@@ -188,16 +188,12 @@ async fn close_star_sessions(nodes: &[Node], issuer: usize) {
         .handle
         .command(DisconnectPeer::new(peer.clone()))
         .await;
-      let _ = nodes
-        .iter()
-        .find(|node| node.id == peer)
-        .map(|member| {
-          member
-            .handle
-            .command(DisconnectPeer::new(nodes[issuer].id.clone()))
-        })
-        .transpose()
-        .await;
+      if let Some(member) = nodes.iter().find(|node| node.id == peer) {
+        let _ = member
+          .handle
+          .command(DisconnectPeer::new(nodes[issuer].id.clone()))
+          .await;
+      }
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
   }
