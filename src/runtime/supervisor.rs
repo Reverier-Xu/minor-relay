@@ -878,7 +878,7 @@ impl Supervisor {
   /// connectivity to known members and quiesces; it never dials strangers
   /// or the local node, so it cannot add edges beyond the configured
   /// topology).
-  async fn recovery_tick(&mut self, tasks: &mut JoinSet<()>) -> Result<()> {
+  async fn recovery_tick(&mut self, _tasks: &mut JoinSet<()>) -> Result<()> {
     let direct: std::collections::BTreeSet<NodeId> = self
       .dependencies
       .sessions
