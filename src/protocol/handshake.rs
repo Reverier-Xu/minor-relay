@@ -67,7 +67,6 @@ use crate::{
 const PROTOCOL_MAGIC: &str = crate::protocol::wire::MAGIC;
 const BASE_SCHEMA_ID: u64 = crate::protocol::wire::BASE_SCHEMA_ID as u64;
 const PROTOCOL_POSITIONS: u8 = 5;
-const GRANT_DELIVERY_POSITION: u8 = 6;
 const GENERATION_LEN: usize = 16;
 const NONCE_LEN: usize = 32;
 const PUBLIC_KEY_LEN: usize = 32;
