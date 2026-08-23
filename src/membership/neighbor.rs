@@ -46,14 +46,25 @@ pub(crate) fn plan_neighbors(
       neighbors: Vec::new(),
     });
   }
+  // The number of possible neighbors excludes the local node itself. The
+  // plan size is bounded by this availability, so a requested degree larger
+  // than the membership cannot spin the cycle forever: the walk stops once
+  // every possible neighbor is collected (SC-G05-P0-10 keeps the plan a
+  // bounded, deterministic function of the signed inputs).
+  let available = members.len().saturating_sub(1);
+  let target = degree.min(available);
+  let mut neighbors = Vec::with_capacity(target);
+  if target == 0 {
+    // A singleton membership has no possible neighbors.
+    return Ok(NeighborPlan { neighbors });
+  }
   // Walk the canonical cycle in place (no whole-population allocation):
-  // the next `degree` members after the local node, wrapping, skipping the
-  // local node itself (a singleton membership).
+  // the next `target` members after the local node, wrapping, skipping the
+  // local node itself.
   let position = members
     .iter()
     .position(|member| member == local)
     .unwrap_or(0);
-  let mut neighbors = Vec::with_capacity(degree);
   let mut cursor = members.iter().cycle();
   for _ in 0..=position {
     cursor.next();
@@ -64,7 +75,7 @@ pub(crate) fn plan_neighbors(
     }
     if !neighbors.contains(next) {
       neighbors.push(next.clone());
-      if neighbors.len() >= degree {
+      if neighbors.len() >= target {
         break;
       }
     }
@@ -236,6 +247,39 @@ mod tests {
     // membership; it must not create hidden sessions or edges.
     let plan = plan_neighbors(&node(9), &membership, 4).unwrap();
     assert!(plan.is_empty());
+  }
+
+  /// A requested degree that exceeds the membership must terminate with
+  /// every available neighbor instead of spinning the canonical cycle.
+  #[test]
+  fn neighbor_plan_degree_beyond_membership_terminates_with_all_neighbors() {
+    // Three members: the max possible plan size is two, but five are
+    // requested. The plan must return both available neighbors and end.
+    let membership = members(&[1, 2, 3]);
+    let plan = plan_neighbors(&node(2), &membership, 5).unwrap();
+    assert_eq!(plan.len(), 2);
+    assert!(!plan.neighbors().contains(&node(2)), "no self-edge");
+    let unique: BTreeSet<&NodeId> = plan.neighbors().iter().collect();
+    assert_eq!(unique.len(), plan.len(), "no duplicates");
+  }
+
+  /// A singleton membership must terminate with an empty plan: there is no
+  /// profile member to plan as a neighbor and the cycle has no exit.
+  #[test]
+  fn neighbor_plan_singleton_membership_terminates_empty() {
+    let membership = members(&[7]);
+    let plan = plan_neighbors(&node(7), &membership, 4).unwrap();
+    assert!(plan.is_empty());
+  }
+
+  /// The exact-boundary degree (population minus one) still returns every
+  /// possible neighbor and terminates.
+  #[test]
+  fn neighbor_plan_exact_available_degree_terminates() {
+    let membership = members(&[1, 2, 3, 4]);
+    let plan = plan_neighbors(&node(2), &membership, 3).unwrap();
+    assert_eq!(plan.len(), 3);
+    assert!(!plan.neighbors().contains(&node(2)));
   }
 }
 
