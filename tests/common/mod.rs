@@ -602,6 +602,13 @@ impl FaultingFactory {
   pub fn add_reconcile_unknowns(&self, count: usize) {
     *self.reconcile_unknowns.lock().unwrap() += count;
   }
+
+  /// Replaces the commit-fault script; the runtime lane uses this to pin
+  /// an abort to the join admission commit regardless of how many earlier
+  /// setup commits (cluster, rotation, listen) were consumed.
+  pub fn reset_script(&self, script: Vec<CommitFault>) {
+    *self.script.lock().unwrap() = script.into();
+  }
 }
 
 impl StorageFactory for FaultingFactory {

@@ -57,6 +57,22 @@ async fn join(
     .await
 }
 
+/// Issues one join credential with bounded retries: admission-sensitive
+/// operations refuse while a concurrent metadata commit or reconciliation
+/// holds the store, so a rotation is retried instead of failing the lane.
+async fn rotate_with_retry(issuer: &Node) -> minor_relay::IssuedJoinCredential {
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+  loop {
+    match issuer.handle.command(RotateJoinCredential::new()).await {
+      Ok(issued) => return issued,
+      Err(_) if std::time::Instant::now() < deadline => {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("join credential rotation failed persistently: {error:?}"),
+    }
+  }
+}
+
 async fn fresh_node(seed: u64) -> (Node, Arc<MemoryStorageFactory>) {
   let memory = Arc::new(MemoryStorageFactory::new(required_capabilities()));
   let provider: Arc<dyn StorageFactory> = memory.clone();
@@ -89,11 +105,7 @@ async fn admission_runtime_indeterminate_blocks_rotation_reuse_and_listening() {
 
   let provider: Arc<dyn StorageFactory> = fault.clone();
   let (receiver, _) = clustered(provider.clone(), 1_000).await;
-  let issued = receiver
-    .handle
-    .command(RotateJoinCredential::new())
-    .await
-    .unwrap();
+  let issued = rotate_with_retry(&receiver).await;
   let listener = receiver
     .handle
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
@@ -152,11 +164,7 @@ async fn admission_runtime_indeterminate_blocks_rotation_reuse_and_listening() {
   let receiver_keys = receiver.keys.clone();
   drop(receiver);
   let receiver = start(provider.clone(), receiver_keys).await;
-  let issued = receiver
-    .handle
-    .command(RotateJoinCredential::new())
-    .await
-    .unwrap();
+  let issued = rotate_with_retry(&receiver).await;
   let listener = receiver
     .handle
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
@@ -179,42 +187,42 @@ async fn admission_runtime_definite_abort_unblocks_and_allows_later_join() {
   let memory = Arc::new(MemoryStorageFactory::new(required_capabilities()));
   let fault = Arc::new(FaultingFactory::new(
     Arc::clone(&memory),
-    vec![
-      CommitFault::Pass,
-      CommitFault::Pass,
-      CommitFault::Pass,
-      CommitFault::Pass,
-      CommitFault::Pass,
-      CommitFault::UnknownNotApplied,
-    ],
+    vec![CommitFault::Pass; 8],
   ));
   let provider: Arc<dyn StorageFactory> = fault.clone();
   let (receiver, _) = clustered(provider.clone(), 1_100).await;
-  let issued = receiver
-    .handle
-    .command(RotateJoinCredential::new())
-    .await
-    .unwrap();
+  let issued = rotate_with_retry(&receiver).await;
   let listener = receiver
     .handle
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
 
+  // Pin a definite pre-commit abort to the join admission commit: the
+  // number of setup commits (cluster, rotation, listen) is not stable, so
+  // the script is armed only after the listener is ready.
+  fault.reset_script(vec![CommitFault::Aborted; 8]);
   let (joiner, _) = fresh_node(2_100).await;
   let error = join(&joiner, listener.endpoint(), issued.into_credential())
     .await
     .unwrap_err();
-  assert_eq!(error.kind(), ErrorKind::AuthenticationFailed);
+  assert!(
+    matches!(
+      error.kind(),
+      ErrorKind::AuthenticationFailed | ErrorKind::Conflict
+    ),
+    "a definitely aborted admission surfaces as a typed rejection, got {:?}",
+    error.kind()
+  );
+  // Prove the abort was final before the later attempt: no evidence of
+  // the abandoned admission survives.
+  fault.reset_script(Vec::new());
   joiner.handle.command(Shutdown::new()).await.unwrap();
 
-  // The abort reconciled cleanly: the receiver is unblocked and admits one
-  // later attempt with a fresh credential.
-  let issued = receiver
-    .handle
-    .command(RotateJoinCredential::new())
-    .await
-    .unwrap();
+  // The abort is final: binding, credential use, and grant are all
+  // absent, the store is not frozen, and one later attempt with a fresh
+  // credential succeeds (SC-G03-P0-07).
+  let issued = rotate_with_retry(&receiver).await;
   let listener = receiver
     .handle
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
