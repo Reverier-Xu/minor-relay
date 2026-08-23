@@ -559,6 +559,7 @@ async fn read_loop(
         break;
       }
       Err(error) => {
+        warn!(kind = ?error.kind(), "session receive failed");
         break;
       }
     };

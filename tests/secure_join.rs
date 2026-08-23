@@ -52,6 +52,47 @@ fn init_tracing() {
   });
 }
 
+/// Issues one join credential with bounded retries: admission-sensitive
+/// operations transiently refuse while concurrent metadata commits hold
+/// the store (the same precedent as the membership-sync harness).
+async fn rotate_with_retry(issuer: &NodeHandle) -> minor_relay::IssuedJoinCredential {
+  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  loop {
+    match issuer.command(RotateJoinCredential::new()).await {
+      Ok(issued) => return issued,
+      Err(_) if std::time::Instant::now() < deadline => {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("credential rotation failed persistently: {error:?}"),
+    }
+  }
+}
+
+/// One join with bounded retries: a transient admission-conflict refusal
+/// consumes no credential, so each attempt reissues a fresh one.
+async fn join_with_retry(
+  node: &NodeHandle, endpoint: &Endpoint, secret: &str,
+) -> minor_relay::AdmissionView {
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  let mut attempts = 0_u32;
+  loop {
+    attempts = attempts.wrapping_add(1);
+    match node
+      .command(JoinCluster::new(
+        endpoint.clone(),
+        JoinCredential::parse(secret).unwrap(),
+      ))
+      .await
+    {
+      Ok(view) => return view,
+      Err(_) if std::time::Instant::now() < deadline => {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+      }
+      Err(error) => panic!("join failed persistently (attempt {attempts}): {error:?}"),
+    }
+  }
+}
+
 async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> Node {
   init_tracing();
   let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
@@ -1538,24 +1579,14 @@ async fn secure_join_sixteen_node_membership_joins_and_views() {
 
   let mut members = Vec::new();
   for index in 0..15 {
-    let issued = issuer
-      .handle
-      .command(RotateJoinCredential::new())
-      .await
-      .unwrap();
+    let issued = rotate_with_retry(&issuer.handle).await;
     let member = start(
       Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
       Arc::new(ScriptedKeys::full_at(510_000 + index as u64 * 1_000)),
     )
     .await;
-    member
-      .handle
-      .command(JoinCluster::new(
-        listener.endpoint().clone(),
-        issued.into_credential(),
-      ))
-      .await
-      .unwrap();
+    let secret = issued.credential().expose_secret().to_owned();
+    join_with_retry(&member.handle, listener.endpoint(), &secret).await;
     members.push(member);
   }
 
