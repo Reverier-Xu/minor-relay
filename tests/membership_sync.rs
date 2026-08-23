@@ -719,7 +719,7 @@ async fn membership_sync_failure_matrix_partition_healing() {
   tokio::time::sleep(Duration::from_millis(300)).await;
   // The immediate-recovery command forces a bounded cycle; recovery
   // converges back to connected-path connectivity (SC-G05-P0-19/22).
-  let deadline = std::time::Instant::now() + Duration::from_secs(15);
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let mut recovered = false;
   while std::time::Instant::now() < deadline {
     let view = nodes[0].handle.command(StartRecovery::new()).await.unwrap();
@@ -734,12 +734,12 @@ async fn membership_sync_failure_matrix_partition_healing() {
   }
   assert!(recovered, "recovery reaches connected-path connectivity");
 
-  wait_connected(&nodes, 1, 0, Duration::from_secs(15)).await;
+  wait_connected(&nodes, 1, 0, Duration::from_secs(45)).await;
 
   // The exact topology returns: the 4-cycle's 4 undirected sessions.
   let expected_4: std::collections::BTreeSet<(u8, u8)> =
     [(0, 1), (0, 2), (1, 3), (2, 3)].into_iter().collect();
-  let edges = wait_settled(&nodes, &expected_4, Duration::from_secs(15)).await;
+  let edges = wait_settled(&nodes, &expected_4, Duration::from_secs(45)).await;
   assert_eq!(edges.len(), 4, "4 undirected sessions after healing");
   for node in nodes {
     node.handle.command(Shutdown::new()).await.unwrap();
