@@ -1,28 +1,22 @@
-//! Issuer-signed trust snapshots (G4-05, consumed by the membership sync
-//! lane in G5).
-//!
-//! The offline/factory store surfaces (persist_snapshot, latest_snapshot,
-//! persist_binding, paged_trust) are exercised by the unit suite; the
-//! runtime paths use the context-store variants.
+//! Issuer trust snapshots (G4-05, consumed by the membership sync lane
+//! in G5).
+// Unit-verified store surfaces exercised by the unit suite.
 #![allow(dead_code)]
 //!
-//! A [`TrustSnapshotV1`] is one signed, ordered set of `NodeId`-to-`PublicKey`
-//! bindings: the issuer signs the canonical body (cluster, strictly
-//! increasing revision, version, ordered bindings), and every recipient
-//! verifies the signature before persisting any binding. Conflicting
-//! evidence fails closed: invalid signatures, wrong clusters, untrusted
-//! issuers, stale revisions, and `NodeId` key substitutions are rejected
-//! without selecting a winner.
+//! A [`TrustSnapshotV1`] is one ordered set of `NodeId`-to-`PublicKey`
+//! bindings (cluster, strictly increasing revision, version, ordered
+//! bindings), carried over authenticated sessions and trusted through
+//! them (ADR-0008); it carries no per-entry signatures. Conflicting
+//! evidence fails closed: wrong clusters or issuers in a decoded record's
+//! own marking, stale revisions, and `NodeId` key substitutions against
+//! locally admitted bindings are rejected without selecting a winner.
 
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
 use crate::{
-  ClusterId, Digest, NodeId, PublicKey, Result, Signature,
+  ClusterId, Digest, NodeId, PublicKey, Result,
   protocol::{decode_canonical, encode_canonical},
 };
-
-/// The signature domain of one trust snapshot.
-pub(crate) const TRUST_SNAPSHOT_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/trust-snapshot-v1";
 
 /// The durable schema and namespace of one trust snapshot record.
 pub(crate) const TRUST_SNAPSHOT_SCHEMA: &str = "relay.woooo.tech/schemas/trust-snapshot-v1";
@@ -49,7 +43,7 @@ impl TrustBinding {
   }
 }
 
-/// One issuer-signed trust snapshot.
+/// One issuer-marked trust snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrustSnapshotV1 {
   cluster: ClusterId,
@@ -58,7 +52,6 @@ pub(crate) struct TrustSnapshotV1 {
   issuer: NodeId,
   issuer_key: PublicKey,
   bindings: Vec<TrustBinding>,
-  signature: Signature,
 }
 
 #[derive(Encode, Decode)]
@@ -89,14 +82,12 @@ struct SnapshotWire {
   issuer_key: ByteVec,
   #[n(7)]
   bindings: Vec<BindingWire>,
-  #[n(8)]
-  signature: ByteVec,
 }
 
 impl TrustSnapshotV1 {
   pub(crate) fn new(
     cluster: ClusterId, revision: u64, version: u16, issuer: NodeId, issuer_key: PublicKey,
-    bindings: Vec<TrustBinding>, signature: Signature,
+    bindings: Vec<TrustBinding>,
   ) -> Self {
     Self {
       cluster,
@@ -105,7 +96,6 @@ impl TrustSnapshotV1 {
       issuer,
       issuer_key,
       bindings,
-      signature,
     }
   }
 
@@ -125,22 +115,9 @@ impl TrustSnapshotV1 {
     &self.bindings
   }
 
-  /// Attaches the issuer signature after it has been produced.
-  pub(crate) fn set_signature(&mut self, signature: Signature) {
-    self.signature = signature;
-  }
-
-  /// The canonical body the issuer signs.
-  pub(crate) fn encode_signed_body(&self) -> Result<Vec<u8>> {
-    encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
-  }
-
-  /// Encodes the full wire record (canonical body plus signature).
+  /// Encodes the full wire record.
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
-    encode_canonical(
-      &self.wire_with_signature(),
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
-    )
+    encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
   }
 
   fn wire(&self) -> SnapshotWire {
@@ -160,24 +137,14 @@ impl TrustSnapshotV1 {
           key: ByteVec::from(binding.key.as_bytes().to_vec()),
         })
         .collect(),
-      signature: ByteVec::from(Vec::new()),
     }
   }
 
-  fn wire_with_signature(&self) -> SnapshotWire {
-    let mut wire = self.wire();
-    wire.signature = ByteVec::from(self.signature.as_bytes().to_vec());
-    wire
-  }
-
-  /// Decodes and verifies one snapshot against the expected cluster and
-  /// the trusted issuer binding. Invalid signatures, wrong clusters,
-  /// untrusted issuers, and `NodeId` key substitutions fail closed
-  /// (SC-G04-P0-19).
-  pub(crate) fn decode_and_verify(
-    bytes: &[u8], expected_cluster: &ClusterId, trusted_issuer: &NodeId,
-    trusted_issuer_key: &PublicKey,
-  ) -> Result<TrustSnapshotV1> {
+  /// Decodes one snapshot, checking only its own marking and canonical
+  /// wire rules. Entries are trusted through the authenticated session
+  /// that delivered them (ADR-0008); the caller compares the cluster and
+  /// issuer markings against its local view where that matters.
+  pub(crate) fn decode(bytes: &[u8]) -> Result<TrustSnapshotV1> {
     let wire: SnapshotWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
       .map_err(|_| crate::Error::invalid_input("trust snapshot decode"))?;
     if wire.schema != TRUST_SNAPSHOT_SCHEMA || wire.record_version != 1 {
@@ -190,22 +157,12 @@ impl TrustSnapshotV1 {
     }
     let cluster = ClusterId::parse(&wire.cluster)
       .map_err(|_| crate::Error::invalid_input("trust snapshot cluster"))?;
-    if &cluster != expected_cluster {
-      return Err(crate::Error::not_trusted("trust snapshot cluster"));
-    }
     let issuer = NodeId::parse(&wire.issuer)
       .map_err(|_| crate::Error::invalid_input("trust snapshot issuer"))?;
-    if &issuer != trusted_issuer {
-      return Err(crate::Error::not_trusted("trust snapshot issuer"));
-    }
     let issuer_key = PublicKey::from_bytes(
       <[u8; 32]>::try_from(wire.issuer_key.as_ref())
         .map_err(|_| crate::Error::invalid_input("trust snapshot issuer key"))?,
     );
-    if &issuer_key != trusted_issuer_key {
-      // The snapshot claims the trusted issuer with a different key.
-      return Err(crate::Error::not_trusted("trust snapshot key substitution"));
-    }
     let mut bindings = Vec::with_capacity(wire.bindings.len());
     for binding in &wire.bindings {
       let node = NodeId::parse(&binding.node)
@@ -221,28 +178,14 @@ impl TrustSnapshotV1 {
     if !bindings.windows(2).all(|pair| pair[0].node < pair[1].node) {
       return Err(crate::Error::invalid_input("trust snapshot ordering"));
     }
-    let signature_bytes: &[u8] = wire.signature.as_ref();
-    let signature = Signature::from_bytes(
-      <[u8; 64]>::try_from(signature_bytes)
-        .map_err(|_| crate::Error::invalid_input("trust snapshot signature"))?,
-    );
-    let snapshot = Self::new(
+    Ok(Self::new(
       cluster,
       wire.revision,
       wire.version,
       issuer,
-      issuer_key.clone(),
+      issuer_key,
       bindings,
-      signature,
-    );
-    crate::identity::signature::verify_strict(
-      TRUST_SNAPSHOT_V1_DOMAIN,
-      &snapshot.encode_signed_body()?,
-      &issuer_key,
-      &snapshot.signature,
-      "trust snapshot signature",
-    )?;
-    Ok(snapshot)
+    ))
   }
 
   /// True when this snapshot is strictly newer than `other` by revision.
@@ -302,24 +245,17 @@ pub(crate) fn page_bindings(
   Ok(TrustPage::new(page, next))
 }
 
-/// The digest of one snapshot's canonical signed body, for receipts.
+/// The digest of one snapshot's canonical encoding, for receipts.
 pub(crate) fn snapshot_digest(snapshot: &TrustSnapshotV1) -> Result<Digest> {
-  Ok(crate::identity::signature::body_digest(
-    &snapshot.encode_signed_body()?,
-  ))
+  Ok(crate::identity::signature::body_digest(&snapshot.encode()?))
 }
 
 #[cfg(test)]
 mod tests {
   use std::time::Duration;
 
-  use ed25519_dalek::Signer;
-
   use super::{TrustBinding, TrustSnapshotV1, page_bindings};
-  use crate::{
-    ClusterId, NodeId, PublicKey, Signature,
-    identity::{signature::signature_message, testing::scripted_signing},
-  };
+  use crate::{ClusterId, NodeId};
 
   fn cluster() -> ClusterId {
     ClusterId::parse("cluster_100000000000000000000").unwrap()
@@ -329,27 +265,18 @@ mod tests {
     NodeId::parse(&format!("node_{value:021}")).unwrap()
   }
 
-  fn key(value: u8) -> PublicKey {
-    let signing = scripted_signing(value.into());
-    PublicKey::from_bytes(signing.verifying_key().to_bytes())
+  fn key(value: u8) -> crate::PublicKey {
+    let signing = crate::identity::testing::scripted_signing(value.into());
+    crate::PublicKey::from_bytes(signing.verifying_key().to_bytes())
   }
 
-  fn issuer_pair(value: u8) -> (NodeId, PublicKey) {
+  fn issuer_pair(value: u8) -> (NodeId, crate::PublicKey) {
     (node(value), key(value))
-  }
-
-  fn sign(snapshot: &mut TrustSnapshotV1, issuer_index: u8) {
-    let signing = scripted_signing(issuer_index.into());
-    let message = signature_message(
-      super::TRUST_SNAPSHOT_V1_DOMAIN,
-      &snapshot.encode_signed_body().unwrap(),
-    );
-    snapshot.signature = Signature::from_bytes(signing.sign(&message).to_bytes());
   }
 
   fn snapshot(revision: u64, issuer_index: u8, bindings: Vec<(u8, u8)>) -> TrustSnapshotV1 {
     let (issuer, issuer_key) = issuer_pair(issuer_index);
-    let mut snapshot = TrustSnapshotV1::new(
+    TrustSnapshotV1::new(
       cluster(),
       revision,
       1,
@@ -359,61 +286,28 @@ mod tests {
         .into_iter()
         .map(|(n, k)| TrustBinding::new(node(n), key(k)))
         .collect(),
-      Signature::from_bytes([0; 64]),
-    );
-    sign(&mut snapshot, issuer_index);
-    snapshot
+    )
   }
 
-  /// SC-G04-P0-16: the joiner verifies the issuer, cluster, revision, and
-  /// signature and the snapshot round-trips durably.
+  /// SC-G04-P0-16: the snapshot round-trips its marking, revision, and
+  /// ordered bindings durably.
   #[test]
-  fn trust_snapshot_round_trips_and_verifies() {
+  fn trust_snapshot_round_trips() {
     let snapshot = snapshot(7, 1, vec![(2, 2), (3, 3), (4, 4)]);
     let bytes = snapshot.encode().unwrap();
-    let verified =
-      TrustSnapshotV1::decode_and_verify(&bytes, &cluster(), &node(1), &key(1)).unwrap();
-    assert_eq!(verified, snapshot);
-    assert_eq!(verified.bindings().len(), 3);
+    let decoded = TrustSnapshotV1::decode(&bytes).unwrap();
+    assert_eq!(decoded, snapshot);
+    assert_eq!(decoded.bindings().len(), 3);
     // Ordered by canonical node text.
-    assert_eq!(verified.bindings()[0].node(), &node(2));
+    assert_eq!(decoded.bindings()[0].node(), &node(2));
+    assert_eq!(decoded.cluster(), &cluster());
+    assert_eq!(decoded.issuer(), &node(1));
   }
 
   /// SC-G04-P0-19: conflicting evidence fails closed.
   #[test]
   fn trust_snapshot_rejects_conflicting_evidence() {
     let first = snapshot(7, 1, vec![(2, 2)]);
-
-    // Tampered signature bytes fail verification.
-    let mut tampered = first.clone();
-    tampered.signature = Signature::from_bytes([0x5A; 64]);
-    assert!(
-      TrustSnapshotV1::decode_and_verify(
-        &tampered.encode().unwrap(),
-        &cluster(),
-        &node(1),
-        &key(1),
-      )
-      .is_err()
-    );
-
-    // Wrong cluster fails closed.
-    let other_cluster = ClusterId::parse("cluster_200000000000000000000").unwrap();
-    assert!(
-      TrustSnapshotV1::decode_and_verify(
-        &first.encode().unwrap(),
-        &other_cluster,
-        &node(1),
-        &key(1),
-      )
-      .is_err()
-    );
-
-    // Untrusted issuer fails closed.
-    assert!(
-      TrustSnapshotV1::decode_and_verify(&first.encode().unwrap(), &cluster(), &node(9), &key(9),)
-        .is_err()
-    );
 
     // NodeId key substitution fails closed.
     let known = vec![(node(2), key(9))];
@@ -452,13 +346,7 @@ mod tests {
       TrustBinding::new(node(3), key(3)),
       TrustBinding::new(node(2), key(2)),
     ];
-    sign(&mut unordered, 1);
-    let error = TrustSnapshotV1::decode_and_verify(
-      &unordered.encode().unwrap(),
-      &cluster(),
-      &node(1),
-      &key(1),
-    );
+    let error = TrustSnapshotV1::decode(&unordered.encode().unwrap());
     assert!(error.is_err());
   }
 
@@ -493,7 +381,7 @@ mod tests {
 
     // After the restart the exact snapshot and paged view agree with the
     // original bindings.
-    let loaded = store::latest_snapshot(&factory, &cluster(), &node(1), &key(1))
+    let loaded = store::latest_snapshot(&factory, &node(1))
       .await
       .unwrap()
       .unwrap();
@@ -519,7 +407,7 @@ mod tests {
     store::persist_snapshot(&factory, &older).await.unwrap();
 
     // The highest revision wins; the stale snapshot cannot overwrite it.
-    let loaded = store::latest_snapshot(&factory, &cluster(), &node(1), &key(1))
+    let loaded = store::latest_snapshot(&factory, &node(1))
       .await
       .unwrap()
       .unwrap();
@@ -536,9 +424,8 @@ pub(crate) mod store {
     TRUST_BINDING_NAMESPACE, TRUST_SNAPSHOT_NAMESPACE, TrustBinding, TrustPage, TrustSnapshotV1,
   };
   use crate::{
-    ClusterId, NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace,
-    StoreOperation, StoreValue, TransactionId, api::Entropy, provider::StorageFactory,
-    storage::MetadataStore,
+    NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
+    StoreValue, TransactionId, api::Entropy, provider::StorageFactory, storage::MetadataStore,
   };
 
   fn snapshot_namespace() -> Result<StoreNamespace> {
@@ -584,10 +471,9 @@ pub(crate) mod store {
   }
 
   /// The highest-revision snapshot for one issuer over the running node's
-  /// metadata store, verified against the caller's trusted context.
+  /// metadata store, scoped to the issuer's own key prefix.
   pub(crate) async fn latest_snapshot_ctx(
-    store: &MetadataStore, expected_cluster: &ClusterId, trusted_issuer: &NodeId,
-    trusted_issuer_key: &PublicKey,
+    store: &MetadataStore, trusted_issuer: &NodeId,
   ) -> Result<Option<TrustSnapshotV1>> {
     let namespace = snapshot_namespace()?;
     let snapshot = store.snapshot().await?;
@@ -617,12 +503,7 @@ pub(crate) mod store {
     let Some((_, bytes)) = latest else {
       return Ok(None);
     };
-    Ok(Some(TrustSnapshotV1::decode_and_verify(
-      &bytes,
-      expected_cluster,
-      trusted_issuer,
-      trusted_issuer_key,
-    )?))
+    Ok(Some(TrustSnapshotV1::decode(&bytes)?))
   }
 
   /// Persists one verified nonconflicting binding over the running node's
@@ -784,11 +665,10 @@ pub(crate) mod store {
   /// The highest-revision snapshot for one issuer over a standalone
   /// factory handle.
   pub(crate) async fn latest_snapshot(
-    factory: &Arc<dyn StorageFactory>, expected_cluster: &ClusterId, trusted_issuer: &NodeId,
-    trusted_issuer_key: &PublicKey,
+    factory: &Arc<dyn StorageFactory>, trusted_issuer: &NodeId,
   ) -> Result<Option<TrustSnapshotV1>> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
-    latest_snapshot_ctx(&store, expected_cluster, trusted_issuer, trusted_issuer_key).await
+    latest_snapshot_ctx(&store, trusted_issuer).await
   }
 
   /// Persists one verified nonconflicting binding over a standalone

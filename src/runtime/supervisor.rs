@@ -351,7 +351,6 @@ impl Supervisor {
     // pages; bounded work per tick).
     let sync_driver = {
       let driver_context = Arc::clone(&sync_context);
-      let driver_keys = dependencies.keys.clone();
       let driver_entropy = dependencies.entropy.clone();
       let driver_sessions = dependencies.sessions.clone();
       let driver_runtime = crate::runtime::RuntimeClient::routing_only(
@@ -381,7 +380,6 @@ impl Supervisor {
                 .unwrap_or_default();
               let _ = crate::membership::sync::sync_tick(
                 &driver_context,
-                &driver_keys,
                 &driver_entropy,
                 &driver_sessions,
                 &driver_runtime,
@@ -702,7 +700,6 @@ impl Supervisor {
       .unwrap_or_default();
     crate::membership::sync::ensure_local_descriptor(
       &context,
-      &self.dependencies.keys,
       &self.dependencies.entropy,
       endpoints,
     )
@@ -727,7 +724,7 @@ impl Supervisor {
     let Some(value) = snapshot.get(&namespace, &key).await? else {
       return Ok(None);
     };
-    let descriptor = crate::membership::NodeDescriptorV1::decode_and_verify_any(value.as_bytes())?;
+    let descriptor = crate::membership::page::decode_descriptor(value.as_bytes())?;
     Ok(Some(crate::MemberView::new(
       descriptor.node().clone(),
       descriptor.public_key().clone(),
@@ -773,8 +770,7 @@ impl Supervisor {
       {
         continue;
       }
-      let descriptor =
-        crate::membership::NodeDescriptorV1::decode_and_verify_any(entry.value().as_bytes())?;
+      let descriptor = crate::membership::page::decode_descriptor(entry.value().as_bytes())?;
       let node = descriptor.node().clone();
       items.push(crate::MemberView::new(
         node.clone(),
@@ -960,12 +956,12 @@ impl Supervisor {
       if self.recovery_excluded.contains(member) {
         continue;
       }
-      let Some(public_key) = bindings.get(member) else {
+      // Only known members (a durable binding exists) are dialled.
+      if !bindings.contains_key(member) {
         continue;
-      };
+      }
       let descriptor =
-        crate::membership::store::read_descriptor_ctx(self.context()?.store(), member, public_key)
-          .await;
+        crate::membership::store::read_descriptor_ctx(self.context()?.store(), member).await;
       if let Ok(Some(descriptor)) = descriptor
         && let Some(endpoint) = descriptor.endpoints().first()
       {

@@ -1,19 +1,11 @@
 //! Bounded membership anti-entropy pages (G5-02).
 //!
 //! A normal anti-entropy tick emits [`MembershipPage`]s: a bounded list of
-//! signed [`NodeDescriptorV1`] records plus an opaque cursor, never a
-//! whole-population allocation. A receiver verifies every descriptor
-//! before installing it, repairs missing owner revisions, converges stale
-//! peers to the highest valid revision, and rejects dishonest pages
-//! (unsigned data, revision downgrades, looping cursors, over-capacity).
-
-use minicbor::{Decode, Encode};
-
-use super::{NodeDescriptorV1, store};
-use crate::{
-  Error, NodeId, PublicKey, Result,
-  protocol::{decode_canonical, encode_canonical},
-};
+//! [`NodeDescriptorV1`] records plus an opaque cursor, never a
+//! whole-population allocation. Entries are trusted through the
+//! authenticated session that delivered them (ADR-0008); the receiver
+//! repairs missing owner revisions, converges stale peers to the highest
+//! revision, and rejects over-capacity pages and looping cursors.
 
 /// The schema of one membership sync page.
 pub(crate) const MEMBERSHIP_PAGE_SCHEMA: &str = "relay.woooo.tech/schemas/membership-page-v1";
@@ -35,7 +27,15 @@ struct PageWire {
   cursor: Option<minicbor::bytes::ByteVec>,
 }
 
-/// One bounded page of signed node descriptors plus a continuation cursor.
+use minicbor::{Decode, Encode};
+
+use super::{NodeDescriptorV1, store};
+use crate::{
+  Error, NodeId, Result,
+  protocol::{decode_canonical, encode_canonical},
+};
+
+/// One bounded page of node descriptors plus a continuation cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MembershipPage {
   descriptors: Vec<NodeDescriptorV1>,
@@ -79,12 +79,10 @@ impl MembershipPage {
     )
   }
 
-  /// Decodes one page. Every embedded descriptor is verified against the
-  /// local trusted binding for its node before the page is accepted
-  /// (SC-G05-P0-09: unsigned or mismatched data cannot install).
-  pub(crate) fn decode_and_verify(
-    bytes: &[u8], trusted_keys: &std::collections::BTreeMap<NodeId, PublicKey>,
-  ) -> Result<MembershipPage> {
+  /// Decodes one page. Entries are trusted through the authenticated
+  /// session that delivered them (ADR-0008): decoding checks only the
+  /// canonical wire rules and page capacity.
+  pub(crate) fn decode(bytes: &[u8]) -> Result<MembershipPage> {
     let wire: PageWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
       .map_err(|_| Error::invalid_input("membership page decode"))?;
     if wire.schema != MEMBERSHIP_PAGE_SCHEMA {
@@ -96,17 +94,8 @@ impl MembershipPage {
     let mut descriptors = Vec::with_capacity(wire.descriptors.len());
     for encoded in &wire.descriptors {
       let wire_bytes: &[u8] = encoded.as_ref();
-      // The descriptor's own signature must verify (decode_and_verify_any),
-      // and the node must be known with the exact trusted key; an unknown
-      // or mismatched node is rejected (fail closed).
-      let descriptor = NodeDescriptorV1::decode_and_verify_any(wire_bytes)
+      let descriptor = decode_descriptor(wire_bytes)
         .map_err(|_| Error::invalid_input("membership page descriptor"))?;
-      let trusted = trusted_keys
-        .get(descriptor.node())
-        .ok_or_else(|| Error::not_trusted("membership page unknown node"))?;
-      if trusted != descriptor.public_key() {
-        return Err(Error::not_trusted("membership page key mismatch"));
-      }
       descriptors.push(descriptor);
     }
     let cursor: Option<Vec<u8>> = wire.cursor.map(|value| {
@@ -154,9 +143,9 @@ pub(crate) mod sync {
         continue;
       }
       let bytes = entry.value().as_bytes();
-      // Read without a bound key: verification happens at the receiver;
-      // the sender only pages its own signed records.
-      let descriptor = super::NodeDescriptorV1::decode_and_verify_any(bytes)?;
+      // The sender only pages its own stored records; entries are trusted
+      // through the session that delivers them (ADR-0008).
+      let descriptor = super::decode_descriptor(bytes)?;
       descriptors.push(descriptor);
       last_key = Some(key.to_vec());
       if descriptors.len() >= limit {
@@ -170,8 +159,7 @@ pub(crate) mod sync {
   }
 
   /// Applies one received page over the running node's metadata store:
-  /// every descriptor is already verified by `decode_and_verify`; the
-  /// store accepts only the exact next revision, so stale, repeated,
+  /// the store accepts only the exact next revision, so stale, repeated,
   /// downgraded, and replayed descriptors cannot replace a newer record
   /// (SC-G05-P0-07/08).
   pub(crate) async fn apply_page_ctx(
@@ -180,8 +168,7 @@ pub(crate) mod sync {
     let mut applied = 0;
     for descriptor in page.descriptors() {
       // Skip descriptors we already have at an equal or higher revision.
-      if let Ok(Some(current)) =
-        super::store::read_descriptor_ctx(store, descriptor.node(), descriptor.public_key()).await
+      if let Ok(Some(current)) = super::store::read_descriptor_ctx(store, descriptor.node()).await
         && current.revision() >= descriptor.revision()
       {
         continue;
@@ -214,20 +201,10 @@ pub(crate) mod sync {
   }
 }
 
-/// Decodes one descriptor wire and verifies its own signature, without a
-/// bound-key check (the caller supplies the trusted binding at the page or
-/// store level). This is the single canonical descriptor decoder: the
-/// store's `decode_and_verify` delegates here and then checks the bound
-/// key, so the wire rules and error strings live in exactly one place.
-/// A receiver-side decoder that does not require a bound key up front
-/// (the page-level or view-level check supplies it). Delegates to the
-/// single canonical decoder.
-impl NodeDescriptorV1 {
-  pub(crate) fn decode_and_verify_any(bytes: &[u8]) -> Result<NodeDescriptorV1> {
-    decode_descriptor(bytes)
-  }
-}
-
+/// The single canonical descriptor decoder: wire rules and error strings
+/// live in exactly one place. Entries are trusted through the session
+/// that delivered them, so decoding checks only schema, version, and
+/// canonical wire rules (ADR-0008).
 pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
   let wire: super::DescriptorWire =
     decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
@@ -241,7 +218,7 @@ pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
     return Err(Error::invalid_input("node descriptor version"));
   }
   let node = NodeId::parse(&wire.node).map_err(|_| Error::invalid_input("node descriptor node"))?;
-  let public_key = PublicKey::from_bytes(
+  let public_key = crate::PublicKey::from_bytes(
     <[u8; 32]>::try_from(wire.public_key.as_ref())
       .map_err(|_| Error::invalid_input("node descriptor key"))?,
   );
@@ -251,75 +228,41 @@ pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
       crate::Endpoint::parse(text).map_err(|_| Error::invalid_input("node descriptor endpoint"))?,
     );
   }
-  let descriptor = NodeDescriptorV1::new(
+  Ok(NodeDescriptorV1::new(
     node,
-    public_key.clone(),
+    public_key,
     endpoints,
     wire.revision,
     wire.removed,
     wire.version,
-    crate::Signature::from_bytes({
-      let bytes: &[u8] = wire.signature.as_ref();
-      <[u8; 64]>::try_from(bytes).map_err(|_| Error::invalid_input("node descriptor signature"))?
-    }),
-  );
-  crate::identity::signature::verify_strict(
-    super::NODE_DESCRIPTOR_V1_DOMAIN,
-    &descriptor.encode_signed_body()?,
-    &public_key,
-    &descriptor.signature,
-    "node descriptor signature",
-  )?;
-  Ok(descriptor)
+  ))
 }
 
 #[cfg(test)]
 mod tests {
-  use std::{collections::BTreeMap, sync::Arc};
-
-  use ed25519_dalek::Signer;
+  use std::sync::Arc;
 
   use super::{MembershipPage, sync};
-  use crate::{
-    Endpoint, NodeId, PublicKey, Signature,
-    identity::{signature::signature_message, testing::scripted_signing},
-    provider::StorageFactory,
-  };
+  use crate::{Endpoint, NodeId, provider::StorageFactory};
 
   fn node(value: u8) -> NodeId {
     NodeId::parse(&format!("node_{value:021}")).unwrap()
   }
 
-  fn key(value: u8) -> PublicKey {
-    let signing = scripted_signing(value.into());
-    PublicKey::from_bytes(signing.verifying_key().to_bytes())
-  }
-
-  fn sign(descriptor: &mut crate::membership::NodeDescriptorV1, owner_index: u8) {
-    let signing = scripted_signing(owner_index.into());
-    let message = signature_message(
-      crate::membership::NODE_DESCRIPTOR_V1_DOMAIN,
-      &descriptor.encode_signed_body().unwrap(),
-    );
-    descriptor.signature = Signature::from_bytes(signing.sign(&message).to_bytes());
+  fn key(value: u8) -> crate::PublicKey {
+    let signing = crate::identity::testing::scripted_signing(value.into());
+    crate::PublicKey::from_bytes(signing.verifying_key().to_bytes())
   }
 
   fn descriptor(node_index: u8, revision: u64, host: &str) -> crate::membership::NodeDescriptorV1 {
-    let mut descriptor = crate::membership::NodeDescriptorV1::new(
+    crate::membership::NodeDescriptorV1::new(
       node(node_index),
       key(node_index),
       vec![Endpoint::parse(&format!("wss://{host}:9000")).unwrap()],
       revision,
       false,
       1,
-      Signature::from_bytes([0; 64]),
-    );
-    sign(&mut descriptor, node_index);
-    descriptor
-  }
-
-  fn trusted(node_index: u8) -> BTreeMap<NodeId, PublicKey> {
-    BTreeMap::from([(node(node_index), key(node_index))])
+    )
   }
 
   fn factory() -> Arc<dyn StorageFactory> {
@@ -352,7 +295,7 @@ mod tests {
   }
 
   /// SC-G05-P0-07/08: repeated pages repair missing revisions and stale
-  /// peers converge to the highest valid revision.
+  /// peers converge to the highest revision.
   #[tokio::test]
   async fn apply_pages_repairs_and_converges() {
     let factory = factory();
@@ -360,27 +303,24 @@ mod tests {
       .await
       .unwrap();
     // A stale peer holds revision 1; the peer pages revision 2.
-    let mut fresh = descriptor(1, 1, "one-updated");
-    fresh = crate::membership::NodeDescriptorV1::new(
+    let fresh = crate::membership::NodeDescriptorV1::new(
       node(1),
       key(1),
-      fresh.endpoints().to_vec(),
+      vec![Endpoint::parse("wss://one-updated:9000").unwrap()],
       2,
       false,
       1,
-      fresh.signature.clone(),
     );
-    sign(&mut fresh, 1);
     crate::membership::store::store_descriptor(&factory, &fresh)
       .await
       .unwrap();
 
     let page = sync::emit_page(&factory, None, 4).await.unwrap();
     let encoded = page.encode().unwrap();
-    let decoded = MembershipPage::decode_and_verify(&encoded, &trusted(1)).unwrap();
+    let decoded = MembershipPage::decode(&encoded).unwrap();
     // Applying again is idempotent (no downgrade, no duplicate install).
     let applied = sync::apply_page(&factory, &decoded).await.unwrap();
-    let current = crate::membership::store::read_descriptor(&factory, &node(1), &key(1))
+    let current = crate::membership::store::read_descriptor(&factory, &node(1))
       .await
       .unwrap()
       .unwrap();
@@ -388,8 +328,8 @@ mod tests {
     let _ = applied;
   }
 
-  /// SC-G05-P0-09: a dishonest page cannot install unsigned data, loop a
-  /// cursor, or exceed capacities.
+  /// SC-G05-P0-09: a dishonest page cannot loop a cursor or exceed
+  /// capacities; unknown versions fail closed at decode.
   #[test]
   fn reject_dishonest_pages() {
     // Over-capacity page.
@@ -397,14 +337,6 @@ mod tests {
       .map(|index| descriptor((index % 8) as u8 + 1, 1, "x"))
       .collect();
     assert!(MembershipPage::new(descriptors, None).is_err());
-
-    // Unknown node fails closed at decode.
-    let page = MembershipPage::new(vec![descriptor(9, 1, "nine")], None).unwrap();
-    let encoded = page.encode().unwrap();
-    assert!(
-      MembershipPage::decode_and_verify(&encoded, &trusted(1)).is_err(),
-      "unknown node must be rejected"
-    );
 
     // Cursor loop is detected.
     let page = MembershipPage::new(vec![descriptor(1, 1, "one")], Some(vec![1])).unwrap();

@@ -1,29 +1,26 @@
-//! Owner-signed node descriptors (G5-01, ADR-0007 metadata boundary).
-//!
-//! TODO(G5-02): the descriptor store and verification surface are consumed
-//! when membership sync exchanges pages; until then they are exercised by
-//! the unit suite.
+//! Owner-marked node descriptors (G5-01, ADR-0008 session-trust boundary).
+// Unit-verified surfaces whose runtime consumers land with later wiring
+// (neighbor planning consumes RecoveryConfig::neighbors).
 #![allow(dead_code)]
 //!
-//! A [`NodeDescriptorV1`] is the signed node-owned revision record: the
-//! owning node signs its `NodeId`-to-`PublicKey` binding, its endpoint
-//! candidates, a strictly increasing revision, and the removal flag. Core
-//! accepts an update only at the exact next revision; stale, repeated, and
-//! skipped revisions cannot replace the current record, and a retained
-//! signed removal marker defeats reordered or replayed older descriptors.
+//! A [`NodeDescriptorV1`] is the node-owned revision record: it carries the
+//! owning node's `NodeId` marking, its endpoint candidates, a strictly
+//! increasing revision, and the removal flag. Entries are trusted through
+//! the authenticated session that delivered them (ADR-0008), so they carry
+//! no per-entry signatures. Core accepts an update only at the exact next
+//! revision; stale, repeated, and skipped revisions cannot replace the
+//! current record, and a retained removal marker defeats reordered or
+//! replayed older descriptors.
 
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
-use crate::{Endpoint, Error, NodeId, PublicKey, Result, Signature, protocol::encode_canonical};
-
-/// The signature domain of one node descriptor.
-pub(crate) const NODE_DESCRIPTOR_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/node-descriptor-v1";
+use crate::{Endpoint, NodeId, PublicKey, Result, protocol::encode_canonical};
 
 /// The durable schema, namespace, and key of one node descriptor record.
 pub(crate) const NODE_DESCRIPTOR_SCHEMA: &str = "relay.woooo.tech/schemas/node-descriptor-v1";
 pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "relay.woooo.tech/metadata/node-descriptor-v1";
 
-/// One owner-signed node descriptor.
+/// One owner-marked node descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NodeDescriptorV1 {
   node: NodeId,
@@ -32,7 +29,6 @@ pub(crate) struct NodeDescriptorV1 {
   revision: u64,
   removed: bool,
   version: u16,
-  signature: Signature,
 }
 
 #[derive(Encode, Decode)]
@@ -54,14 +50,12 @@ struct DescriptorWire {
   removed: bool,
   #[n(7)]
   version: u16,
-  #[n(8)]
-  signature: ByteVec,
 }
 
 impl NodeDescriptorV1 {
   pub(crate) fn new(
     node: NodeId, public_key: PublicKey, endpoints: Vec<Endpoint>, revision: u64, removed: bool,
-    version: u16, signature: Signature,
+    version: u16,
   ) -> Self {
     Self {
       node,
@@ -70,7 +64,6 @@ impl NodeDescriptorV1 {
       revision,
       removed,
       version,
-      signature,
     }
   }
 
@@ -94,17 +87,6 @@ impl NodeDescriptorV1 {
     self.removed
   }
 
-  /// Attaches the owner signature after it has been produced.
-  pub(crate) fn set_signature(&mut self, signature: Signature) {
-    self.signature = signature;
-  }
-
-  pub(crate) fn encode_signed_body(&self) -> Result<Vec<u8>> {
-    let mut wire = self.wire();
-    wire.signature = ByteVec::from(Vec::new());
-    encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
-  }
-
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
     encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
   }
@@ -123,37 +105,14 @@ impl NodeDescriptorV1 {
       revision: self.revision,
       removed: self.removed,
       version: self.version,
-      signature: ByteVec::from(self.signature.as_bytes().to_vec()),
     }
-  }
-
-  /// Decodes and verifies one descriptor against its bound key. Fails
-  /// closed on signature mismatch, wrong schema/version, or a public key
-  /// that does not bind to the claimed node (SC-G05-P0-01). The wire
-  /// parsing is delegated to the single decoder in `page::decode` (the
-  /// page receiver's `decode_and_verify_any`), so the canonical rules and
-  /// error strings live in exactly one place.
-  pub(crate) fn decode_and_verify(bytes: &[u8], bound_key: &PublicKey) -> Result<NodeDescriptorV1> {
-    let descriptor = crate::membership::page::decode_descriptor(bytes)?;
-    if descriptor.public_key() != bound_key {
-      // The descriptor claims a node but is signed by a different key.
-      return Err(Error::not_trusted("node descriptor key binding"));
-    }
-    crate::identity::signature::verify_strict(
-      NODE_DESCRIPTOR_V1_DOMAIN,
-      &descriptor.encode_signed_body()?,
-      bound_key,
-      &descriptor.signature,
-      "node descriptor signature",
-    )?;
-    Ok(descriptor)
   }
 }
 
-/// The digest of one descriptor's canonical signed body, for public views.
+/// The digest of one descriptor's canonical encoding, for public views.
 pub(crate) fn node_descriptor_digest(descriptor: &NodeDescriptorV1) -> Result<crate::Digest> {
   Ok(crate::identity::signature::body_digest(
-    &descriptor.encode_signed_body()?,
+    &descriptor.encode()?,
   ))
 }
 
@@ -168,8 +127,8 @@ pub(crate) mod store {
 
   use super::{NODE_DESCRIPTOR_NAMESPACE, NodeDescriptorV1};
   use crate::{
-    Error, NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
-    StoreValue, TransactionId, api::Entropy, provider::StorageFactory, storage::MetadataStore,
+    Error, NodeId, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreValue,
+    TransactionId, api::Entropy, provider::StorageFactory, storage::MetadataStore,
   };
 
   fn namespace() -> Result<StoreNamespace> {
@@ -183,7 +142,7 @@ pub(crate) mod store {
   /// Reads the current descriptor for one node, if any, over the running
   /// node's metadata store (the runtime path; never re-opens storage).
   pub(crate) async fn read_descriptor_ctx(
-    store: &MetadataStore, node: &NodeId, bound_key: &PublicKey,
+    store: &MetadataStore, node: &NodeId,
   ) -> Result<Option<NodeDescriptorV1>> {
     let namespace = namespace()?;
     let key = descriptor_key(node);
@@ -191,9 +150,8 @@ pub(crate) mod store {
     let Some(value) = value else {
       return Ok(None);
     };
-    Ok(Some(NodeDescriptorV1::decode_and_verify(
+    Ok(Some(crate::membership::page::decode_descriptor(
       value.as_bytes(),
-      bound_key,
     )?))
   }
 
@@ -209,8 +167,7 @@ pub(crate) mod store {
     let snapshot = store.snapshot().await?;
     let current = snapshot.get(&namespace, &key).await?;
     if let Some(existing) = current {
-      let existing =
-        NodeDescriptorV1::decode_and_verify(existing.as_bytes(), descriptor.public_key())?;
+      let existing = crate::membership::page::decode_descriptor(existing.as_bytes())?;
       if existing.revision() != descriptor.revision().saturating_sub(1) {
         return Err(Error::conflict("node descriptor revision"));
       }
@@ -245,10 +202,10 @@ pub(crate) mod store {
   /// Reads the current descriptor for one node over a standalone factory
   /// handle (unit/offline path; the caller owns the opened store).
   pub(crate) async fn read_descriptor(
-    factory: &Arc<dyn StorageFactory>, node: &NodeId, bound_key: &PublicKey,
+    factory: &Arc<dyn StorageFactory>, node: &NodeId,
   ) -> Result<Option<NodeDescriptorV1>> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
-    read_descriptor_ctx(&store, node, bound_key).await
+    read_descriptor_ctx(&store, node).await
   }
 
   /// Stores one descriptor over a standalone factory handle.
@@ -264,53 +221,33 @@ pub(crate) mod store {
 mod tests {
   use std::sync::Arc;
 
-  use ed25519_dalek::Signer;
-
   use super::{NodeDescriptorV1, store};
-  use crate::{
-    Endpoint, NodeId, PublicKey, Signature,
-    identity::{signature::signature_message, testing::scripted_signing},
-    provider::StorageFactory,
-  };
+  use crate::{Endpoint, NodeId, provider::StorageFactory};
 
   fn node(value: u8) -> NodeId {
     NodeId::parse(&format!("node_{value:021}")).unwrap()
   }
 
-  fn key(value: u8) -> PublicKey {
-    let signing = scripted_signing(value.into());
-    PublicKey::from_bytes(signing.verifying_key().to_bytes())
+  fn key(value: u8) -> crate::PublicKey {
+    let signing = crate::identity::testing::scripted_signing(value.into());
+    crate::PublicKey::from_bytes(signing.verifying_key().to_bytes())
   }
 
   fn endpoint(host: &str) -> Endpoint {
     Endpoint::parse(&format!("wss://{host}:9000")).unwrap()
   }
 
-  fn sign(descriptor: &mut NodeDescriptorV1, owner_index: u8) {
-    let signing = scripted_signing(owner_index.into());
-    let message = signature_message(
-      super::NODE_DESCRIPTOR_V1_DOMAIN,
-      &descriptor.encode_signed_body().unwrap(),
-    );
-    descriptor.signature = Signature::from_bytes(signing.sign(&message).to_bytes());
-  }
-
   fn descriptor(
     revision: u64, owner_index: u8, endpoints: Vec<&str>, removed: bool,
   ) -> NodeDescriptorV1 {
-    let owner = node(owner_index);
-    let owner_key = key(owner_index);
-    let mut descriptor = NodeDescriptorV1::new(
-      owner,
-      owner_key.clone(),
+    NodeDescriptorV1::new(
+      node(owner_index),
+      key(owner_index),
       endpoints.into_iter().map(endpoint).collect(),
       revision,
       removed,
       1,
-      Signature::from_bytes([0; 64]),
-    );
-    sign(&mut descriptor, owner_index);
-    descriptor
+    )
   }
 
   fn factory() -> Arc<dyn StorageFactory> {
@@ -319,40 +256,15 @@ mod tests {
     ))
   }
 
-  /// SC-G05-P0-01: a descriptor signed by the wrong identity fails before
-  /// storage.
+  /// SC-G05-P0-01: membership entries are keyed under their marked owner
+  /// and round-trip their identity marking through the canonical wire.
   #[test]
-  fn descriptor_rejects_wrong_identity_signature() {
-    let mut descriptor = descriptor(1, 1, vec!["one.example"], false);
-    // Re-sign with a different owner key than the claimed node's.
-    sign(&mut descriptor, 2);
-    // The claimed binding is node(1)/key(1) but the signature is key(2)'s.
-    assert!(NodeDescriptorV1::decode_and_verify(&descriptor.encode().unwrap(), &key(1)).is_err());
-    // A different bound key also fails the key-binding check.
-    assert!(NodeDescriptorV1::decode_and_verify(&descriptor.encode().unwrap(), &key(2)).is_err());
-  }
-
-  /// SC-G05-P0-02: mutating any signed field invalidates the signature.
-  #[test]
-  fn descriptor_rejects_field_mutation() {
+  fn descriptor_carries_owner_marking() {
     let descriptor = descriptor(1, 1, vec!["one.example"], false);
-    let bytes = descriptor.encode().unwrap();
-
-    // Tampered revision bytes fail verification.
-    let _bytes = bytes.clone();
-    // Re-encoding a mutated descriptor without re-signing must fail.
-    let mut mutated = descriptor.clone();
-    mutated.revision = 2;
-    sign(&mut mutated, 1);
-    let ok = NodeDescriptorV1::decode_and_verify(&mutated.encode().unwrap(), &key(1));
-    assert!(ok.is_ok());
-
-    // A mutation without re-signing must fail.
-    let mut unsigned_mutation = descriptor.clone();
-    unsigned_mutation.endpoints = vec![endpoint("evil.example")];
-    assert!(
-      NodeDescriptorV1::decode_and_verify(&unsigned_mutation.encode().unwrap(), &key(1)).is_err()
-    );
+    let decoded =
+      crate::membership::page::decode_descriptor(&descriptor.encode().unwrap()).unwrap();
+    assert_eq!(decoded.node(), &node(1));
+    assert_eq!(decoded.public_key(), &key(1));
   }
 
   /// SC-G05-P0-03: only the exact next revision is accepted.
@@ -379,7 +291,7 @@ mod tests {
     store::store_descriptor(&factory, &descriptor(2, 1, vec!["two.example"], false))
       .await
       .unwrap();
-    let current = store::read_descriptor(&factory, &node(1), &key(1))
+    let current = store::read_descriptor(&factory, &node(1))
       .await
       .unwrap()
       .unwrap();
@@ -387,15 +299,14 @@ mod tests {
     assert_eq!(current.endpoints()[0].host(), "two.example");
   }
 
-  /// SC-G05-P0-04: a signed removal marker defeats replayed older
-  /// descriptors.
+  /// SC-G05-P0-04: a removal marker defeats replayed older descriptors.
   #[tokio::test]
   async fn descriptor_removal_marker_defeats_replay() {
     let factory = factory();
     store::store_descriptor(&factory, &descriptor(1, 1, vec!["one.example"], false))
       .await
       .unwrap();
-    // Signed removal at the next revision.
+    // Removal at the next revision.
     store::store_descriptor(&factory, &descriptor(2, 1, vec![], true))
       .await
       .unwrap();
@@ -408,7 +319,7 @@ mod tests {
         .await
         .is_err()
     );
-    // A removal marker replaced only by a valid newer signed revision.
+    // A removal marker replaced only by a valid newer revision.
     assert!(
       store::store_descriptor(&factory, &descriptor(3, 1, vec![], true))
         .await
@@ -416,14 +327,14 @@ mod tests {
     );
   }
 
-  /// SC-G05-P0-05: golden compatibility vectors — current and previous
-  /// fixtures decode to expected values; unknown versions fail closed.
+  /// SC-G05-P0-05: golden compatibility vectors — current fixtures decode
+  /// to expected values; unknown versions fail closed.
   #[test]
   fn descriptor_compatibility_vectors() {
     // Round-trip produces the expected canonical values.
     let descriptor = descriptor(7, 3, vec!["alpha.example", "beta.example"], false);
     let decoded =
-      NodeDescriptorV1::decode_and_verify(&descriptor.encode().unwrap(), &key(3)).unwrap();
+      crate::membership::page::decode_descriptor(&descriptor.encode().unwrap()).unwrap();
     assert_eq!(decoded, descriptor);
     assert_eq!(decoded.revision(), 7);
     assert_eq!(decoded.node(), &node(3));
@@ -432,8 +343,7 @@ mod tests {
     // Unknown version fails closed.
     let mut unknown = descriptor.clone();
     unknown.version = 99;
-    sign(&mut unknown, 3);
     let bytes = unknown.encode().unwrap();
-    assert!(NodeDescriptorV1::decode_and_verify(&bytes, &key(3)).is_err());
+    assert!(crate::membership::page::decode_descriptor(&bytes).is_err());
   }
 }
