@@ -28,7 +28,7 @@ A gate is `NOT_STARTED`, `ACTIVE`, `BLOCKED`, or `PASS`.
    depend on it.
 3. Prove fixed admission, TLS exporter binding, and authenticated feature intersection together.
 4. Prove exact-node packet streaming before multi-hop and selector delivery.
-5. Prove signed node revisions before topology recovery and resource metadata before selector routing.
+5. Prove revision-marked node metadata before topology recovery and resource metadata before selector routing.
 6. Prove provider-owned snapshots, streaming scans, conditional transactions, reconciliation, and
    capability refusal before JSON/redb parity or migrations.
 7. After G3, every wire or persisted metadata change adds current and previous fixtures.
@@ -116,7 +116,7 @@ A gate is `NOT_STARTED`, `ACTIVE`, `BLOCKED`, or `PASS`.
 ### G4: Generalize Sessions and Trust
 
 - **Build:** Transport/discovery registries, node-owned endpoint revisions, readdress/crossed-dial,
-  bounded queues, signed trust snapshots, paged trust queries, replacement, shutdown.
+  bounded queues, trust snapshots, paged trust queries, replacement, shutdown.
 - **Depends on:** G3.
 - **Verify:** Reciprocal trust, offline catch-up, alternate-peer reconnect, slow peer, backpressure,
   replacement, cancellation, wall-clock deadlines, and leak baselines.
@@ -124,7 +124,7 @@ A gate is `NOT_STARTED`, `ACTIVE`, `BLOCKED`, or `PASS`.
 
 ### G5: Prove Membership, Topology, and Recovery
 
-- **Build:** Signed node-owner revisions, paged membership/topology, incremental policy observations,
+- **Build:** Owner-revision-marked node metadata carried over authenticated sessions, paged membership/topology, incremental policy observations,
   sparse neighbors, reachability, and configurable continuous recovery with immediate-recovery command.
 - **Depends on:** G4.
 - **Verify:** Revision conflict/replay; paging across changes; recovery activation/stop/reactivation;
@@ -142,7 +142,7 @@ A gate is `NOT_STARTED`, `ACTIVE`, `BLOCKED`, or `PASS`.
 
 ### G7: Prove Core Metadata Convergence
 
-- **Build:** Signed owner-only node revisions and generic named resources with reserved type/URI labels,
+- **Build:** Owner-only node revision registers and generic named resources with reserved type/URI labels,
   custom labels, timestamp/writer/removal/digest ordering, pages, selectors, and normal repair.
 - **Depends on:** G6, G5, and G2.
 - **Verify:** Signature/revision/tuple algebra; equal timestamp; rollback; future dominance; partitions;

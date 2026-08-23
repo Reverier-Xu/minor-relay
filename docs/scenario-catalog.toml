@@ -651,7 +651,7 @@ first = 16
 verification_id = "VERIFY-G04-05"
 kind = "integration"
 cases = [
-  { title = "persist an issuer-signed trust snapshot", acceptance = "a joiner verifies the issuer, cluster, revision, ordered bindings, version, and signature and durably persists every nonconflicting binding before alternate-peer trust", rebaseline = "ADR-0007", threats = [
+  { title = "persist the issuer trust snapshot", acceptance = "a joiner verifies the issuer, cluster, revision, ordered bindings, and version and durably persists every nonconflicting binding before alternate-peer trust", rebaseline = "ADR-0008", threats = [
     "THR-006",
     "THR-017",
   ] },
@@ -663,7 +663,7 @@ cases = [
     "THR-006",
     "THR-017",
   ] },
-  { title = "reject conflicting trust evidence", acceptance = "invalid signatures, wrong clusters, untrusted issuers, reused admission identifiers, stale conflicting snapshots, and NodeId key substitutions fail closed without selecting a winner", rebaseline = "ADR-0007", threats = [
+  { title = "reject conflicting trust evidence", acceptance = "wrong clusters, untrusted issuers, reused admission identifiers, stale conflicting snapshots, and NodeId key substitutions fail closed without selecting a winner", rebaseline = "ADR-0007", threats = [
     "THR-004",
     "THR-006",
     "THR-012",
@@ -704,21 +704,21 @@ first = 1
 verification_id = "VERIFY-G05-01"
 kind = "security"
 cases = [
-  { title = "Reject descriptor signed by the wrong identity", acceptance = "Verification fails before storage when the descriptor signature does not match its bound NodeId and public key.", rebaseline = "ADR-0007", threats = [
+  { title = "Ingest membership entries only across authenticated sessions", acceptance = "Membership entries reach a node exclusively through its authenticated sessions bound to proven peer identities; core exposes no unauthenticated ingestion path for node metadata.", rebaseline = "ADR-0008", threats = [
     "THR-012",
   ] },
-  { title = "Reject descriptor field mutation", acceptance = "Mutating any signed descriptor identity, endpoint, revision, or packet body field invalidates the signature and leaves the stored descriptor unchanged.", rebaseline = "ADR-0007", threats = [
+  { title = "Mark every entry with its owning node", acceptance = "Membership entries are keyed and stored under their marked owner NodeId with a per-node revision lineage, so concurrent sources converge on one record per node.", rebaseline = "ADR-0008", threats = [
     "THR-006",
     "THR-012",
   ] },
   { title = "Enforce monotonic descriptor revisions", acceptance = "A descriptor update is accepted only at the exact next revision; stale, repeated, and skipped revisions cannot replace the current record.", rebaseline = "ADR-0007", threats = [
     "THR-006",
   ] },
-  { title = "Preserve signed removal markers", acceptance = "A retained removal marker defeats reordered or replayed older descriptors and cannot be replaced without a valid newer signed revision.", rebaseline = "ADR-0007", threats = [
+  { title = "Preserve removal markers", acceptance = "A retained removal marker defeats reordered or replayed older descriptors and cannot be replaced without a newer revision.", rebaseline = "ADR-0008", threats = [
     "THR-002",
     "THR-006",
   ] },
-  { title = "Validate descriptor compatibility vectors", acceptance = "Current and previous descriptor fixtures decode to the expected canonical values, while unknown versions and byte mutations fail closed.", rebaseline = "ADR-0007", threats = [
+  { title = "Validate descriptor compatibility vectors", acceptance = "Current and previous descriptor fixtures decode to the expected canonical values, while unknown versions fail closed.", rebaseline = "ADR-0008", threats = [
     "THR-006",
     "THR-009",
   ] },
@@ -743,7 +743,7 @@ cases = [
     "THR-002",
     "THR-006",
   ] },
-  { title = "Reject dishonest membership pages", acceptance = "A malicious page cannot install unsigned data, downgrade a revision, loop a cursor, or exceed configured page, byte, queue, and task capacities.", rebaseline = "ADR-0007", threats = [
+  { title = "Reject dishonest membership pages", acceptance = "A malicious page cannot downgrade a revision, loop a cursor, or exceed configured page, byte, queue, and task capacities.", rebaseline = "ADR-0007", threats = [
     "THR-009",
     "THR-012",
   ] },
@@ -757,7 +757,7 @@ first = 10
 verification_id = "VERIFY-G05-03"
 kind = "security"
 cases = [
-  { title = "Select a deterministic sparse neighbor set", acceptance = "Equal signed membership inputs produce the same bounded neighbor plan with no self-edge or duplicate peer.", rebaseline = "ADR-0007", threats = [
+  { title = "Select a deterministic sparse neighbor set", acceptance = "Equal membership inputs produce the same bounded neighbor plan with no self-edge or duplicate peer.", rebaseline = "ADR-0007", threats = [
     "THR-008",
     "THR-012",
   ] },
@@ -843,7 +843,7 @@ first = 23
 verification_id = "VERIFY-G05-06"
 kind = "security"
 cases = [
-  { title = "Validate induced fifteen-node readiness", acceptance = "Public views on nodes 0 through 14 agree on reciprocal trust, exact signed descriptors, and the required induced 28-edge graph before admission.", rebaseline = "ADR-0007", threats = [
+  { title = "Validate induced fifteen-node readiness", acceptance = "Public views on nodes 0 through 14 agree on reciprocal trust, exact descriptors, and the required induced 28-edge graph before admission.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-017",
     "THR-028",
@@ -852,7 +852,7 @@ cases = [
     "THR-006",
     "THR-017",
   ] },
-  { title = "Validate signed descriptor readiness", acceptance = "All sixteen public membership views expose the exact expected descriptor revision and digest for every node.", rebaseline = "ADR-0007", threats = [
+  { title = "Validate descriptor readiness", acceptance = "All sixteen public membership views expose the exact expected descriptor revision and digest for every node.", rebaseline = "ADR-0007", threats = [
     "THR-006",
     "THR-012",
   ] },
@@ -1387,7 +1387,7 @@ first = 13
 verification_id = "VERIFY-G09-04"
 kind = "security"
 cases = [
-  { title = "Durable authorization-only revoke", acceptance = "The typed revoke conditionally commits the exact subject/key before closing sessions and rejecting new online operations or raw grants; existing admitted members, signed node/resource metadata/descriptor content, and unrelated members are not deleted or reinterpreted.", rebaseline = "ADR-0007", threats = [
+  { title = "Durable authorization-only revoke", acceptance = "The typed revoke conditionally commits the exact subject/key before closing sessions and rejecting new online operations or raw grants; existing admitted members, node/resource metadata and descriptor content, and unrelated members are not deleted or reinterpreted.", rebaseline = "ADR-0007", threats = [
     "THR-002",
     "THR-012",
     "THR-020",

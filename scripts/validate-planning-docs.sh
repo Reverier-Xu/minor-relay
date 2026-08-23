@@ -53,15 +53,15 @@ verify_frozen_document() {
 
 verify_frozen_document docs/adr/0005-sixteen-node-slo-profile.md 26f5d67c84ad4331e5d2c33d699f4f107849933f15951cc5b6f76d6676447431
 verify_frozen_document docs/adr/0007-core-responsibility-and-metadata.md cdc4851aef0ca0109077ab20ecd7298e7f2310b34eec1150003950554e689eab
-verify_frozen_document docs/roadmap.md b5f6931eb8fc807fe65513a2ca5473614dd27e4cb4a4055395f9fd07602161ba
-verify_frozen_document docs/development-gates.md 9ca75674c8b56b44fe523b52f1c898cf27aefdeed74290c428071f6ab14ab7fe
-verify_frozen_document docs/implementation-plan.md 5871722c89f37cdcf8b66f23620ac288c098509ae19d32d0cf5371111288adb8
+verify_frozen_document docs/roadmap.md dd7d2eb4d51ea93621dccec3536f8f77f520ee5ed8e7ebf62e78f6ee7fb30313
+verify_frozen_document docs/development-gates.md 4faa7918fa79697d10e29be6b14fe3cc833436db2d2981c48d23075d86d455e4
+verify_frozen_document docs/implementation-plan.md b86d2116166de002e0fc8ae1b7f8cfca1edfcf214ba685bbbdb3127c755b27ac
 verify_frozen_document docs/api-manifest.md b3f2985e942443adbe4c3ed60e1720d87512ae96a713c7ba7f9ad71c1da17113
 verify_frozen_document docs/api-inventory.toml 504f582204a314c71d97026671414b2241b970813a025e7205b327fd60da36e7
 verify_frozen_document docs/decision-register.toml 19058685bbcc5df01c7cd5f2a8556ceda2597aaf800fe9b36db978c7d1be3a5d
-verify_frozen_document docs/scenario-catalog.toml 3c25ea75f8d6853daba0e9e76eed3b5a3b0d76736ca5f472b645c9464e050dd1
-verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
-verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
+verify_frozen_document docs/scenario-catalog.toml b14b7ddac033af249226440d3c4950158e2a2bf02385fd011b28a756c92a9ccd
+verify_frozen_document docs/threat-model.md 6f933d2abac26ce94542db5defc5cf83ae317c888e3afa2c6e5daab8e2be9f0d
+verify_frozen_document docs/threat-model.toml 945e1a1c8fde32c47c5fa38bbe6f6ac763c4ce829f6e7d4ff42ced8b65a93ad4
 verify_frozen_document docs/task-verification.toml 654d921eb7abd46cfa28b609ad07302e1d71e4f09f74abf2145795f173d27fb2
 verify_frozen_document docs/evidence-impact.toml 87d82c30f4537ba7e5219cb7d21722899e5e06f736813edb1cb8000887c334a7
 
@@ -108,7 +108,7 @@ check_scenario_ids() {
   jq -e '
     length == 226
     and ([.[].id] | unique | length) == 226
-    and all(.[]; (.id | test("^SC-G[0-9]{2}-P[01]-[0-9]{2}$")) and (.title | length > 0) and (.acceptance | length > 0) and .rebaseline == "ADR-0007")
+    and all(.[]; (.id | test("^SC-G[0-9]{2}-P[01]-[0-9]{2}$")) and (.title | length > 0) and (.acceptance | length > 0) and (.rebaseline == "ADR-0007" or .rebaseline == "ADR-0008"))
   ' "$file" >/dev/null
 }
 check_scenario_ids "$TMP/scenarios.json" || fail "invalid, missing, or duplicate SC record"

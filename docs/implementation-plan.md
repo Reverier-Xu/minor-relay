@@ -96,14 +96,14 @@ never replace assertions. T-G10-05 still owns the bounded public observability A
 | T-G04-02 Endpoint revisions/readdress | P0/H | 04-01 | Node-owned signed candidate generations, caller filtering/priorities, expiration by wall time | transport/discovery metadata | SC-G04-P0-05..08; ownership/readdress/discontinuity | R1 |
 | T-G04-03 Crossed-dial/session replacement | P0/H | 04-01,02 | Deterministic one-session ownership, drain, stale-generation rejection, restart/readdress behavior | session | SC-G04-P0-09..11; race/replacement suite | R1 |
 | T-G04-04 Queue/keepalive/shutdown bounds | P0/H | 04-03 | Caller-selected nonzero queue/task capacities, wall-clock deadlines, backpressure/cancel/shutdown | session lifecycle | SC-G04-P0-12..15; saturation/discontinuity/baseline | R1 |
-| T-G04-05 Trust snapshot/dissemination/page | P0/H | 04-01,02,03-04 | Signed grants/snapshots, reciprocal exact bindings, paged trust observations, offline catch-up | identity trust metadata | SC-G04-P0-16..19; trust/page/format contracts | R2 |
+| T-G04-05 Trust snapshot/dissemination/page | P0/H | 04-01,02,03-04 | Admission grants and issuer trust snapshots, reciprocal exact bindings, paged trust observations, offline catch-up | identity trust metadata | SC-G04-P0-16..19; trust/page/format contracts | R2 |
 | T-G04-06 Reciprocal alternate-peer reconnect | P0/H | 04-02..05 | Issuer disconnect, alternate authenticated route, outbound-only and readdressed packet paths | facade E2E | SC-G04-P0-20..22, E2E-02/E2E-03; four public targets | R0 |
 
 ## G5: Membership, Topology, and Recovery
 
 | Task | Risk | Depends | Deliverable / exact API impact | Owned paths | Evidence | RB |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-G05-01 Signed node metadata/vectors | P0/H | G4 PASS | Owner-signed persistent strictly increasing revisions; reject same-revision conflict; signed removals | membership metadata | SC-G05-P0-01..05; signature/revision/vector contract | R2 |
+| T-G05-01 Node metadata/vectors | P0/H | G4 PASS | Persistent strictly increasing owner revisions marked by NodeId; reject same-revision conflict; tombstone removals | membership metadata | SC-G05-P0-01..05; revision/vector contract | R2 |
 | T-G05-02 Streamed membership repair | P0/H | 05-01 | Normal-tick bounded page/stream anti-entropy with no node ceiling or whole-population allocation | membership sync | SC-G05-P0-06..09; paging/replay/1,024 trend | R2 |
 | T-G05-03 Sparse neighbor policy | P0/H | 05-01,02,04-04 | Incremental policy input, caller-configured neighbor/fan-out, streamed topology/reachability | topology policy | SC-G05-P0-10..13; incremental/churn/slow-policy suite | R1 |
 | T-G05-04 Continuous recovery state machine | P0/H | 05-03 | Retry unreachable components using caller backoff/fan-out; immediate command; stop at connected path; reactivate | topology recovery | SC-G05-P0-14..19; activate/stop/reactivate/restart bounds | R1 |
@@ -148,7 +148,7 @@ never replace assertions. T-G10-05 still owns the bounded public observability A
 | T-G09-01 Resource names/labels/vectors | P0/H | G8 PASS,G7 PASS | Stable resource name, reserved type/URI labels, namespaced custom labels, tuple-version fixtures | resource labels/records | SC-G09-P0-01..04; namespace/reserved/tuple/vector tests | R2 |
 | T-G09-02 Selectors/paged queries | P1/M | 09-01 | Bounded selector grammar and paged resource selection; no whole-population output | resource selector/facade | SC-G09-P1-05..08; parser/evaluator/page parity | R1 |
 | T-G09-03 Resource mutations/events | P0/H | 09-01,02,G6 PASS | Conditional metadata label batch and post-commit event; ordinary maintenance preserves metadata | resource operations/events | SC-G09-P0-09..12; JSON/redb concurrency/event cases | R2 |
-| T-G09-04 Authorization revoke | P0/H | 09-03,G8 PASS | Revoke connectivity/admission authority while valid signed metadata remains eligible | identity/trust facade | SC-G09-P0-13..14; crash/reconnect/delayed metadata | R3 |
+| T-G09-04 Authorization revoke | P0/H | 09-03,G8 PASS | Revoke connectivity/admission authority while valid stored metadata remains eligible | identity/trust facade | SC-G09-P0-13..14; crash/reconnect/delayed metadata | R3 |
 | T-G09-05 Metadata removal operation | P0/H | 09-03,G7 PASS | Exact signed resource removal evidence/cleanup limited to core metadata; never follow URI | resource cleanup facade | SC-G09-P0-15..17; atomicity/stale/URI/no-auto | R3 |
 | T-G09-06 Active leave/identity rotation | P0/H | 09-04,05,G2 PASS | New identity/key and removal of old local core metadata/key intents only | node lifecycle/key/storage | SC-G09-P0-18..21; JSON/redb crash/restart/URI preservation | R3 |
 | T-G09-07 Facade/population closure | P0/H | 09-01..06,G3 PASS | Packet/resource/route/recovery APIs, paged trust/member/resource/topology views, events, no platform semantics | facade/public tests | SC-G09-P0-22..26, E2E-08; external core-only API proof | R2 |

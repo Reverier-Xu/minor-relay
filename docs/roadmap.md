@@ -25,8 +25,8 @@ The library provides:
   interrupted streams with an explicit error.
 - Synchronous packet delivery that waits for current-process incoming-stream admission or a route
   error, and asynchronous delivery with a queryable route handle and selected destination.
-- Signed node-owned revisions and a generic named resource catalog with reserved type and URI labels,
-  custom namespaced labels, and deterministic signed multiwriter timestamp-maximum convergence.
+- Node-owned revision-marked records and a generic named resource catalog with reserved type and URI
+  labels, custom namespaced labels, and deterministic multiwriter timestamp-maximum convergence.
 - Internal metadata storage through provider-owned immutable snapshots, exact lookup, unsigned-byte
   ordered streaming scans, conditional transactions, reconciliation, capabilities, migrations, a JSON
   test backend, a feature-gated redb production backend, and an open provider SPI.
@@ -53,11 +53,12 @@ or restart terminates an in-flight stream; core does not transparently replay or
 
 ## Metadata Boundary
 
-Node records are signed by their owning node or explicit cluster authority and use persistent strictly
-increasing owner revisions. Same-revision conflicts are rejected.
+Node records carry their owning node's identity marking and use persistent strictly increasing owner
+revisions. Same-revision conflicts are rejected. Membership entries are trusted through the
+authenticated session that delivered them (ADR-0008); they carry no per-entry signatures.
 
 Generic resources are stable names plus labels. Reserved labels identify resource type and resource
-URI; the URI references an upper-layer object or service and is never followed by core. Each signed
+URI; the URI references an upper-layer object or service and is never followed by core. Each
 multiwriter resource value is ordered by the lexicographic maximum of host system-wall-clock timestamp,
 canonical writer `NodeId`, removal rank, and canonical record digest. This is deterministic but is not
 causal, fresh, or real-time last-writer behavior. Clock rollback may make a later local write lose and a
@@ -104,7 +105,7 @@ wake work to re-read wall time but are not protocol ordering authorities.
 | `identity` | IDs, immutable key binding, admission, trust, revoke, rotation | Key provider |
 | `protocol` | Prelude, deterministic CBOR, feature and protocol definition intersection | Protocol registry |
 | `transport` | Discovery, candidates, authenticated full-duplex sessions | Transport and discovery |
-| `membership` | Signed owner revisions and streamed membership observations | None |
+| `membership` | Owner-revision-marked entries and streamed membership observations | None |
 | `topology` | Reachability, neighbor selection, recovery, streamed topology | Neighbor policy |
 | `routing` | Packet targets, load balancing, routes, stream forwarding, trace status | Load-balancing and routing policies |
 | `resource` | Named resource metadata, reserved/custom labels, selectors, convergence | Resource metadata API |
@@ -182,7 +183,7 @@ Reserved config: `NodeConfig::session_queue_bytes` is the session byte budget th
 
 ### M5: Membership, Topology, and Recovery
 
-Add signed monotonic node metadata, paged membership/topology observations, incremental policy inputs,
+Add monotonic owner-marked node metadata, paged membership/topology observations, incremental policy inputs,
 sparse neighbor maintenance, reachability, and continuous configurable recovery until known online
 members have an authenticated path.
 
@@ -195,8 +196,7 @@ Exit gate:
 
 `NodeConfig::anti_entropy_interval` drives the session-carried membership sync
 driver and `RecoveryConfig` drives the recovery controller (wired in M5). The
-session sync protocol carries bounded membership pages and the issuer-signed
-trust snapshot; the recovery controller heals edge loss among ever-connected
+session sync protocol carries bounded membership pages and the issuer trust snapshot; the recovery controller heals edge loss among ever-connected
 members and never dials intentionally disconnected peers until a deliberate
 reconnect.
 
@@ -220,7 +220,7 @@ parked in `session/stream.rs` moves to its own module here (see `TODO(M6)`).
 
 ### M7: Core Metadata Convergence
 
-Implement signed node-owner revisions and signed multiwriter resource registers ordered by the
+Implement node-owner revision registers and multiwriter resource registers ordered by the
 `SystemTime` timestamp/writer/removal/digest tuple. Add reserved resource type and URI labels,
 namespaced custom labels, selectors, paged scans, and normal-tick repair.
 
@@ -272,7 +272,7 @@ Exit gate:
 | Identity, fixed admission, key custody | M1, M2, M3 |
 | Full-duplex authenticated transports and recovery | M3, M4, M5 |
 | Exact-node and node-label-selected packet streaming | M3, M6, M9 |
-| Signed node and resource metadata convergence | M5, M7, M9 |
+| Revision-marked node and resource metadata convergence | M5, M7, M9 |
 | Internal JSON/redb/provider metadata storage | M2, M8 |
 | No node ceiling and streamed population views | M0, M5, M9 |
 | System-wall-clock semantics and discontinuity evidence | M1, M6, M7, M10 |

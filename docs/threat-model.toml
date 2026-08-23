@@ -19,7 +19,7 @@ title = "Authentication control packet and metadata replay"
 priority = "P0"
 owner_task = "T-G03-06"
 scenario_ids = ["SC-G03-P0-18", "SC-G06-P0-05", "SC-G07-P0-06", "E2E-05"]
-mitigation = "Bind proofs to fresh nonces, roles, TLS exporter, cluster and complete offers; bind route metadata to authenticated endpoints and TraceId; make signed node/resource replay idempotent."
+mitigation = "Bind proofs to fresh nonces, roles, TLS exporter, cluster and complete offers; bind route metadata to authenticated endpoints and TraceId; make node/resource replay idempotent."
 residual = "Replay can consume bounded parser signature and lookup work before rejection."
 status = "accepted"
 
@@ -69,8 +69,8 @@ scenario_ids = [
   "SC-G09-P0-03",
   "E2E-03",
 ]
-mitigation = "Use identity-scoped endpoint expiry, signed strictly increasing node-owner revisions, signed resource tuple ordering, removal evidence, and bounded normal anti-entropy pages."
-residual = "Offline metadata remains stale until connectivity returns; deliberate removal-evidence cleanup can allow stale metadata to reappear."
+mitigation = "Use identity-scoped endpoint expiry, strictly increasing owner-marked node revisions, resource tuple ordering, removal evidence, and bounded normal anti-entropy pages over authenticated sessions (ADR-0008)."
+residual = "Offline metadata remains stale until connectivity returns; deliberate removal-evidence cleanup can allow stale metadata to reappear; membership entries from a malicious authenticated member are trusted until revocation closes its sessions."
 status = "accepted"
 
 [[threat]]
@@ -160,8 +160,8 @@ scenario_ids = [
   "SC-G09-P0-14",
   "E2E-08",
 ]
-mitigation = "Authenticate every source, validate signatures tags owners route context and revisions, enforce caller-selected finite capacities, emit bounded equivocation evidence, and durably revoke before closing sessions."
-residual = "Revoke removes future connectivity and admission authority but does not invalidate otherwise valid signed metadata; colluders can create Sybils over time."
+mitigation = "Authenticate every source, validate owners route context and revisions, enforce caller-selected finite capacities, emit bounded equivocation evidence, and durably revoke before closing sessions."
+residual = "Revoke removes future connectivity and admission authority but does not invalidate otherwise valid stored metadata; colluders can create Sybils over time."
 status = "accepted"
 
 [[threat]]

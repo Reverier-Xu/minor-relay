@@ -11,7 +11,8 @@ allowed for shared mitigations.
 
 ## Protected Assets
 
-- Canonical identity bindings, admission credentials, key-provider authority, and signed trust.
+- Canonical identity bindings, admission credentials, key-provider authority, and session-trusted
+  membership metadata (ADR-0008).
 - Authenticated TLS sessions, exact feature selection, packet route context, byte order, and
   current-process incoming-stream admission acknowledgement.
 - Node-owner revisions, generic resource metadata, trace metadata, transaction receipts, and metadata
@@ -71,16 +72,17 @@ body delivery durable.
 
 ## Metadata and Time Boundary
 
-Node metadata uses signed strictly increasing owner revisions and rejects same-revision conflicts.
-Generic resource metadata uses the deterministic maximum of signed host `SystemTime`, writer `NodeId`,
-removal rank, and digest. The tuple is not causal, fresh, or real-time last-writer behavior.
+Node metadata carries strictly increasing owner revisions and rejects same-revision conflicts;
+entries are trusted through the authenticated session that delivered them (ADR-0008). Generic
+resource metadata uses the deterministic maximum of host `SystemTime`, writer `NodeId`, removal
+rank, and digest. The tuple is not causal, fresh, or real-time last-writer behavior.
 
 Rollback can make later local work lose; freeze can delay deadlines indefinitely; forward jumps can
 make work immediately due; future-dated signed tuples can dominate. Core has no peer-clock authority or
 future-write holding service. Executor timers only wake work to re-read wall time.
 
-Revocation is prospective connectivity and admission authority. It does not invalidate otherwise valid
-signed metadata. Cleanup and leave affect only core metadata and key intents and never dereference a
+Revocation is prospective connectivity and admission authority. It does not invalidate otherwise
+valid stored metadata. Cleanup and leave affect only core metadata and key intents and never dereference a
 resource URI or delete an upper-layer object.
 
 ## Scale Storage and Availability
