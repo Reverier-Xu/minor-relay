@@ -1,5 +1,50 @@
 # minor-relay Verified Findings (G3-era review, 2026-08)
 
+> **Fresh re-review 2026-08-24 (main @ post-ADR-0008, four fresh agents +
+> orchestrator):** G5 verdict PASS-WITH-GAPS; Q suite and all twelve
+> g04/g05 lanes green. Session-trust migration (ADR-0008) verified
+> consistent code-to-doc. New backlog below supersedes the remediation
+> order at the bottom of this file.
+>
+> ## Fresh backlog (2026-08-24)
+>
+> ### P1 — should-fix
+> 1. Revision-gap convergence contradiction: the store accepts only
+>    exact-next revisions, so a peer that misses one descriptor revision
+>    diverges permanently while page.rs:6-8 / SC-G05-P0-07 claim repair.
+>    Fix: relay intermediate revisions, accept strictly-greater remote
+>    applies (tombstone rule still blocks downgrades), or amend the
+>    scenario text.
+> 2. `RecoveryPolicy.neighbors` dead field; `plan_neighbors` has no
+>    runtime caller; file-level `allow(dead_code)` masks both. Wire or
+>    delete, and narrow the allow.
+> 3. SC-G05-P0-22 counting-transport observation absent (dial path
+>    bypasses the transport registry); P0-29 SLO sampled at eight nodes
+>    vs sixteen-node catalog text — sample a sixteen-node run or amend
+>    the catalog.
+>
+> ### P2 — nice-to-have
+> - `trusted_bindings` full scans per tick at three sites (sync.rs:384,
+>   sync.rs:296, supervisor recovery tick) — early-exit count or cache.
+> - `latest_snapshot_ctx` scans every stored revision; revisions are
+>   never pruned (`persist_snapshot_ctx` inserts only) — prune or index.
+> - `paged_trust_ctx` materializes/sorts/dedups all bindings per query
+>   (trust.rs:550-575) — violates the no-whole-population letter.
+> - Supervisor `member()`/`page_members()` hand-roll descriptor paging;
+>   expose a bounded paged read on the membership store instead.
+> - `sync_tick` two-regime god-function with duplicated peer-dispatch
+>   blocks; split around the membership-regime check.
+> - Test-only factory-handle wrappers behind allow(dead_code)
+>   (read_descriptor/store_descriptor/emit_page/apply_page/trust
+>   wrappers) — move to test support; drop the 10s magic timeout.
+> - Binding raw-byte format sniffed in persist_binding_ctx vs decoded
+>   IdentityBindingV1 in adopt_binding_ctx — decode both.
+> - Snapshot key `{issuer}/{revision:020}` written/formatted in one
+>   place, reverse-parsed in another — extract an encode/decode pair.
+> - Multi-thread-runtime packet-delivery race was worked around by
+>   keeping join lanes current_thread (2bc3b38); the underlying race is
+>   UNINVESTIGATED — reproduce with multi_thread attributes before G6.
+
 Verified against the codebase on 2026-08-22 (main @ c8f0394). P1 = should-fix,
 P2 = nice-to-have. All line numbers are from that revision and drift.
 
