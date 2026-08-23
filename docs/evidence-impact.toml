@@ -558,3 +558,11 @@ verification_ids = [
 depends_on = []
 cadences = ["merge", "gate", "nightly", "weekly", "release"]
 p95_seconds = 540
+
+[[path_rule]]
+id = "IMPACT-AGENT-SKILLS"
+globs = [".agents/**"]
+precedence = 100
+owner_task = "T-G00-06"
+verification_ids = ["VERIFY-G00-06"]
+threat_ids = ["THR-025"]

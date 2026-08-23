@@ -69,15 +69,13 @@ wake work to re-read wall time but are not protocol ordering authorities.
 
 ## Non-Goals
 
-- General application records, business schemas, replicated application data, CRDTs, or business
-  conflict resolution.
+- General application records, business schemas, replicated application data, CRDTs, or business conflict resolution.
 - Persistent packet bodies, durable caller handoff, automatic stream continuation, or built-in
   conversation semantics.
 - Peer clock coordination, causal timestamps, clock-health voting, or future-write holding areas.
 - Consensus, linearizability, or exactly-once application side effects.
 - Core-defined storage capacity, key/value/transaction size policy, or whole-store materialization.
-- Workload scheduling, deployment orchestration, application rollout, persistent volumes, or business
-  data migration.
+- Workload scheduling, deployment orchestration, application rollout, persistent volumes, or business data migration.
 - NAT hole punching, STUN, public rendezvous, external relays, or address provisioning.
 
 ## Architecture Rules

@@ -342,7 +342,6 @@ owner_task = "T-G04-01"
 state = "ready"
 argv = ["scripts/verify-g04-01-registry.sh"]
 timeout_seconds = 1800
-timeout_seconds = 1800
 
 [[task]]
 id = "T-G04-02"
@@ -355,7 +354,6 @@ id = "VERIFY-G04-02"
 owner_task = "T-G04-02"
 state = "ready"
 argv = ["scripts/verify-g04-02-candidates.sh"]
-timeout_seconds = 1800
 timeout_seconds = 1800
 
 [[task]]
@@ -445,8 +443,8 @@ include_quality = true
 [[verification]]
 id = "VERIFY-G05-03"
 owner_task = "T-G05-03"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g05-03-neighbors.sh"]
 timeout_seconds = 1800
 
 [[task]]
@@ -458,8 +456,8 @@ include_quality = true
 [[verification]]
 id = "VERIFY-G05-04"
 owner_task = "T-G05-04"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g05-04-recovery.sh"]
 timeout_seconds = 1800
 
 [[task]]

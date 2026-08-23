@@ -53,17 +53,17 @@ verify_frozen_document() {
 
 verify_frozen_document docs/adr/0005-sixteen-node-slo-profile.md 26f5d67c84ad4331e5d2c33d699f4f107849933f15951cc5b6f76d6676447431
 verify_frozen_document docs/adr/0007-core-responsibility-and-metadata.md cdc4851aef0ca0109077ab20ecd7298e7f2310b34eec1150003950554e689eab
-verify_frozen_document docs/roadmap.md 12e95f6275643b46380845df556223838f7325552e8e3a2bc0ca4d065731e7fd
+verify_frozen_document docs/roadmap.md b5f6931eb8fc807fe65513a2ca5473614dd27e4cb4a4055395f9fd07602161ba
 verify_frozen_document docs/development-gates.md 9ca75674c8b56b44fe523b52f1c898cf27aefdeed74290c428071f6ab14ab7fe
-verify_frozen_document docs/implementation-plan.md f080ac53d9a0208b1a388ef3f0631e34a1d8d7638b0f1fc67aec8f004039c8d9
-verify_frozen_document docs/api-manifest.md ab32107584cb0445903c1a5c2299c3829f2ea150ee9ecf6bd64e320e17d1003f
-verify_frozen_document docs/api-inventory.toml 92a908488df01fb1f0ab4c55e2fb7ea42a9ddabcbce3773a56a0f0b36bda8a41
+verify_frozen_document docs/implementation-plan.md 5871722c89f37cdcf8b66f23620ac288c098509ae19d32d0cf5371111288adb8
+verify_frozen_document docs/api-manifest.md b3f2985e942443adbe4c3ed60e1720d87512ae96a713c7ba7f9ad71c1da17113
+verify_frozen_document docs/api-inventory.toml 504f582204a314c71d97026671414b2241b970813a025e7205b327fd60da36e7
 verify_frozen_document docs/decision-register.toml 19058685bbcc5df01c7cd5f2a8556ceda2597aaf800fe9b36db978c7d1be3a5d
 verify_frozen_document docs/scenario-catalog.toml 3c25ea75f8d6853daba0e9e76eed3b5a3b0d76736ca5f472b645c9464e050dd1
 verify_frozen_document docs/threat-model.md 9fffdfe785d99a9783b75934c4d5e08deede304e2f23c3c9660e9cee33322ab9
 verify_frozen_document docs/threat-model.toml 73a854e54cd967e44c2910bf9feb49ce7ae20241125e82db33818a6081d23fa3
-verify_frozen_document docs/task-verification.toml 2144fa98d5018bdbe7330ec1df2eb47d216eea1a924eb66061200ddb39cf7141
-verify_frozen_document docs/evidence-impact.toml de5ae000eb79b3d2c6a8cdaa012e417a6fd8cf5d8935380b868532ca2c62fd77
+verify_frozen_document docs/task-verification.toml 654d921eb7abd46cfa28b609ad07302e1d71e4f09f74abf2145795f173d27fb2
+verify_frozen_document docs/evidence-impact.toml 87d82c30f4537ba7e5219cb7d21722899e5e06f736813edb1cb8000887c334a7
 
 for file in "${TOML_FILES[@]}"; do
   name=$(basename "$file" .toml)
@@ -375,8 +375,7 @@ check_api_inventory() {
       "PacketBody",
       "PacketConsumer",
       "NeighborPolicy",
-      "LoadBalancingPolicy",
-      "RoutingPolicy"
+      "LoadBalancingPolicy"
     ]
     and (.required_reexports | length) > 0 and (.required_reexports | unique | length) == (.required_reexports | length)
     and ((.commands + .queries + .events) | length) == ((.commands + .queries + .events) | unique | length)

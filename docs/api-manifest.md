@@ -1070,9 +1070,6 @@ pub trait NeighborPolicy: std::fmt::Debug + Send + Sync + 'static {
 pub trait LoadBalancingPolicy: std::fmt::Debug + Send + Sync + 'static {
     fn select<'a>(&'a self, selector: &'a Selector, candidates: &'a dyn CandidateNodeReader) -> BoxFuture<'a, Result<NodeId>>;
 }
-pub trait RoutingPolicy: std::fmt::Debug + Send + Sync + 'static {
-    fn next_hop<'a>(&'a self, context: &'a RouteContext, topology: &'a dyn PopulationReader) -> BoxFuture<'a, Result<Option<NodeId>>>;
-}
 ```
 
 `PopulationReader` and `CandidateNodeReader` are sealed, core-implemented incremental views passed to
