@@ -591,7 +591,7 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
   undirected.into_iter().collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-24).
