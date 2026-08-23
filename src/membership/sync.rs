@@ -224,7 +224,7 @@ pub(crate) async fn ensure_local_descriptor(
     }
     // An empty candidate set never downgrades published endpoints: the
     // startup tick fires before any listener exists and must not bump the
-    // revision (SC-G05-P0-28 endpoint stability).
+    // revision (descriptor endpoint stability, SC-G05-P0-25).
     if endpoints.is_empty() {
       return Ok(());
     }

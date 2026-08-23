@@ -154,7 +154,7 @@ pub enum ConnectivityStatus {
   Connected,
 }
 
-/// One public member observation: the exact signed descriptor plus the
+/// One public member observation: the exact owner-marked descriptor plus the
 /// local connectivity view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemberView {
@@ -331,7 +331,7 @@ impl PageSpec {
 #[non_exhaustive]
 pub enum TrustStatus {
   /// The binding is trusted (verified from an admission grant or an
-  /// issuer-signed snapshot).
+  /// issuer snapshot).
   Trusted,
   /// The binding was revoked (G9 wires revocation).
   Revoked,

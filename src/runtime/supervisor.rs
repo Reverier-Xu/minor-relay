@@ -296,11 +296,11 @@ struct Supervisor {
   // Members this node has ever authenticated a session with: the recovery
   // "known online" set. Recovery restores authenticated paths to exactly
   // these members (edge-loss healing) and never dials strangers, so it
-  // cannot add edges beyond the caller-configured topology (SC-G05-P0-27).
+  // cannot add edges beyond the caller-configured topology (SC-G05-P0-26).
   recovery_history: std::collections::BTreeSet<NodeId>,
   // Intentionally disconnected peers: recovery never heals them until an
   // explicit reconnect (a new session to the peer) restores the
-  // relationship (SC-G05-P0-27 no-extra-edge).
+  // relationship (SC-G05-P0-26 no-extra-edge).
   recovery_excluded: std::collections::BTreeSet<NodeId>,
   // The anti-entropy driver task: aborted on shutdown so the node's
   // storage handle is released promptly (a restarted node reopening the

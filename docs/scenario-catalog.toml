@@ -736,10 +736,10 @@ cases = [
     "THR-009",
     "THR-010",
   ] },
-  { title = "Repair missing owner revisions", acceptance = "Repeated bounded pages repair every missing valid signed node-owner revision while cursors remain safe across concurrent observations.", rebaseline = "ADR-0007", threats = [
+  { title = "Repair missing owner revisions", acceptance = "Repeated bounded pages repair every missing valid node-owner revision while cursors remain safe across concurrent observations.", rebaseline = "ADR-0008", threats = [
     "THR-006",
   ] },
-  { title = "Replace stale owner revisions", acceptance = "A stale peer converges to the highest valid signed owner revision despite duplicate, reordered, delayed, and page-boundary changes.", rebaseline = "ADR-0007", threats = [
+  { title = "Replace stale owner revisions", acceptance = "A stale peer converges to the highest valid owner revision despite duplicate, reordered, delayed, and page-boundary changes.", rebaseline = "ADR-0008", threats = [
     "THR-002",
     "THR-006",
   ] },

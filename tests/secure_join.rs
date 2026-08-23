@@ -1483,8 +1483,8 @@ async fn secure_join_shutdown_rejects_new_work_after_drain() {
 
 use minor_relay::{GetMember, PageMembers, PageSpec, PageTopology};
 
-/// The public membership/topology views expose the local signed descriptor
-/// and the authenticated session edge after a join.
+/// The public membership/topology views expose the local owner-marked
+/// descriptor and the authenticated session edge after a join.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_public_membership_and_topology_views() {
   let receiver = start(
@@ -1520,7 +1520,7 @@ async fn secure_join_public_membership_and_topology_views() {
   let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
   let receiver_id = receiver_view.node_id().clone();
 
-  // The receiver's own signed descriptor is published lazily and readable.
+  // The receiver's own descriptor is published lazily and readable.
   let member = receiver
     .handle
     .query(GetMember::new(receiver_id.clone()))

@@ -1,6 +1,6 @@
 //! Deterministic sparse neighbor planning (G5-03).
 //!
-//! Equal signed membership inputs produce the same bounded neighbor plan
+//! Equal membership inputs produce the same bounded neighbor plan
 //! with no self-edge or duplicate peer; reachability stays distinct from
 //! the active topology (directly reachable non-policy endpoints remain
 //! candidates only); churn restores the configured sparse cycle without
@@ -31,7 +31,7 @@ impl NeighborPlan {
   }
 }
 
-/// Plans the sparse neighbor set for `local` over the signed membership.
+/// Plans the sparse neighbor set for `local` over the membership.
 /// The plan is a pure function of the inputs: the same membership always
 /// yields the same bounded plan (SC-G05-P0-10). The neighbors are the
 /// `degree` next members in canonical order (wrapping), skipping self and
@@ -50,7 +50,7 @@ pub(crate) fn plan_neighbors(
   // plan size is bounded by this availability, so a requested degree larger
   // than the membership cannot spin the cycle forever: the walk stops once
   // every possible neighbor is collected (SC-G05-P0-10 keeps the plan a
-  // bounded, deterministic function of the signed inputs).
+  // bounded, deterministic function of the owner-marked inputs).
   let available = members.len().saturating_sub(1);
   let target = degree.min(available);
   let mut neighbors = Vec::with_capacity(target);
@@ -243,7 +243,7 @@ mod tests {
   #[test]
   fn neighbor_plan_keeps_reachability_distinct() {
     let membership = members(&[1, 2, 3]);
-    // Node 9 is reachable (has candidates) but not in the signed
+    // Node 9 is reachable (has candidates) but not in the
     // membership; it must not create hidden sessions or edges.
     let plan = plan_neighbors(&node(9), &membership, 4).unwrap();
     assert!(plan.is_empty());

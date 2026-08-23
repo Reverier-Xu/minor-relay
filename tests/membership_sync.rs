@@ -1,9 +1,9 @@
 //! G5 membership sync over authenticated sessions (T-G05-05/06).
 //!
 //! Sixteen real nodes over loopback TLS: node 0 creates the cluster and
-//! admits every member; the anti-entropy driver pages signed descriptors
-//! and the issuer-signed trust snapshot over each authenticated session;
-//! reciprocal trust, exact signed descriptors, and the exact crossed-cube
+//! admits every member; the anti-entropy driver pages descriptors
+//! and the issuer-trust snapshot over each authenticated session;
+//! reciprocal trust, exact descriptors, and the exact crossed-cube
 //! CQ4 topology (32 undirected sessions, degree four, diameter three)
 //! converge through public facade observations only. The failure matrix
 //! exercises duplicate delivery and partition healing (reorder, endpoint
@@ -594,7 +594,7 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
-  // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-24).
+  // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-23).
   let mut nodes = build_cluster(15).await;
 
   // Reciprocal trust converges over the authenticated sessions: every
@@ -602,7 +602,7 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   wait_trust(&nodes, 15, Duration::from_secs(60)).await;
 
   // Induced 28-edge graph among nodes 0..14, before node 15 joins
-  // (SC-G05-P0-24): connect the CQ4 edges among the present members and
+  // (SC-G05-P0-23): connect the CQ4 edges among the present members and
   // close the redundant join-star sessions, then settle to the exact edge
   // set.
   connect_cq4(&nodes).await;
@@ -649,11 +649,11 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   wait_trust(&nodes, 16, Duration::from_secs(60)).await;
 
   // Descriptor readiness: every member view exposes the exact revision 1
-  // for every node (SC-G05-P0-26).
+  // for every node (SC-G05-P0-25).
   wait_descriptors(&nodes, 16, 1, Duration::from_secs(60)).await;
 
   // The exact final topology: 32 sessions, degree four, diameter three
-  // (SC-G05-P0-27). Node 15's four edges make 32 in total.
+  // (SC-G05-P0-26). Node 15's four edges make 32 in total.
   connect_cq4(&nodes).await;
   close_star_sessions(&nodes, 0).await;
   let expected_full: std::collections::BTreeSet<(u8, u8)> = cq4_edges().into_iter().collect();
@@ -749,7 +749,9 @@ async fn membership_sync_failure_matrix_partition_healing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_slo_trend_stays_below_bound() {
   // The trend lane records admission and descriptor completion from public
-  // observations; every sample must stay below 10,000 ms (SC-G05-P0-30).
+  // observations; every sample must stay below 10,000 ms
+  // (eight-node sample; SC-G05-P0-29 calls for a sixteen-node trend run -
+  // recorded as a known catalog deviation).
   // The trend records the full admission-to-descriptor-completion window:
   // the timer starts before the first join so admission time is included
   // (SC-G05-P0-29). The strict <10 s bound is asserted on this 8-node

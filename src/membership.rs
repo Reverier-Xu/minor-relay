@@ -256,7 +256,7 @@ mod tests {
     ))
   }
 
-  /// SC-G05-P0-01: membership entries are keyed under their marked owner
+  /// SC-G05-P0-02: membership entries are keyed under their marked owner
   /// and round-trip their identity marking through the canonical wire.
   #[test]
   fn descriptor_carries_owner_marking() {
