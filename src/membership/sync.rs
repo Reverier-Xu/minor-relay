@@ -352,10 +352,18 @@ pub(crate) struct SyncCursor {
   /// The last snapshot revision sent, so unchanged grant sets are not
   /// re-sent every tick.
   pub(crate) snapshot_rev: u64,
+  /// Ticks since the last snapshot send: a lost delivery must be retried
+  /// without waiting for the next grant-set change.
+  pub(crate) ticks_since_snapshot_send: u32,
   /// The last membership page cursor, so descriptor sync continues across
   /// ticks and converges beyond a single page.
   pub(crate) page: Option<Vec<u8>>,
 }
+
+/// Snapshot deliveries are retried on this slow cadence even when the
+/// grant set is unchanged, so a dropped payload heals instead of stalling
+/// a peer forever (anti-entropy, SC-G05-P0-07).
+const SNAPSHOT_RESEND_TICKS: u32 = 8;
 
 pub(crate) async fn sync_tick(
   context: &Arc<LocalIdentityContext>, entropy: &Arc<dyn Entropy>, sessions: &SessionTable,
@@ -412,15 +420,24 @@ pub(crate) async fn sync_tick(
   .await?;
   cursor.page = page.cursor().map(|value| value.to_vec());
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
-  // A snapshot is sent only when its revision advanced: the grant set is
-  // unchanged most ticks, and re-sending the same revision to every
-  // session every tick floods the store with idempotent commits.
-  let snapshot_payload = match snapshot {
-    Some(snapshot) if snapshot.revision() != cursor.snapshot_rev => {
+  // A snapshot is sent when its revision advanced, and retried on a slow
+  // cadence even when unchanged: re-sending the same revision to every
+  // session every tick floods the store with idempotent commits, but a
+  // lost delivery must still heal (SC-G05-P0-07).
+  let snapshot_payload = match &snapshot {
+    Some(snapshot)
+      if snapshot.revision() != cursor.snapshot_rev
+        || cursor.ticks_since_snapshot_send >= SNAPSHOT_RESEND_TICKS =>
+    {
       cursor.snapshot_rev = snapshot.revision();
+      cursor.ticks_since_snapshot_send = 0;
       Some(SyncPayload::Snapshot(ByteVec::from(snapshot.encode()?)))
     }
-    _ => None,
+    Some(_) => {
+      cursor.ticks_since_snapshot_send = cursor.ticks_since_snapshot_send.saturating_add(1);
+      None
+    }
+    None => None,
   };
   let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
   let peers: Vec<NodeId> = sessions
