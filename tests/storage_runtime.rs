@@ -101,7 +101,7 @@ impl Providers {
   }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn storage_runtime_success_orders_storage_probe_before_identity_and_releases_providers() {
   let providers = Providers::new(required_capabilities(), None);
   let handle = providers.builder().start().await.unwrap();
@@ -139,7 +139,7 @@ async fn storage_runtime_success_orders_storage_probe_before_identity_and_releas
   assert_eq!(providers.key_drops.count(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn storage_runtime_missing_capabilities_refused_at_open_without_key_calls() {
   let capabilities = [
     StoreCapabilities::new(DurabilityLevel::ProcessCrashAtomic)
@@ -169,7 +169,7 @@ async fn storage_runtime_missing_capabilities_refused_at_open_without_key_calls(
   }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn storage_runtime_open_error_is_typed_redacted_and_never_calls_keys() {
   let providers = Providers::new(
     required_capabilities(),
@@ -186,7 +186,7 @@ async fn storage_runtime_open_error_is_typed_redacted_and_never_calls_keys() {
   assert_eq!(providers.keys.take_calls(), vec![]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn storage_runtime_exclusive_lifetime_lock_rejects_concurrent_open() {
   let providers = Providers::new(required_capabilities(), None);
   let handle = providers.builder().start().await.unwrap();

@@ -76,7 +76,7 @@ fn g1_lifecycle_sealed_operations_preserve_outputs() {
   assert_wait_query::<WaitForShutdown>();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_start_and_shutdown_provisions_identity_once() {
   let providers = Providers::new();
   let handle = providers.start().await;
@@ -107,7 +107,7 @@ async fn g1_lifecycle_start_and_shutdown_provisions_identity_once() {
   assert_eq!(providers.keys.take_calls(), vec![]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_cloned_handles_share_runtime_status() {
   let providers = Providers::new();
   let first = providers.start().await;
@@ -124,7 +124,7 @@ async fn g1_lifecycle_cloned_handles_share_runtime_status() {
   );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_shutdown_and_wait_are_idempotent() {
   let providers = Providers::new();
   let handle = providers.start().await;
@@ -149,7 +149,7 @@ async fn g1_lifecycle_shutdown_and_wait_are_idempotent() {
   );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_concurrent_shutdown_runs_one_drain() {
   let providers = Providers::new();
   let handle = providers.start().await;
@@ -250,7 +250,7 @@ async fn g1_lifecycle_shutdown_releases_retained_providers() {
   assert_eq!(providers.key_drops.count(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
   let providers = Providers::new();
   let handle = providers.start().await;

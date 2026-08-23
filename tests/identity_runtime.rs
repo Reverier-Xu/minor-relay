@@ -106,7 +106,7 @@ fn hex(bytes: &[u8]) -> String {
   bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_fresh_start_provisions_once_and_restart_reloads_same_identity() {
   let providers = Providers::new();
 
@@ -159,7 +159,7 @@ async fn identity_runtime_fresh_start_provisions_once_and_restart_reloads_same_i
   assert_eq!(providers.key_drops.count(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_missing_handle_stops_before_running_without_replacement() {
   let providers = Providers::new();
   let handle = start(&providers).await;
@@ -199,7 +199,7 @@ async fn identity_runtime_missing_handle_stops_before_running_without_replacemen
   );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_mismatched_public_key_stops_before_running_without_replacement() {
   let providers = Providers::new();
   let handle = start(&providers).await;
@@ -237,7 +237,7 @@ async fn identity_runtime_mismatched_public_key_stops_before_running_without_rep
   assert_eq!(providers.factory.commit_calls(), 3);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_missing_key_capabilities_refused_after_storage_probe() {
   for capabilities in [
     KeyCapabilities::new()
@@ -279,7 +279,7 @@ async fn identity_runtime_missing_key_capabilities_refused_after_storage_probe()
   }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_create_unknown_restart_reconciles_the_same_operation() {
   let providers = Providers::new();
   providers
@@ -320,7 +320,7 @@ async fn identity_runtime_create_unknown_restart_reconciles_the_same_operation()
   handle.command(Shutdown::new()).await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_finalize_unknown_applied_recovers_journal_on_restart() {
   let providers = Providers::new();
   let fault = Arc::new(FaultingFactory::new(
@@ -375,7 +375,7 @@ async fn identity_runtime_finalize_unknown_applied_recovers_journal_on_restart()
   handle.command(Shutdown::new()).await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_finalize_unknown_not_applied_resumes_intent_on_restart() {
   let providers = Providers::new();
   let fault = Arc::new(FaultingFactory::new(
@@ -430,7 +430,7 @@ async fn identity_runtime_finalize_unknown_not_applied_resumes_intent_on_restart
   handle.command(Shutdown::new()).await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identity_runtime_storage_corruption_error_never_leaks_handle_bytes() {
   let providers = Providers::new();
   let handle = start(&providers).await;

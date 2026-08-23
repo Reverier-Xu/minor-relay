@@ -591,7 +591,7 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
   undirected.into_iter().collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-24).
@@ -665,7 +665,7 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_failure_matrix_partition_healing() {
   let nodes = build_cluster(4).await;
   wait_trust(&nodes, 4, Duration::from_secs(20)).await;
@@ -746,7 +746,7 @@ async fn membership_sync_failure_matrix_partition_healing() {
   }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_slo_trend_stays_below_bound() {
   // The trend lane records admission and descriptor completion from public
   // observations; every sample must stay below 10,000 ms (SC-G05-P0-30).

@@ -68,7 +68,7 @@ async fn fresh_node(seed: u64) -> (Node, Arc<MemoryStorageFactory>) {
 /// admission-sensitive operation (rotation, reuse, new listening) is
 /// blocked with `NotReady`, no new signing work happens, and an
 /// authoritative reopen reconciles the exact committed transaction.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn admission_runtime_indeterminate_blocks_rotation_reuse_and_listening() {
   let memory = Arc::new(MemoryStorageFactory::new(required_capabilities()));
   // Identity creation (3) and genesis (2) pass; the admission triple
@@ -174,7 +174,7 @@ async fn admission_runtime_indeterminate_blocks_rotation_reuse_and_listening() {
 
 /// SC-G03-P0-07: a definite pre-commit abort leaves the node unblocked and
 /// releases the credential generation for one later join attempt.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn admission_runtime_definite_abort_unblocks_and_allows_later_join() {
   let memory = Arc::new(MemoryStorageFactory::new(required_capabilities()));
   let fault = Arc::new(FaultingFactory::new(

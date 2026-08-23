@@ -164,7 +164,7 @@ async fn start(
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn json_runtime_node_start_restart_preserves_identity_and_generations() {
   let dir = tempfile::tempdir().unwrap();
   let calls = Arc::new(Calls::default());
@@ -205,7 +205,7 @@ async fn json_runtime_node_start_restart_preserves_identity_and_generations() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn json_runtime_second_node_open_is_storage_locked_until_drop() {
   let dir = tempfile::tempdir().unwrap();
   let first = start(
@@ -236,7 +236,7 @@ async fn json_runtime_second_node_open_is_storage_locked_until_drop() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn json_runtime_repeated_restarts_keep_every_final_generation() {
   let dir = tempfile::tempdir().unwrap();
   let calls = Arc::new(Calls::default());
@@ -261,7 +261,7 @@ async fn json_runtime_repeated_restarts_keep_every_final_generation() {
 }
 
 #[cfg(not(unix))]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn json_runtime_os_crash_requirement_is_refused_with_typed_error() {
   let dir = tempfile::tempdir().unwrap();
   let Err(error) = start(
