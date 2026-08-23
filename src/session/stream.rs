@@ -506,6 +506,7 @@ fn retire(entry: &SessionEntry) {
 async fn run_writer(
   mut writer: ConnectionWriter, mut frames: BoundedReceiver, mut ping: watch::Receiver<()>,
 ) {
+  debug!("session writer started");
   loop {
     tokio::select! {
       frame = frames.recv() => {
@@ -558,7 +559,6 @@ async fn read_loop(
         break;
       }
       Err(error) => {
-        warn!(kind = ?error.kind(), "session receive failed");
         break;
       }
     };
@@ -598,8 +598,9 @@ async fn read_loop(
       },
       PacketKind::Chunk => match wire::decode_chunk(&message.body) {
         Ok(chunk) => {
+          let trace = chunk.trace_id.clone();
           if !forward_chunk(chunk, &mut incoming).await {
-            warn!("incoming chunk sequence violation; closing session");
+            warn!(trace_id = %trace, "incoming chunk sequence violation; closing session");
             break;
           }
         }
@@ -613,6 +614,11 @@ async fn read_loop(
           trace!(trace_id = %end.trace_id, "incoming stream ended");
           if let Some((stream, _)) = incoming.remove(&end.trace_id) {
             let _ = stream.send(StreamItem::End).await;
+          } else {
+            // A lost consumer means its session task aborted mid-stream:
+            // surface it loudly, because silence here looks like a lost
+            // packet downstream.
+            warn!(trace_id = %end.trace_id, "end frame for unknown incoming stream");
           }
         }
         Err(_) => {
@@ -669,6 +675,7 @@ async fn admit_open(
           );
           let consumer = Arc::clone(&registration.consumer);
           let consumer_trace = trace_id.clone();
+          debug!(trace_id = %consumer_trace, "incoming consumer spawned");
           consumers.spawn(async move {
             let result = consumer.accept(packet).await;
             debug!(

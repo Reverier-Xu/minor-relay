@@ -5,7 +5,7 @@
 //! exporter-bound join and persists the admission. Negative lanes prove
 //! generic failure without admission or credential consumption.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use minor_relay::{
   CreateCluster, Endpoint, ErrorKind, GetLocalNode, JoinCluster, JoinCredential, Listen,
@@ -23,7 +23,37 @@ struct Node {
   _keys: Arc<ScriptedKeys>,
 }
 
+/// Waits until `probe` reports success or the deadline passes. Admission
+/// is acknowledged before the consumer finishes, so packet arrival must
+/// be polled on wall time: a fixed busy-yield budget can be outlasted by
+/// a preemptive scheduler before the peer's tasks ever run.
+async fn wait_for(probe: impl FnMut() -> bool, timeout: Duration, what: &'static str) {
+  let mut probe = probe;
+  let deadline = std::time::Instant::now() + timeout;
+  while !probe() {
+    assert!(
+      std::time::Instant::now() < deadline,
+      "{what} not reached within {timeout:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(5)).await;
+  }
+}
+
+/// Routes crate diagnostics into the libtest capture for the calling
+/// test, so failures print their own session traces.
+fn init_tracing() {
+  use std::sync::Once;
+  static INIT: Once = Once::new();
+  INIT.call_once(|| {
+    tracing_subscriber::fmt()
+      .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=trace"))
+      .with_test_writer()
+      .init();
+  });
+}
+
 async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> Node {
+  init_tracing();
   let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
   let handle = NodeBuilder::new(factory, keys).start().await.unwrap();
   Node {
@@ -47,7 +77,7 @@ async fn start_json(dir: &TempDir, keys: Arc<ScriptedKeys>) -> Node {
   }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_completes_exporter_bound_join_and_persists_admission() {
   let receiver = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
@@ -100,7 +130,7 @@ async fn secure_join_completes_exporter_bound_join_and_persists_admission() {
 // barrier is available (unix); elsewhere the runtime requirement is
 // refused with a typed error, matching json_runtime's non-unix lane.
 #[cfg(all(unix, feature = "json"))]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_json_backend_round_trips_the_same_join() {
   let receiver_dir = tempfile::tempdir().unwrap();
   let joiner_dir = tempfile::tempdir().unwrap();
@@ -143,7 +173,7 @@ async fn secure_join_json_backend_round_trips_the_same_join() {
   restarted.handle.command(Shutdown::new()).await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_wrong_credential_fails_without_admission() {
   let receiver = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
@@ -242,6 +272,7 @@ async fn start_with_protocol(
   storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
   consumer: Arc<Collector>,
 ) -> NodeHandle {
+  init_tracing();
   let mut extensions = ExtensionRegistry::new();
   extensions.register_protocol(definition, consumer).unwrap();
   let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
@@ -272,7 +303,7 @@ fn policy() -> PacketPolicy {
   PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 1).unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_packet_streams_ordered_after_authentication() {
   let receiver_collector = Arc::new(Collector::default());
   let receiver = Node {
@@ -335,13 +366,13 @@ async fn secure_join_packet_streams_ordered_after_authentication() {
   assert_eq!(ack.destination(), admission.admitted_node());
 
   // Admission is acked before the consumer finishes; wait for the bounded
-  // consumer task to record the packet without wall-clock sleeps.
-  for _ in 0..4096 {
-    if !collector.packets.lock().unwrap().is_empty() {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  // consumer task to record the packet on wall time.
+  wait_for(
+    || !collector.packets.lock().unwrap().is_empty(),
+    Duration::from_secs(10),
+    "packet delivery",
+  )
+  .await;
   let packets = collector.packets.lock().unwrap().clone();
   assert_eq!(packets.len(), 1);
   assert_eq!(packets[0].0, trace_before.to_string());
@@ -351,7 +382,7 @@ async fn secure_join_packet_streams_ordered_after_authentication() {
   joiner_handle.command(Shutdown::new()).await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
   let receiver = Node {
     handle: start_with_protocol(
@@ -450,19 +481,19 @@ async fn packet_round_trip(
     .await
     .unwrap();
   assert_eq!(ack.destination(), target);
-  for _ in 0..4096 {
-    if !collector.packets.lock().unwrap().is_empty() {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  wait_for(
+    || !collector.packets.lock().unwrap().is_empty(),
+    Duration::from_secs(10),
+    "packet delivery",
+  )
+  .await;
   let packets = collector.packets.lock().unwrap().clone();
   assert_eq!(packets.len(), 1, "one ordered packet must arrive");
   assert_eq!(packets[0].1, b"ab");
   ack.destination().clone()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_rotation_keeps_members_and_reconnect_is_credential_free() {
   let receiver_keys = Arc::new(ScriptedKeys::full_at(90_000));
   let receiver_collector = Arc::new(Collector::default());
@@ -682,12 +713,12 @@ async fn round_trip_to(
     .send_sync(Box::new(VecBody::new(body.to_vec())))
     .await
     .unwrap();
-  for _ in 0..4096 {
-    if !collector.packets.lock().unwrap().is_empty() {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  wait_for(
+    || !collector.packets.lock().unwrap().is_empty(),
+    Duration::from_secs(10),
+    "one ordered packet must arrive",
+  )
+  .await;
   let packets = collector.packets.lock().unwrap().clone();
   assert_eq!(packets.len(), 1, "one ordered packet must arrive");
   trace
@@ -696,7 +727,7 @@ async fn round_trip_to(
 /// SC-G03-P0-15: both peers stream concurrent packets over one session;
 /// each incoming stream preserves its endpoints, trace id, metadata, and
 /// byte order.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_packets_flow_concurrently_in_both_directions() {
   let receiver_collector = Arc::new(Collector::default());
   let receiver = Node {
@@ -772,7 +803,7 @@ async fn secure_join_packets_flow_concurrently_in_both_directions() {
 
 /// SC-G03-P0-16: a caller derives a return packet by swapping endpoints
 /// and reusing the incoming trace id; core assigns no return meaning.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_derived_return_packet_reuses_trace_id() {
   let reply_consumer = Arc::new(ReplyConsumer::default());
   let reply_collector = Arc::new(Collector::default());
@@ -839,7 +870,7 @@ async fn secure_join_derived_return_packet_reuses_trace_id() {
 
 /// SC-G03-P0-17: bounded incoming-stream admission returns typed
 /// backpressure at the configured capacity, and release frees every slot.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers() {
   let config = minor_relay::NodeConfig::new()
     .with_session_queue_limits(4, 65_536)
@@ -920,12 +951,12 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
   assert_eq!(error.kind(), ErrorKind::Overloaded);
 
   release.notify_waiters();
-  for _ in 0..4096 {
-    if recorder.packets.lock().unwrap().len() >= 4 {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  wait_for(
+    || recorder.packets.lock().unwrap().len() >= 4,
+    Duration::from_secs(10),
+    "four queued packets drain after release",
+  )
+  .await;
   assert_eq!(recorder.packets.lock().unwrap().len(), 4);
   let packet = joiner_handle
     .create_packet(
@@ -939,12 +970,12 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
     .send_sync(Box::new(VecBody::new(vec![b"after"])))
     .await
     .unwrap();
-  for _ in 0..4096 {
-    if recorder.packets.lock().unwrap().len() >= 5 {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  wait_for(
+    || recorder.packets.lock().unwrap().len() >= 5,
+    Duration::from_secs(10),
+    "the post-release packet arrives",
+  )
+  .await;
   assert_eq!(recorder.packets.lock().unwrap().len(), 5);
 
   joiner_handle.command(Shutdown::new()).await.unwrap();
@@ -956,7 +987,7 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
 /// SC-G03-P0-22: a source exhausting its fixed admission rate window is
 /// refused before any handshake or signing work; the refusal consumes no
 /// credential and performs no signature.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_admission_rate_window_refuses_before_signing() {
   let receiver_keys = Arc::new(ScriptedKeys::full_at(130_000));
   let receiver = Node {
@@ -1034,7 +1065,7 @@ async fn secure_join_admission_rate_window_refuses_before_signing() {
 /// credential bytes are copied (as they would be after a leak), the second
 /// join attempt on the same generation is refused without admission and
 /// without consuming another generation.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_copied_credential_cannot_join_twice() {
   let receiver = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
@@ -1094,7 +1125,7 @@ async fn secure_join_copied_credential_cannot_join_twice() {
 /// down, an in-flight outbound stream ends with an explicit typed
 /// `StreamInterrupted` on the sender's route — core never reports the
 /// stream as delivered after the peer closes, and never hangs the sender.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
   let receiver_collector = Arc::new(Collector::default());
   let receiver = Node {
@@ -1160,23 +1191,21 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
   // before the body finishes), so the peer shutdown below is guaranteed to
   // interrupt an in-flight stream rather than a queued request.
   let mut streaming = false;
-  for _ in 0..4096 {
+  let deadline = std::time::Instant::now() + Duration::from_secs(15);
+  while !streaming {
     match joiner_handle.query(GetRoute::new(route.clone())).await {
       // The supervisor inserts the record asynchronously after `send_async`
       // queues the request; keep waiting until it exists.
       Err(error) if error.kind() == ErrorKind::NotFound => {}
-      Ok(view) => {
-        if matches!(view.state(), RouteState::Streaming) {
-          streaming = true;
-          break;
-        }
-        if matches!(view.state(), RouteState::Failed(_)) {
-          break;
-        }
-      }
+      Ok(view) if matches!(view.state(), RouteState::Failed(_)) => break,
+      Ok(view) => streaming = matches!(view.state(), RouteState::Streaming),
       Err(error) => panic!("route query failed: {error:?}"),
     }
-    tokio::task::yield_now().await;
+    assert!(
+      std::time::Instant::now() < deadline,
+      "the stream must reach streaming state within the budget"
+    );
+    tokio::time::sleep(Duration::from_millis(5)).await;
   }
   assert!(
     streaming,
@@ -1197,8 +1226,9 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
   release.notify_one();
 
   // The in-flight route must end with the explicit interruption state.
-  let mut terminal = None;
-  for _ in 0..4096 {
+  let mut terminal: Option<RouteState> = None;
+  let deadline = std::time::Instant::now() + Duration::from_secs(15);
+  while terminal.is_none() {
     let view = joiner_handle
       .query(GetRoute::new(route.clone()))
       .await
@@ -1207,7 +1237,11 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
       terminal = Some(view.state().clone());
       break;
     }
-    tokio::task::yield_now().await;
+    assert!(
+      std::time::Instant::now() < deadline,
+      "in-flight route never reached a terminal state"
+    );
+    tokio::time::sleep(Duration::from_millis(5)).await;
   }
   assert_eq!(
     terminal,
@@ -1220,7 +1254,7 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
 
 /// Real-world lane: after the receiver stops listening, a late join attempt
 /// fails closed with a typed error instead of hanging or admitting.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_join_after_listener_stop_fails_closed() {
   let receiver = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
@@ -1277,7 +1311,7 @@ async fn secure_join_join_after_listener_stop_fails_closed() {
 /// joiner back (outgoing); the deterministic ownership rule keeps exactly
 /// one connection and the drained one tears down without breaking the
 /// surviving session's packet path.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_crossed_dial_converges_to_one_session() {
   let receiver_collector = Arc::new(Collector::default());
   let receiver = Node {
@@ -1359,7 +1393,7 @@ async fn secure_join_crossed_dial_converges_to_one_session() {
 
 /// SC-G04-P0-15: shutdown rejects new work and releases session resources
 /// independently of wall-clock progress.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_shutdown_rejects_new_work_after_drain() {
   let receiver = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
@@ -1410,7 +1444,7 @@ use minor_relay::{GetMember, PageMembers, PageSpec, PageTopology};
 
 /// The public membership/topology views expose the local signed descriptor
 /// and the authenticated session edge after a join.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_public_membership_and_topology_views() {
   let receiver = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
@@ -1488,7 +1522,7 @@ async fn secure_join_public_membership_and_topology_views() {
 
 /// G5-06 core: a sixteen-node cluster joins the issuer and the public
 /// topology view exposes the authenticated edges (SC-G05-P0-24).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_sixteen_node_membership_joins_and_views() {
   let issuer = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
