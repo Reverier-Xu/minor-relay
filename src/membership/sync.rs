@@ -297,10 +297,10 @@ pub(crate) async fn refresh_issuer_snapshot(
   // an unchanged count means an unchanged grant set; the full enumeration
   // runs only when an admission may have added one.
   let latest = trust_store::latest_snapshot_ctx(store, genesis.creator()).await?;
-  if let Some(latest) = &latest {
-    if !trust_store::has_more_than_bindings(store, latest.bindings().len()).await? {
-      return Ok(Some(latest.clone()));
-    }
+  if let Some(latest) = &latest
+    && !trust_store::has_more_than_bindings(store, latest.bindings().len()).await?
+  {
+    return Ok(Some(latest.clone()));
   }
   let bindings = trust_store::trusted_bindings(store).await?;
   let current: Vec<TrustBinding> = bindings
