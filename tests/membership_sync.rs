@@ -500,6 +500,16 @@ async fn rotate_with_retry(issuer: &Node) -> minor_relay::IssuedJoinCredential {
   }
 }
 
+/// Retry backoff that doubles from 250 ms and caps at four seconds: the
+/// first retries stay fast enough for the convergence SLO samples while a
+/// persistent storm still paces itself outside the fixed per-source
+/// admission window (sixteen attempts per minute).
+fn retry_backoff(attempts: u32) -> Duration {
+  let shift = attempts.min(5);
+  let millis = 250_u64.saturating_mul(1_u64 << shift);
+  Duration::from_millis(millis.max(250)).min(Duration::from_secs(4))
+}
+
 /// One join with bounded retries: the transport drops handshakes under
 /// sixteen-node load, so a join is retried before failing the harness.
 /// A credential is not `Clone` (secret hygiene), and a failed join
@@ -518,7 +528,7 @@ async fn join_with_retry(node: &Node, endpoint: Endpoint, secret: &str) {
     {
       Ok(_) => return,
       Err(error) if std::time::Instant::now() < deadline => {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(retry_backoff(attempts)).await;
         let _ = error;
       }
       Err(error) => panic!("join failed persistently (attempt {attempts}): {error:?}"),
@@ -545,7 +555,7 @@ async fn connect_with_retry(node: &Node, endpoint: Endpoint, peer: minor_relay::
       Ok(_) => return,
       Err(error) if std::time::Instant::now() < deadline => {
         eprintln!("dial {} -> {} attempt {attempts}: {error:?}", node.id, peer);
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(retry_backoff(attempts)).await;
       }
       Err(error) => panic!(
         "member dial {} -> {peer} failed persistently: {error:?}",
