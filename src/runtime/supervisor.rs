@@ -360,6 +360,7 @@ impl Supervisor {
       std::sync::Arc::new(crate::storage::receipt::HostWallClock),
       dependencies.config.route_policy().cloned(),
       dependencies.sessions.clone(),
+      dependencies.routes.clone(),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let sync_context = Arc::clone(&context);

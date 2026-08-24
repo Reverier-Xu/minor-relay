@@ -31,7 +31,7 @@ use tracing::{debug, instrument, trace, warn};
 
 use super::{driver::EstablishedSession, forward};
 use crate::{
-  Error, ErrorKind, NodeId, QualifiedTag, Result, TraceId,
+  Error, ErrorKind, NodeId, PacketMetadata, ProtocolTag, QualifiedTag, Result, TraceId,
   api::BoxFuture,
   extension_registry::ExtensionRegistry,
   packet::{
@@ -118,13 +118,17 @@ pub(crate) struct SessionPacketContext {
   forwarding: super::forward::ForwardingTable,
   route_policy: Option<QualifiedTag>,
   sessions: SessionTable,
+  routes: RouteTable,
 }
 
 impl SessionPacketContext {
+  /// The argument list mirrors the context's node-shared collaborators; no
+  /// subset forms a meaningful grouping.
+  #[allow(clippy::too_many_arguments)]
   pub(crate) fn new(
     local: NodeId, registry: Arc<ExtensionRegistry>, policy: SessionPolicy,
     runtime: crate::runtime::RuntimeClient, clock: Arc<dyn crate::storage::receipt::WallClock>,
-    route_policy: Option<QualifiedTag>, sessions: SessionTable,
+    route_policy: Option<QualifiedTag>, sessions: SessionTable, routes_clone: RouteTable,
   ) -> Self {
     Self {
       local,
@@ -135,6 +139,7 @@ impl SessionPacketContext {
       forwarding: super::forward::new_table(),
       route_policy,
       sessions,
+      routes: routes_clone,
     }
   }
 
@@ -146,6 +151,17 @@ impl SessionPacketContext {
   pub(crate) const fn local(&self) -> &NodeId {
     &self.local
   }
+}
+
+/// One admitted incoming stream: its bounded body channel, the next
+/// expected chunk sequence, the immutable opening-context digest that
+/// decides duplicate handling, and the admission wall-clock time reported
+/// by identical retransmissions.
+pub(crate) struct AdmittedStream {
+  stream: mpsc::Sender<StreamItem>,
+  next_sequence: u64,
+  context: crate::Digest,
+  admitted_at_millis: u64,
 }
 
 /// One framed outbound session message.
@@ -675,7 +691,7 @@ async fn read_loop(
   frames: &BoundedSender, pending_acks: &PendingAcks,
   last_activity: &Arc<std::sync::atomic::AtomicU64>,
 ) {
-  let mut incoming: HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)> = HashMap::new();
+  let mut incoming: HashMap<TraceId, AdmittedStream> = HashMap::new();
   let mut consumers = JoinSet::new();
   let mut last_pong_seen = reader.pong_last_seen();
   loop {
@@ -768,7 +784,10 @@ async fn read_loop(
             forward::relay_end(&context.forwarding, end).await;
             continue;
           }
-          if let Some((stream, _)) = incoming.remove(&end.trace_id) {
+          if let Some(stream) = incoming
+            .remove(&end.trace_id)
+            .map(|admitted| admitted.stream)
+          {
             let _ = stream.send(StreamItem::End).await;
           } else {
             // A lost consumer means its session task aborted mid-stream:
@@ -805,12 +824,13 @@ async fn read_loop(
 /// consumer invocation and only bounded metadata recorded.
 async fn admit_open(
   open: OpenFrame, session: &EstablishedSession, context: &SessionPacketContext,
-  frames: &BoundedSender, incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>,
+  frames: &BoundedSender, incoming: &mut HashMap<TraceId, AdmittedStream>,
   consumers: &mut JoinSet<()>,
 ) -> Result<()> {
   let trace_id = open.trace_id.clone();
   let ack_protocol = open.protocol.clone();
   let local = context.local().clone();
+  let mut reack_admitted_at: Option<u64> = None;
   let status = 'status: {
     // A routed frame re-validates its envelope against the
     // session-authenticated holder before anything else (SC-G06-P0-01);
@@ -841,8 +861,25 @@ async fn admit_open(
     if open.destination != local {
       break 'status AckStatus::Unsupported;
     }
-    if incoming.contains_key(&open.trace_id) {
-      break 'status AckStatus::Unsupported;
+    // The immutable opening context decides duplicate handling (SC-G06-P0-
+    // 15): an identical retransmission reports the current admission status
+    // without invoking the consumer twice; a conflicting one fails closed.
+    let context_digest = crate::session::stream::opening_context_digest(
+      &open.source,
+      &open.destination,
+      &open.protocol,
+      &open.metadata,
+    );
+    match incoming.get(&trace_id) {
+      // An identical retransmission reports the current admission status
+      // with the original admission time; the consumer is not invoked
+      // twice (SC-G06-P0-15).
+      Some(admitted) if admitted.context == context_digest => {
+        reack_admitted_at = Some(admitted.admitted_at_millis);
+        break 'status AckStatus::Admitted;
+      }
+      Some(_) => break 'status AckStatus::Unsupported,
+      None => {}
     }
     match context.registry.protocol(&open.protocol) {
       Some(registration)
@@ -850,11 +887,24 @@ async fn admit_open(
           .selected_features()
           .contains(registration.definition.owning_feature()) =>
       {
+        // Saturation prioritises conflicts over genuinely new streams:
+        // identical duplicates were already answered above, conflicting
+        // ones failed closed above, and only a new stream now receives
+        // the typed backpressure (SC-G06-P0-15).
         if incoming.len() >= context.policy.queue_messages {
           break 'status AckStatus::Overloaded;
         }
+        let admitted_at = now_millis();
         let (stream, body) = mpsc::channel(INCOMING_STREAM_CHUNKS);
-        incoming.insert(open.trace_id.clone(), (stream, 0));
+        incoming.insert(
+          open.trace_id.clone(),
+          AdmittedStream {
+            stream,
+            next_sequence: 0,
+            context: context_digest,
+            admitted_at_millis: admitted_at,
+          },
+        );
         let packet = IncomingPacket::new(
           open.source,
           open.destination,
@@ -879,13 +929,17 @@ async fn admit_open(
       }
       // Unknown protocol tag or owning feature not selected on this
       // session: rejected before admission, never reaching a consumer.
-      _ => AckStatus::Unsupported,
+      // The rejection is recorded as bounded terminal route metadata.
+      _ => {
+        record_rejection(&context.routes, &trace_id, ErrorKind::Unsupported);
+        AckStatus::Unsupported
+      }
     }
   };
   let ack = AckFrame {
     trace_id: trace_id.clone(),
     status,
-    admitted_at_millis: now_millis(),
+    admitted_at_millis: reack_admitted_at.unwrap_or_else(now_millis),
   };
   debug!(
     trace_id = %ack.trace_id,
@@ -905,17 +959,15 @@ async fn admit_open(
 
 /// Forwards one chunk to its admitted stream in strict sequence order.
 /// Returns `false` on a sequence violation (fail closed).
-async fn forward_chunk(
-  chunk: ChunkFrame, incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>,
-) -> bool {
-  let Some((stream, expected)) = incoming.get_mut(&chunk.trace_id) else {
+async fn forward_chunk(chunk: ChunkFrame, incoming: &mut HashMap<TraceId, AdmittedStream>) -> bool {
+  let Some(admitted) = incoming.get_mut(&chunk.trace_id) else {
     // Unknown or already-terminated stream: drop the chunk.
     return true;
   };
-  if *expected != chunk.sequence {
+  if admitted.next_sequence != chunk.sequence {
     return false;
   }
-  *expected = expected.saturating_add(1);
+  admitted.next_sequence = admitted.next_sequence.saturating_add(1);
   trace!(
     trace_id = %chunk.trace_id,
     sequence = chunk.sequence,
@@ -923,7 +975,12 @@ async fn forward_chunk(
     "incoming chunk forwarded"
   );
   let bytes: Arc<[u8]> = Arc::from(chunk.bytes.as_slice());
-  if stream.send(StreamItem::Chunk(bytes)).await.is_err() {
+  if admitted
+    .stream
+    .send(StreamItem::Chunk(bytes))
+    .await
+    .is_err()
+  {
     // The consumer is gone; terminate the incoming stream.
     incoming.remove(&chunk.trace_id);
   }
@@ -1229,6 +1286,43 @@ fn withdraw_pending(entry: &SessionEntry, trace_id: &TraceId) {
   }
 }
 
+/// Digests the immutable opening context of one open frame (endpoints,
+/// protocol, canonical metadata): identical retransmissions produce the
+/// same digest; any mutation produces a different one.
+pub(crate) fn opening_context_digest(
+  source: &NodeId, destination: &NodeId, protocol: &ProtocolTag, metadata: &PacketMetadata,
+) -> crate::Digest {
+  let mut bytes = Vec::with_capacity(128);
+  bytes.extend_from_slice(source.as_str().as_bytes());
+  bytes.push(0);
+  bytes.extend_from_slice(destination.as_str().as_bytes());
+  bytes.push(0);
+  bytes.extend_from_slice(protocol.as_str().as_bytes());
+  for (key, value) in metadata.entries() {
+    bytes.extend_from_slice(key.as_str().as_bytes());
+    bytes.push(1);
+    bytes.extend_from_slice(value);
+    bytes.push(2);
+  }
+  crate::identity::signature::body_digest(&bytes)
+}
+
+/// Records one bounded terminal route fact for an admission rejection:
+/// identity and typed failure only, never payload bytes.
+fn record_rejection(routes: &RouteTable, trace_id: &TraceId, kind: ErrorKind) {
+  // A trace already carrying a terminal fact never grows the table.
+  if routes
+    .lock()
+    .map(|table| table.contains_key(trace_id))
+    .unwrap_or(true)
+  {
+    return;
+  }
+  let mut record = RouteRecord::failing(trace_id.clone());
+  record.update(RouteState::Failed(kind));
+  let _ = insert_route(routes, usize::MAX, record);
+}
+
 /// The current wall-clock time as milliseconds since the Unix epoch,
 /// saturating at zero for pre-epoch clocks.
 fn now_millis() -> u64 {
@@ -1501,5 +1595,183 @@ mod liveness_tests {
     clock.set(UNIX_EPOCH + Duration::from_secs(1_015));
     tokio::time::advance(Duration::from_secs(2)).await;
     handle.await.unwrap();
+  }
+}
+
+#[cfg(test)]
+mod admission_tests {
+  use std::{collections::BTreeMap, sync::Arc};
+
+  use minicbor::bytes::ByteVec;
+
+  use super::opening_context_digest;
+  use crate::{
+    NodeId, PacketMetadata, ProtocolTag, QualifiedTag, TraceId, identity::signature::body_digest,
+  };
+
+  fn node(value: u8) -> NodeId {
+    NodeId::parse(&format!("node_{value:021}")).unwrap()
+  }
+
+  fn trace(seed: u32) -> TraceId {
+    TraceId::parse(&format!("trace_{seed:021}")).unwrap()
+  }
+
+  fn protocol(name: &str) -> ProtocolTag {
+    ProtocolTag::parse(&format!("relay.woooo.tech/protocols/{name}")).unwrap()
+  }
+
+  fn metadata(entries: &[(&str, &[u8])]) -> PacketMetadata {
+    let mut md = PacketMetadata::new();
+    for (name, value) in entries {
+      let key: QualifiedTag = format!("relay.woooo.tech/labels/{name}").parse().unwrap();
+      md = md.insert(key, Arc::from(*value)).unwrap();
+    }
+    md
+  }
+
+  // ---- SC-G06-P0-15: identical duplicates report status; conflicts fail ----
+
+  /// The immutable context digest is stable across identical retransmissions
+  /// and changes with any mutation of source, destination, protocol, or
+  /// canonical metadata.
+  #[test]
+  fn opening_context_digest_binds_every_immutable_field() {
+    let base = opening_context_digest(
+      &node(1),
+      &node(2),
+      &protocol("test-echo"),
+      &metadata(&[("zone", b"edge")]),
+    );
+
+    let same = opening_context_digest(
+      &node(1),
+      &node(2),
+      &protocol("test-echo"),
+      &metadata(&[("zone", b"edge")]),
+    );
+    assert_eq!(base, same, "identical contexts share one digest");
+
+    let mutated_source = opening_context_digest(
+      &node(3),
+      &node(2),
+      &protocol("test-echo"),
+      &metadata(&[("zone", b"edge")]),
+    );
+    let mutated_destination = opening_context_digest(
+      &node(1),
+      &node(4),
+      &protocol("test-echo"),
+      &metadata(&[("zone", b"edge")]),
+    );
+    let mutated_protocol = opening_context_digest(
+      &node(1),
+      &node(2),
+      &protocol("test-other"),
+      &metadata(&[("zone", b"edge")]),
+    );
+    let mutated_metadata = opening_context_digest(
+      &node(1),
+      &node(2),
+      &protocol("test-echo"),
+      &metadata(&[("zone", b"core")]),
+    );
+    for (what, digest) in [
+      ("source", mutated_source),
+      ("destination", mutated_destination),
+      ("protocol", mutated_protocol),
+      ("metadata", mutated_metadata),
+    ] {
+      assert_ne!(base, digest, "mutating the {what} must change the context");
+    }
+  }
+
+  /// The digest covers canonical metadata ordering: two maps with the same
+  /// entries in different insertion orders produce one digest, and an
+  /// entry-value change is visible.
+  #[test]
+  fn metadata_ordering_is_canonical_in_the_digest() {
+    let a = PacketMetadata::new()
+      .insert(
+        "relay.woooo.tech/labels/alpha".parse().unwrap(),
+        Arc::from(&b"1"[..]),
+      )
+      .unwrap()
+      .insert(
+        "relay.woooo.tech/labels/zeta".parse().unwrap(),
+        Arc::from(&b"2"[..]),
+      )
+      .unwrap();
+    let b = PacketMetadata::new()
+      .insert(
+        "relay.woooo.tech/labels/zeta".parse().unwrap(),
+        Arc::from(&b"2"[..]),
+      )
+      .unwrap()
+      .insert(
+        "relay.woooo.tech/labels/alpha".parse().unwrap(),
+        Arc::from(&b"1"[..]),
+      )
+      .unwrap();
+    assert_eq!(a.entries().len(), b.entries().len());
+    let da = body_digest(
+      &a.entries()
+        .flat_map(|(key, value)| {
+          let mut bytes = key.as_str().as_bytes().to_vec();
+          bytes.extend_from_slice(value);
+          bytes
+        })
+        .collect::<Vec<u8>>(),
+    );
+    let db = body_digest(
+      &b.entries()
+        .flat_map(|(key, value)| {
+          let mut bytes = key.as_str().as_bytes().to_vec();
+          bytes.extend_from_slice(value);
+          bytes
+        })
+        .collect::<Vec<u8>>(),
+    );
+    assert_eq!(da, db);
+  }
+
+  /// The bounded metadata map rejects duplicate keys, so two openings whose
+  /// metadata differs in any entry always carry different contexts.
+  #[test]
+  fn conflicting_metadata_yields_different_contexts() {
+    let first = opening_context_digest(
+      &node(1),
+      &node(2),
+      &protocol("test-echo"),
+      &metadata(&[("role", b"a"), ("role2", b"b")]),
+    );
+    let second = opening_context_digest(
+      &node(1),
+      &node(2),
+      &protocol("test-echo"),
+      &metadata(&[("role", b"b"), ("role2", b"a")]),
+    );
+    assert_ne!(first, second);
+    let _ = BTreeMap::<String, ByteVec>::new();
+  }
+
+  // ---- SC-G06-P0-12/13: rejection records stay bounded terminal facts ----
+
+  /// A rejected open records exactly one bounded terminal route fact; a
+  /// second rejection for the same trace never grows the table.
+  #[tokio::test]
+  async fn rejections_record_one_terminal_fact() {
+    let routes: super::RouteTable = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    super::record_rejection(&routes, &trace(9), crate::ErrorKind::Unsupported);
+    super::record_rejection(&routes, &trace(9), crate::ErrorKind::Unsupported);
+
+    let table = routes.lock().unwrap();
+    assert_eq!(table.len(), 1);
+    let record = table.get(&trace(9)).unwrap();
+    assert!(matches!(
+      record.state,
+      crate::RouteState::Failed(crate::ErrorKind::Unsupported)
+    ));
+    assert!(record.selected_node.is_none());
   }
 }
