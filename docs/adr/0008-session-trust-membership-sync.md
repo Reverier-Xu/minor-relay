@@ -33,8 +33,9 @@ signatures breaks nothing that exists.
    signature fields, signing paths, and verification paths entirely; the obsolete design is deleted,
    not deprecated.
 3. The revision rules keep their correctness roles and lose their authenticity role: same-revision
-   conflicts are rejected, only the exact next revision replaces a record, and tombstones defeat
-   replayed older entries. Bounded page, byte, queue, and cursor capacities are unchanged.
+   and older updates are rejected, any strictly higher revision replaces the record (so anti-entropy
+   heals skipped intermediate revisions after a lost delivery), and tombstones defeat replayed
+   older entries. Bounded page, byte, queue, and cursor capacities are unchanged.
 4. The join admission and session handshake cryptographic evidence (credentials, admission commits,
    exporter binding, handshake transcripts) is unchanged. This ADR covers only the metadata sync
    path introduced in M5; other record families keep their current design until revisited at their

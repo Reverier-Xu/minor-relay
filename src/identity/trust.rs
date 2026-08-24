@@ -456,15 +456,37 @@ pub(crate) mod store {
     if current.get(&namespace, &key).await?.is_some() {
       return Ok(());
     }
+    // Superseded revisions of the same issuer are pruned in the same
+    // transaction: only the latest grant set is ever read back, so keeping
+    // history would grow the scan unboundedly over the cluster lifetime.
+    let mut operations = vec![StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: key.clone(),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(snapshot.encode()?)),
+    }];
+    let mut scan = current
+      .scan(&namespace, snapshot.issuer().as_str().as_bytes())
+      .await?;
+    while let Some(entry) = scan.next().await? {
+      let text = String::from_utf8_lossy(entry.key().as_bytes()).to_string();
+      let revision: u64 = text
+        .rsplit('/')
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+      if revision < snapshot.revision() {
+        operations.push(StoreOperation::Delete {
+          namespace: namespace.clone(),
+          key: StoreKey::new(Arc::from(entry.key().as_bytes().to_vec())),
+          expected: entry.value().digest().clone(),
+        });
+      }
+    }
     let transaction = store.prepare_transaction(
       TransactionId::generate(entropy)?,
       current.revision().clone(),
-      vec![StoreOperation::Put {
-        namespace: namespace.clone(),
-        key: key.clone(),
-        expected: StoreExpectation::Absent,
-        value: StoreValue::new(Arc::from(snapshot.encode()?)),
-      }],
+      operations,
     )?;
     let _ = store.commit(transaction).await?;
     Ok(())
@@ -546,31 +568,47 @@ pub(crate) mod store {
 
   /// Paged trust observations over the running node's metadata store:
   /// distinct bindings from verified snapshots, deterministically ordered
-  /// and bounded.
+  /// and bounded. The scan order is the canonical node-text order, so the
+  /// page is taken by skipping `offset` entries during one streamed pass -
+  /// no whole-population allocation.
   pub(crate) async fn paged_trust_ctx(
     store: &MetadataStore, offset: usize, limit: usize,
   ) -> Result<TrustPage> {
     let namespace = binding_namespace()?;
-    let mut bindings: Vec<TrustBinding> = Vec::new();
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut skipped = 0_usize;
+    let mut page: Vec<TrustBinding> = Vec::with_capacity(limit);
+    let mut more_after_page = false;
     while let Some(entry) = scan.next().await? {
       let bytes = entry.value().as_bytes();
       if bytes.len() < 33 || bytes[0] != 1 {
         continue;
+      }
+      if skipped < offset {
+        skipped += 1;
+        continue;
+      }
+      if page.len() >= limit {
+        // This entry was fetched and deferred: at least one further
+        // binding exists beyond the page.
+        more_after_page = true;
+        break;
       }
       let node = NodeId::parse(&String::from_utf8_lossy(entry.key().as_bytes()))?;
       let key = PublicKey::from_bytes(
         <[u8; 32]>::try_from(&bytes[1..33])
           .map_err(|_| crate::Error::invalid_input("trust binding key"))?,
       );
-      bindings.push(TrustBinding::new(node, key));
+      page.push(TrustBinding::new(node, key));
     }
-    bindings.sort_by(|left, right| left.node().cmp(right.node()));
-    bindings.dedup_by(|left, right| left.node() == right.node());
-    let total = bindings.len();
-    let page: Vec<TrustBinding> = bindings.into_iter().skip(offset).take(limit).collect();
-    let next = offset.checked_add(page.len()).filter(|end| *end < total);
+    // The next cursor is exact only when the page filled and a further
+    // entry was already fetched past it.
+    let next = if page.len() == limit && more_after_page {
+      Some(offset + limit)
+    } else {
+      None
+    };
     Ok(TrustPage::new(page, next))
   }
 
@@ -592,6 +630,25 @@ pub(crate) mod store {
       bindings.insert(binding.node().clone(), binding.public_key().clone());
     }
     Ok(bindings)
+  }
+
+  /// Whether the store holds more than `count` trusted bindings, resolved
+  /// with an early-exit bounded read instead of a whole-population map
+  /// (the anti-entropy tick only needs to know whether membership exists).
+  pub(crate) async fn has_more_than_bindings(store: &MetadataStore, count: usize) -> Result<bool> {
+    let namespace = crate::identity::records::identity_binding_namespace()?;
+    let snapshot = store.snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut seen = 0_usize;
+    while let Some(entry) = scan.next().await? {
+      crate::identity::records::IdentityBindingV1::decode(entry.value().as_bytes())
+        .map_err(|_| crate::Error::invalid_input("trust binding decode"))?;
+      seen += 1;
+      if seen > count {
+        return Ok(true);
+      }
+    }
+    Ok(false)
   }
 
   /// The trusted issuer anchor for snapshot verification: on the cluster

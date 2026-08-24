@@ -293,31 +293,28 @@ pub(crate) async fn refresh_issuer_snapshot(
   if genesis.creator() != context.identity().node() {
     return Ok(None);
   }
+  // Cheap short-circuit: bindings are append-only between admissions, so
+  // an unchanged count means an unchanged grant set; the full enumeration
+  // runs only when an admission may have added one.
+  let latest = trust_store::latest_snapshot_ctx(store, genesis.creator()).await?;
+  if let Some(latest) = &latest {
+    if !trust_store::has_more_than_bindings(store, latest.bindings().len()).await? {
+      return Ok(Some(latest.clone()));
+    }
+  }
   let bindings = trust_store::trusted_bindings(store).await?;
   let current: Vec<TrustBinding> = bindings
     .into_iter()
     .map(|(node, key)| TrustBinding::new(node, key))
     .collect();
-  let latest = trust_store::latest_snapshot_ctx(store, genesis.creator()).await?;
-  if let Some(latest) = latest {
-    if latest.bindings() == current.as_slice() {
-      return Ok(Some(latest));
-    }
-    let revision = latest.revision().saturating_add(1);
-    let snapshot = TrustSnapshotV1::new(
-      genesis.cluster().clone(),
-      revision,
-      1,
-      genesis.creator().clone(),
-      genesis.creator_key().clone(),
-      current,
-    );
-    persist_snapshot_with_bindings(store, entropy, &snapshot).await?;
-    return Ok(Some(snapshot));
-  }
+  let revision = match &latest {
+    Some(latest) if latest.bindings() != current.as_slice() => latest.revision().saturating_add(1),
+    Some(latest) => return Ok(Some(latest.clone())),
+    None => 1,
+  };
   let snapshot = TrustSnapshotV1::new(
     genesis.cluster().clone(),
-    1,
+    revision,
     1,
     genesis.creator().clone(),
     genesis.creator_key().clone(),
@@ -381,8 +378,9 @@ pub(crate) async fn sync_tick(
   // (the supervisor's lazy paths publish the local descriptor on the first
   // public query), keeping the admission commit sequence deterministic for
   // fault-injecting providers.
-  let members = trust_store::trusted_bindings(store).await?;
-  let has_members = members.len() > 1;
+  // Cheap membership probe: an early-exit bounded read instead of a
+  // whole-population map on every tick.
+  let has_members = trust_store::has_more_than_bindings(store, 1).await?;
   if !has_members {
     let page = page_sync::emit_page_ctx(
       store,

@@ -711,7 +711,7 @@ cases = [
     "THR-006",
     "THR-012",
   ] },
-  { title = "Enforce monotonic descriptor revisions", acceptance = "A descriptor update is accepted only at the exact next revision; stale, repeated, and skipped revisions cannot replace the current record.", rebaseline = "ADR-0007", threats = [
+  { title = "Enforce monotonic descriptor revisions", acceptance = "A descriptor update replaces the stored record only at a strictly higher revision; stale and repeated revisions cannot replace or roll back the current record, and a removal marker is never replaced by a live descriptor.", rebaseline = "ADR-0008", threats = [
     "THR-006",
   ] },
   { title = "Preserve removal markers", acceptance = "A retained removal marker defeats reordered or replayed older descriptors and cannot be replaced without a newer revision.", rebaseline = "ADR-0008", threats = [

@@ -53,9 +53,9 @@ or restart terminates an in-flight stream; core does not transparently replay or
 
 ## Metadata Boundary
 
-Node records carry their owning node's identity marking and use persistent strictly increasing owner
-revisions. Same-revision conflicts are rejected. Membership entries are trusted through the
-authenticated session that delivered them (ADR-0008); they carry no per-entry signatures.
+Node records carry an owner identity marking and persistent strictly increasing revisions:
+same-revision updates are rejected; a strictly higher revision replaces the record so anti-entropy
+heals skipped ones. Entries ride authenticated sessions and carry no per-entry signatures (ADR-0008).
 
 Generic resources are stable names plus labels. Reserved labels identify resource type and resource
 URI; the URI references an upper-layer object or service and is never followed by core. Each

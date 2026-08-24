@@ -155,10 +155,13 @@ pub(crate) mod store {
     )?))
   }
 
-  /// Stores one descriptor over the running node's metadata store. The
-  /// revision must be exactly one greater than the current record's
-  /// revision; the first record starts at revision 1. Same-revision,
-  /// stale, and skipped revisions are rejected (SC-G05-P0-03).
+  /// Stores one descriptor over the running node's metadata store. A
+  /// record is replaced only by a strictly higher revision; the first
+  /// record starts at revision 1. Same-revision and stale (lower)
+  /// revisions are rejected, while a skipped intermediate revision still
+  /// replaces the record so anti-entropy heals a lost delivery instead of
+  /// diverging forever; a removal marker is never replaced by an older
+  /// live descriptor (SC-G05-P0-03, ADR-0008).
   pub(crate) async fn store_descriptor_ctx(
     store: &MetadataStore, entropy: &dyn Entropy, descriptor: &NodeDescriptorV1,
   ) -> Result<()> {
@@ -168,11 +171,12 @@ pub(crate) mod store {
     let current = snapshot.get(&namespace, &key).await?;
     if let Some(existing) = current {
       let existing = crate::membership::page::decode_descriptor(existing.as_bytes())?;
-      if existing.revision() != descriptor.revision().saturating_sub(1) {
+      if descriptor.revision() <= existing.revision() {
         return Err(Error::conflict("node descriptor revision"));
       }
-      // A removal marker is never replaced by a live descriptor of an
-      // older or equal revision; the store above already enforces next-only.
+      // A removal marker is never replaced by a live descriptor of any
+      // revision: rejoining requires a newer signed-out-of-band removal
+      // reversal, not a replayed old record.
       if existing.removed() && !descriptor.removed() {
         return Err(Error::conflict("node descriptor removal"));
       }
@@ -267,7 +271,8 @@ mod tests {
     assert_eq!(decoded.public_key(), &key(1));
   }
 
-  /// SC-G05-P0-03: only the exact next revision is accepted.
+  /// SC-G05-P0-03: a record is replaced only by a strictly higher
+  /// revision, and a skipped intermediate revision still heals the gap.
   #[tokio::test]
   async fn descriptor_store_enforces_monotonic_revisions() {
     let factory = factory();
@@ -281,22 +286,28 @@ mod tests {
         .await
         .is_err()
     );
-    // Skipped revision rejected.
-    assert!(
-      store::store_descriptor(&factory, &descriptor(3, 1, vec!["one.example"], false))
-        .await
-        .is_err()
-    );
-    // Exact next revision accepted.
-    store::store_descriptor(&factory, &descriptor(2, 1, vec!["two.example"], false))
+    // Lower revision rejected (no rollback).
+    let stale = descriptor(0, 1, vec!["stale.example"], false);
+    assert!(store::store_descriptor(&factory, &stale).await.is_err());
+
+    // A skipped intermediate revision heals the gap instead of diverging:
+    // anti-entropy must converge a peer that missed revision 2.
+    store::store_descriptor(&factory, &descriptor(3, 1, vec!["three.example"], false))
       .await
       .unwrap();
     let current = store::read_descriptor(&factory, &node(1))
       .await
       .unwrap()
       .unwrap();
-    assert_eq!(current.revision(), 2);
-    assert_eq!(current.endpoints()[0].host(), "two.example");
+    assert_eq!(current.revision(), 3);
+    assert_eq!(current.endpoints()[0].host(), "three.example");
+
+    // Rollback to an older revision after the heal is still rejected.
+    assert!(
+      store::store_descriptor(&factory, &descriptor(2, 1, vec!["two.example"], false))
+        .await
+        .is_err()
+    );
   }
 
   /// SC-G05-P0-04: a removal marker defeats replayed older descriptors.
