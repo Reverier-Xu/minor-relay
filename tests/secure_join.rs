@@ -55,6 +55,15 @@ fn init_tracing() {
 /// Issues one join credential with bounded retries: admission-sensitive
 /// operations transiently refuse while concurrent metadata commits hold
 /// the store (the same precedent as the membership-sync harness).
+/// Retry backoff that doubles from 250 ms and caps at four seconds: the
+/// fixed admission policy caps one source at sixteen attempts per minute,
+/// so a tight retry storm would trip it and fail fast forever after.
+fn retry_backoff(attempts: u32) -> Duration {
+  let shift = attempts.min(5);
+  let millis = 250_u64.saturating_mul(1_u64 << shift);
+  Duration::from_millis(millis.max(250)).min(Duration::from_secs(4))
+}
+
 async fn rotate_with_retry(issuer: &NodeHandle) -> minor_relay::IssuedJoinCredential {
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   loop {
@@ -86,7 +95,7 @@ async fn join_with_retry(
     {
       Ok(view) => return view,
       Err(_) if std::time::Instant::now() < deadline => {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(retry_backoff(attempts)).await;
       }
       Err(error) => panic!("join failed persistently (attempt {attempts}): {error:?}"),
     }
