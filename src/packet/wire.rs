@@ -33,6 +33,10 @@ pub(crate) enum AckStatus {
   Unsupported,
   /// Rejected before admission: the bounded incoming queue is saturated.
   Overloaded,
+  /// A hop along the route failed after the open was relayed (session
+  /// interruption); no admission claim is made either way. Additive code;
+  /// older peers fail closed on it (mixed-binary compat is T-G10-02).
+  Failed,
 }
 
 impl AckStatus {
@@ -41,6 +45,7 @@ impl AckStatus {
       Self::Admitted => 0,
       Self::Unsupported => 1,
       Self::Overloaded => 2,
+      Self::Failed => 3,
     }
   }
 
@@ -49,6 +54,7 @@ impl AckStatus {
       0 => Some(Self::Admitted),
       1 => Some(Self::Unsupported),
       2 => Some(Self::Overloaded),
+      3 => Some(Self::Failed),
       _ => None,
     }
   }

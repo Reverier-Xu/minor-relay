@@ -515,14 +515,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G06-03"
 verification_id = "VERIFY-G06-03"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G06-03"
 owner_task = "T-G06-03"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g06-03-forwarding.sh"]
 timeout_seconds = 1800
 
 [[task]]

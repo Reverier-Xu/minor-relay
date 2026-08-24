@@ -24,7 +24,8 @@ use crate::{
   session::{
     SessionDriver,
     stream::{
-      RouteTable, SessionPacketContext, SessionTable, insert_route, run_outbound, run_session,
+      RouteTable, SessionEntry, SessionPacketContext, SessionTable, insert_route, run_outbound,
+      run_session,
     },
   },
   transport::{
@@ -357,6 +358,8 @@ impl Supervisor {
         dependencies.routes.clone(),
       ),
       std::sync::Arc::new(crate::storage::receipt::HostWallClock),
+      dependencies.config.route_policy().cloned(),
+      dependencies.sessions.clone(),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let sync_context = Arc::clone(&context);
@@ -735,20 +738,64 @@ impl Supervisor {
       .map_err(|_| Error::internal("session table"))?
       .get(&destination)
       .cloned();
-    let Some(entry) = entry else {
-      fail(request, ErrorKind::RouteUnavailable);
-      return Err(Error::route_unavailable("packet session"));
+    // A direct path is preferred; without one, the node's registered
+    // next-hop policy may route through a connected peer (T-G06-03). The
+    // pump then emits the route envelope so every intermediate hop
+    // re-validates the chain.
+    let direct = entry.filter(|entry| entry.alive());
+    let (entry, force_routed) = match direct {
+      Some(entry) => (entry, false),
+      None => match self.select_forward_entry(&destination).await? {
+        Some(entry) => (entry, true),
+        None => {
+          fail(request, ErrorKind::RouteUnavailable);
+          return Err(Error::route_unavailable("packet session"));
+        }
+      },
     };
-    if !entry.alive() {
-      fail(request, ErrorKind::StreamInterrupted);
-      return Err(Error::stream_interrupted("packet session"));
-    }
     let local = self.packet.local().clone();
     let routes = self.dependencies.routes.clone();
     tasks.spawn(async move {
-      run_outbound(entry, local, request, routes).await;
+      run_outbound(entry, local, request, routes, force_routed).await;
     });
     Ok(())
+  }
+
+  /// Resolves one live downstream session for a routed first hop through
+  /// the node's configured next-hop policy. `Ok(None)` means no policy or
+  /// no eligible hop exists and the caller fails the route explicitly.
+  async fn select_forward_entry(&self, destination: &NodeId) -> Result<Option<SessionEntry>> {
+    let Some(tag) = self.dependencies.config.route_policy() else {
+      return Ok(None);
+    };
+    let Some(policy) = self.dependencies.extensions.next_hop_policy(tag) else {
+      return Ok(None);
+    };
+    let local = self.packet.local().clone();
+    let peers: Vec<NodeId> = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .iter()
+      .filter(|(_, entry)| entry.alive())
+      .map(|(peer, _)| peer.clone())
+      .collect();
+    let view = crate::routing::NextHopView {
+      destination,
+      local: &local,
+      peers: &peers,
+    };
+    let hop = policy.next_hop(view).await?;
+    let entry = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(|_| Error::internal("session table"))?
+      .get(&hop)
+      .filter(|entry| entry.alive())
+      .cloned();
+    Ok(entry)
   }
 
   /// Resolves one matching-node target to exactly one eligible destination

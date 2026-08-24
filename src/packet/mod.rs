@@ -621,6 +621,7 @@ pub(crate) fn ack_error(kind: ErrorKind) -> Error {
     ErrorKind::Unsupported => Error::unsupported("packet protocol"),
     ErrorKind::Overloaded => Error::overloaded("packet admission"),
     ErrorKind::RouteUnavailable => Error::route_unavailable("packet route"),
+    ErrorKind::StreamInterrupted => Error::stream_interrupted("packet stream"),
     _ => Error::stream_interrupted("packet stream"),
   }
 }

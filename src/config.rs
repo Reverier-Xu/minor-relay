@@ -21,6 +21,7 @@ pub struct NodeConfig {
   // enforces CborLimits today; ParserLimits is the public twin).
   parser_limits: ParserLimits,
   trace_metadata_limits: TraceMetadataLimits,
+  route_policy: Option<crate::QualifiedTag>,
   receipt_retention: Duration,
   required_features: BTreeSet<FeatureTag>,
 }
@@ -57,6 +58,16 @@ impl NodeConfig {
   pub fn with_trace_metadata_limits(mut self, value: TraceMetadataLimits) -> Result<Self> {
     self.trace_metadata_limits = value;
     Ok(self)
+  }
+
+  /// Selects the node's next-hop routing policy tag (T-G06-03): when a
+  /// routed packet's destination is not directly connected, the tag
+  /// resolves in the extension registry and the registered policy picks
+  /// the single next hop. Without a tag the node forwards only to a
+  /// directly connected destination and fails closed otherwise.
+  pub fn with_route_policy(mut self, tag: crate::QualifiedTag) -> Self {
+    self.route_policy = Some(tag);
+    self
   }
 
   pub fn with_receipt_retention(mut self, value: Duration) -> Result<Self> {
@@ -108,6 +119,10 @@ impl NodeConfig {
   pub(crate) const fn trace_metadata_limits(&self) -> &TraceMetadataLimits {
     &self.trace_metadata_limits
   }
+  /// The node's configured next-hop routing policy tag, if any.
+  pub(crate) const fn route_policy(&self) -> Option<&crate::QualifiedTag> {
+    self.route_policy.as_ref()
+  }
 
   pub(crate) const fn required_features(&self) -> &BTreeSet<FeatureTag> {
     &self.required_features
@@ -133,6 +148,7 @@ impl Default for NodeConfig {
       keepalive_timeout: Duration::from_secs(0),
       parser_limits: ParserLimits::default(),
       trace_metadata_limits: TraceMetadataLimits::default(),
+      route_policy: None,
       receipt_retention: Duration::from_secs(30 * 24 * 60 * 60),
       required_features: BTreeSet::new(),
     }

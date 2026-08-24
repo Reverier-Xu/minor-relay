@@ -63,6 +63,7 @@ pub struct ExtensionRegistry {
   discoveries: BTreeMap<DiscoveryTag, Arc<dyn Discovery>>,
   load_balancers:
     std::sync::Mutex<BTreeMap<crate::QualifiedTag, Arc<dyn crate::LoadBalancingPolicy>>>,
+  next_hops: std::sync::Mutex<BTreeMap<crate::QualifiedTag, Arc<dyn crate::RouteNextHop>>>,
 }
 
 impl ExtensionRegistry {
@@ -149,6 +150,44 @@ impl ExtensionRegistry {
   /// Whether the load-balancer tag is registered locally.
   pub(crate) fn has_load_balancer(&self, tag: &crate::QualifiedTag) -> bool {
     self.load_balancer(tag).is_some()
+  }
+
+  /// Registers one next-hop routing policy under a canonical tag
+  /// (T-G06-03). A duplicate tag is a conflict; registration never
+  /// replaces an existing entry. A node's configured route-policy tag
+  /// resolves here when a routed packet must hop through this node.
+  pub fn register_next_hop(
+    &mut self, tag: crate::QualifiedTag, value: Arc<dyn crate::RouteNextHop>,
+  ) -> Result<&mut Self> {
+    let conflict = {
+      let mut policies = self
+        .next_hops
+        .lock()
+        .map_err(|_| Error::internal("extension registry"))?;
+      use std::collections::btree_map::Entry;
+      match policies.entry(tag) {
+        Entry::Occupied(_) => true,
+        Entry::Vacant(slot) => {
+          slot.insert(value);
+          false
+        }
+      }
+    };
+    if conflict {
+      return Err(Error::conflict("next-hop registration"));
+    }
+    Ok(self)
+  }
+
+  /// The registered next-hop policy for one tag, when present.
+  pub(crate) fn next_hop_policy(
+    &self, tag: &crate::QualifiedTag,
+  ) -> Option<Arc<dyn crate::RouteNextHop>> {
+    self
+      .next_hops
+      .lock()
+      .ok()
+      .and_then(|policies| policies.get(tag).cloned())
   }
 
   /// Registers one packet protocol and its consumer. A duplicate protocol

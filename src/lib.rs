@@ -77,7 +77,9 @@ pub use provider::{
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
   StoreTransaction, StoreValue,
 };
-pub use routing::{CandidateNodeReader, LoadBalancingPolicy, RouteContext, Selector};
+pub use routing::{
+  CandidateNodeReader, LoadBalancingPolicy, NextHopView, RouteContext, RouteNextHop, Selector,
+};
 pub use transport::{
   ChannelBinding, Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor,
 };

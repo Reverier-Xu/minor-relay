@@ -29,9 +29,9 @@ use tokio::{
 };
 use tracing::{debug, instrument, trace, warn};
 
-use super::driver::EstablishedSession;
+use super::{driver::EstablishedSession, forward};
 use crate::{
-  Error, ErrorKind, NodeId, Result, TraceId,
+  Error, ErrorKind, NodeId, QualifiedTag, Result, TraceId,
   api::BoxFuture,
   extension_registry::ExtensionRegistry,
   packet::{
@@ -50,6 +50,15 @@ const INCOMING_STREAM_CHUNKS: usize = 8;
 /// The shared node-local session table: authenticated peer to live (or
 /// dead, pending replacement) session entry.
 pub(crate) type SessionTable = Arc<Mutex<BTreeMap<NodeId, SessionEntry>>>;
+
+/// One pending outbound admission: a synchronous waiter, or a forwarding
+/// hop whose acknowledgement must be relayed upstream (T-G06-03).
+pub(crate) enum PendingAck {
+  Wait(oneshot::Sender<AckOutcome>),
+  Relay { upstream: BoundedSender },
+}
+
+pub(crate) type PendingAcks = Arc<Mutex<HashMap<TraceId, PendingAck>>>;
 
 /// The shared node-local route table: bounded in-memory trace metadata
 /// (ADR-0007: identity, selected node, progress, terminal state — never
@@ -106,12 +115,16 @@ pub(crate) struct SessionPacketContext {
   policy: SessionPolicy,
   runtime: crate::runtime::RuntimeClient,
   clock: Arc<dyn crate::storage::receipt::WallClock>,
+  forwarding: super::forward::ForwardingTable,
+  route_policy: Option<QualifiedTag>,
+  sessions: SessionTable,
 }
 
 impl SessionPacketContext {
   pub(crate) fn new(
     local: NodeId, registry: Arc<ExtensionRegistry>, policy: SessionPolicy,
     runtime: crate::runtime::RuntimeClient, clock: Arc<dyn crate::storage::receipt::WallClock>,
+    route_policy: Option<QualifiedTag>, sessions: SessionTable,
   ) -> Self {
     Self {
       local,
@@ -119,7 +132,15 @@ impl SessionPacketContext {
       policy,
       runtime,
       clock,
+      forwarding: super::forward::new_table(),
+      route_policy,
+      sessions,
     }
+  }
+
+  /// The node's configured next-hop routing policy tag, if any.
+  pub(crate) const fn route_policy(&self) -> Option<&QualifiedTag> {
+    self.route_policy.as_ref()
   }
 
   pub(crate) const fn local(&self) -> &NodeId {
@@ -129,8 +150,14 @@ impl SessionPacketContext {
 
 /// One framed outbound session message.
 pub(crate) struct SessionFrame {
-  kind: PacketKind,
-  body: Vec<u8>,
+  pub(super) kind: PacketKind,
+  pub(super) body: Vec<u8>,
+}
+
+impl SessionFrame {
+  pub(super) const fn new(kind: PacketKind, body: Vec<u8>) -> Self {
+    Self { kind, body }
+  }
 }
 
 /// Which side initiated an established session.
@@ -179,6 +206,58 @@ pub(crate) struct BoundedSender {
 }
 
 impl BoundedSender {
+  /// The non-blocking variant used for best-effort control frames (relay
+  /// acknowledgements): saturation drops the frame instead of awaiting.
+  pub(crate) fn try_send(&self, frame: SessionFrame) {
+    let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
+    let Some(bytes) = self.try_reserve(bytes) else {
+      return;
+    };
+    if self.inner.try_send(frame).is_err() {
+      // The queue closed after admission; release the reservation.
+      self.state.count.fetch_sub(1, Ordering::Relaxed);
+      self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+    }
+  }
+
+  fn try_reserve(&self, bytes: usize) -> Option<usize> {
+    match self.state.admit.lock() {
+      Ok(_guard) => {
+        let count = self.state.count.load(Ordering::Relaxed);
+        let queued_bytes = self.state.bytes.load(Ordering::Relaxed);
+        if count >= self.max_count || queued_bytes.saturating_add(bytes) > self.max_bytes {
+          None
+        } else {
+          self.state.count.fetch_add(1, Ordering::Relaxed);
+          self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
+          Some(bytes)
+        }
+      }
+      Err(_) => None,
+    }
+  }
+
+  /// The forwarding variant: waits for downstream capacity instead of
+  /// rejecting, so a slow destination stops the relay's reads until it
+  /// progresses (SC-G06-P0-10). Order is preserved by the FIFO queue.
+  pub(crate) async fn send_waiting(&self, frame: SessionFrame) -> Result<()> {
+    let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
+    loop {
+      if self.try_reserve(bytes).is_none() {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        continue;
+      }
+      if self.inner.send(frame).await.is_err() {
+        // The queue closed after admission; release the reservation.
+        self.state.count.fetch_sub(1, Ordering::Relaxed);
+        self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+        return Err(Error::shutting_down("session queue"));
+      }
+      return Ok(());
+    }
+  }
+
+  /// The blocking admission path used by payload frames.
   pub(crate) fn send(&self, frame: SessionFrame) -> BoxFuture<'_, Result<()>> {
     let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
     // The admission check and reservation are one atomic critical section:
@@ -234,8 +313,8 @@ impl BoundedReceiver {
 /// One established session's send-side handle in the session table.
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
-  frames: BoundedSender,
-  pending_acks: Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  pub(super) frames: BoundedSender,
+  pub(super) pending_acks: PendingAcks,
   alive: Arc<AtomicBool>,
   direction: DialDirection,
   retire: watch::Sender<()>,
@@ -392,17 +471,43 @@ pub(crate) async fn run_session(
   }
   writer_task.abort();
   // Pending admissions and in-flight incoming bodies observe the
-  // interruption explicitly: pending acks fail with StreamInterrupted and
-  // dropped body channels close without an end marker.
-  if let Ok(mut pending) = pending_acks.lock() {
+  // interruption explicitly: pending acks fail with StreamInterrupted,
+  // forwarded hops relay a failed acknowledgement upstream, and dropped
+  // body channels close without an end marker. Every hop fed by this
+  // session's peer terminates downstream explicitly.
+  let relays: Vec<(TraceId, BoundedSender)> = if let Ok(mut pending) = pending_acks.lock() {
     let interrupted = pending.len();
-    for (_, notify) in pending.drain() {
-      let _ = notify.send(Err(ErrorKind::StreamInterrupted));
+    let mut relays = Vec::new();
+    for (trace_id, entry) in pending.drain() {
+      match entry {
+        PendingAck::Wait(notify) => {
+          let _ = notify.send(Err(ErrorKind::StreamInterrupted));
+        }
+        PendingAck::Relay { upstream } => relays.push((trace_id, upstream)),
+      }
     }
     if interrupted > 0 {
       debug!(interrupted, "session closed pending admissions");
     }
+    relays
+  } else {
+    Vec::new()
+  };
+  for (trace_id, upstream) in relays {
+    if let Ok(body) = wire::encode_ack(&crate::packet::wire::AckFrame {
+      trace_id,
+      status: crate::packet::wire::AckStatus::Failed,
+      admitted_at_millis: 0,
+    }) {
+      let _ = upstream
+        .send(SessionFrame {
+          kind: PacketKind::Ack,
+          body,
+        })
+        .await;
+    }
   }
+  forward::close_for_peer(&context.forwarding, &peer).await;
 }
 
 /// Resolves when the runtime signals or drops the shutdown channel.
@@ -431,8 +536,7 @@ fn clock_seconds(clock: &dyn crate::storage::receipt::WallClock) -> u64 {
 /// keepalive deadline closes. Wall-clock rollback or freeze delays both
 /// deadlines and a forward jump makes them immediately due.
 async fn liveness_observer(
-  last_activity: &Arc<std::sync::atomic::AtomicU64>,
-  pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  last_activity: &Arc<std::sync::atomic::AtomicU64>, pending_acks: &PendingAcks,
   clock: Arc<dyn crate::storage::receipt::WallClock>, idle_timeout: Duration,
   keepalive_interval: Duration, keepalive_timeout: Duration, ping_tx: &watch::Sender<()>,
 ) {
@@ -508,8 +612,24 @@ pub(crate) fn retire_session(table: &SessionTable, peer: &NodeId) -> Result<()> 
 fn retire(entry: &SessionEntry) {
   entry.alive.store(false, Ordering::SeqCst);
   if let Ok(mut pending) = entry.pending_acks.lock() {
-    for (_, notify) in pending.drain() {
-      let _ = notify.send(Err(ErrorKind::StreamInterrupted));
+    for (trace_id, ack) in pending.drain() {
+      match ack {
+        PendingAck::Wait(notify) => {
+          let _ = notify.send(Err(ErrorKind::StreamInterrupted));
+        }
+        PendingAck::Relay { upstream } => {
+          // Best-effort relay of the interruption; a saturated queue
+          // cannot be repaired here and the upstream liveness policy
+          // bounds the wait regardless.
+          if let Ok(body) = wire::encode_ack(&crate::packet::wire::AckFrame {
+            trace_id,
+            status: crate::packet::wire::AckStatus::Failed,
+            admitted_at_millis: 0,
+          }) {
+            upstream.try_send(SessionFrame::new(PacketKind::Ack, body));
+          }
+        }
+      }
     }
   }
   let _ = entry.retire.send(());
@@ -552,7 +672,7 @@ async fn run_writer(
 /// violates the wire contract (fail closed).
 async fn read_loop(
   reader: &mut ConnectionReader, session: &EstablishedSession, context: &SessionPacketContext,
-  frames: &BoundedSender, pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  frames: &BoundedSender, pending_acks: &PendingAcks,
   last_activity: &Arc<std::sync::atomic::AtomicU64>,
 ) {
   let mut incoming: HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)> = HashMap::new();
@@ -592,7 +712,22 @@ async fn read_loop(
     match kind {
       PacketKind::Open => match wire::decode_open(&message.body) {
         Ok(open) => {
-          if admit_open(
+          // A routed frame addressed elsewhere is forwarded; everything
+          // else goes through the local admission path.
+          let routed = open.destination != *context.local() && open.route.is_some();
+          if routed {
+            forward::open(
+              &context.local().clone(),
+              session.peer(),
+              open,
+              frames,
+              &context.sessions,
+              &context.forwarding,
+              &context.registry,
+              context.route_policy(),
+            )
+            .await;
+          } else if admit_open(
             open,
             session,
             context,
@@ -614,7 +749,9 @@ async fn read_loop(
       PacketKind::Chunk => match wire::decode_chunk(&message.body) {
         Ok(chunk) => {
           let trace = chunk.trace_id.clone();
-          if !forward_chunk(chunk, &mut incoming).await {
+          if forward::contains(&context.forwarding, &trace) {
+            forward::relay_chunk(&context.forwarding, chunk).await;
+          } else if !forward_chunk(chunk, &mut incoming).await {
             warn!(trace_id = %trace, "incoming chunk sequence violation; closing session");
             break;
           }
@@ -627,6 +764,10 @@ async fn read_loop(
       PacketKind::End => match wire::decode_end(&message.body) {
         Ok(end) => {
           trace!(trace_id = %end.trace_id, "incoming stream ended");
+          if forward::contains(&context.forwarding, &end.trace_id) {
+            forward::relay_end(&context.forwarding, end).await;
+            continue;
+          }
           if let Some((stream, _)) = incoming.remove(&end.trace_id) {
             let _ = stream.send(StreamItem::End).await;
           } else {
@@ -792,26 +933,40 @@ async fn forward_chunk(
 /// Resolves one pending outbound admission. The admitting node is this
 /// session's authenticated peer, so the acknowledgement can name it for
 /// the synchronous sender's `DeliveryAck`.
-fn resolve_ack(
-  ack: AckFrame, pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
-  peer: &NodeId,
-) {
-  let notify = pending_acks
+fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks, peer: &NodeId) {
+  let entry = pending_acks
     .lock()
     .map(|mut pending| pending.remove(&ack.trace_id))
     .ok()
     .flatten();
-  if let Some(notify) = notify {
-    let outcome = match ack.status {
-      AckStatus::Admitted => Ok(crate::packet::Admission {
-        by: peer.clone(),
-        admitted_at: UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis),
-      }),
-      AckStatus::Unsupported => Err(ErrorKind::Unsupported),
-      AckStatus::Overloaded => Err(ErrorKind::Overloaded),
-    };
-    trace!(trace_id = %ack.trace_id, ?ack.status, "admission ack resolved");
-    let _ = notify.send(outcome);
+  let Some(entry) = entry else {
+    return;
+  };
+  match entry {
+    PendingAck::Wait(notify) => {
+      let outcome = match ack.status {
+        AckStatus::Admitted => Ok(crate::packet::Admission {
+          by: peer.clone(),
+          admitted_at: UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis),
+        }),
+        AckStatus::Unsupported => Err(ErrorKind::Unsupported),
+        AckStatus::Overloaded => Err(ErrorKind::Overloaded),
+        AckStatus::Failed => Err(ErrorKind::StreamInterrupted),
+      };
+      trace!(trace_id = %ack.trace_id, ?ack.status, "admission ack resolved");
+      let _ = notify.send(outcome);
+    }
+    PendingAck::Relay { upstream } => {
+      // Relay the destination's acknowledgement to the previous hop with
+      // its status preserved.
+      if let Ok(body) = wire::encode_ack(&AckFrame {
+        trace_id: ack.trace_id.clone(),
+        status: ack.status,
+        admitted_at_millis: ack.admitted_at_millis,
+      }) {
+        upstream.try_send(SessionFrame::new(PacketKind::Ack, body));
+      }
+    }
   }
 }
 
@@ -826,6 +981,7 @@ fn resolve_ack(
 ))]
 pub(crate) async fn run_outbound(
   entry: SessionEntry, local: NodeId, request: OutboundRequest, routes: RouteTable,
+  force_routed: bool,
 ) {
   // The supervisor resolves selector targets before spawning the pump; a
   // matching-node request that reaches this point is an internal error.
@@ -850,7 +1006,7 @@ pub(crate) async fn run_outbound(
     let registered = entry
       .pending_acks
       .lock()
-      .map(|mut pending| pending.insert(trace_id.clone(), ack_tx));
+      .map(|mut pending| pending.insert(trace_id.clone(), PendingAck::Wait(ack_tx)));
     if registered.is_err() {
       request.reject(ErrorKind::Internal);
       update_route(&routes, &trace_id, |record| {
@@ -860,10 +1016,10 @@ pub(crate) async fn run_outbound(
     }
   }
 
-  // Selector-selected deliveries carry the route envelope (the current
-  // wire fixture): the selected destination re-validates the chain before
-  // admission. Direct exact-node sends keep the previous frame shape.
-  let route = if matches!(request.target, PacketTarget::MatchingNodes(_)) {
+  // Selector-selected and multi-hop-routed deliveries carry the route
+  // envelope (the current wire fixture): every hop re-validates the chain
+  // before admission. Direct exact-node sends keep the previous shape.
+  let route = if force_routed || matches!(request.target, PacketTarget::MatchingNodes(_)) {
     Some(
       crate::routing::RouteContext::new(
         trace_id.clone(),
@@ -1015,6 +1171,21 @@ pub(crate) async fn run_outbound(
     }
   });
   debug!(interrupted, "packet stream finished");
+}
+
+#[cfg(test)]
+pub(crate) fn test_queue(max_count: usize, max_bytes: usize) -> (BoundedSender, BoundedReceiver) {
+  let (tx, rx) = mpsc::channel(max_count);
+  let state = Arc::new(QueueState::default());
+  (
+    BoundedSender {
+      inner: tx,
+      state: Arc::clone(&state),
+      max_count,
+      max_bytes,
+    },
+    BoundedReceiver { inner: rx, state },
+  )
 }
 
 /// Inserts one route record under the configured capacity, evicting the
@@ -1185,10 +1356,10 @@ mod liveness_tests {
 
   use tokio::sync::watch;
 
-  use super::liveness_observer;
-  use crate::{TraceId, packet::AckOutcome, storage::contract::helpers::ManualClock};
+  use super::{PendingAcks, liveness_observer};
+  use crate::storage::contract::helpers::ManualClock;
 
-  fn no_pending() -> Arc<Mutex<HashMap<TraceId, tokio::sync::oneshot::Sender<AckOutcome>>>> {
+  fn no_pending() -> PendingAcks {
     Arc::new(Mutex::new(HashMap::new()))
   }
 

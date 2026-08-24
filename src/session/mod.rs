@@ -6,6 +6,7 @@
 //! Nothing here crosses the crate boundary.
 
 mod driver;
+pub(crate) mod forward;
 pub(crate) mod stream;
 
 pub(crate) use driver::{SessionDriver, handshake_frame_rules};

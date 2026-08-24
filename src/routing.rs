@@ -427,6 +427,39 @@ impl CandidateNodeReader for StoreCandidateReader {
   }
 }
 
+/// The sealed per-hop decision inputs handed to a registered
+/// [`RouteNextHop`] policy: the final destination, this node, and the
+/// live session peers available as next hops (canonical order).
+#[derive(Debug)]
+pub struct NextHopView<'a> {
+  pub(crate) destination: &'a NodeId,
+  pub(crate) local: &'a NodeId,
+  pub(crate) peers: &'a [NodeId],
+}
+
+impl NextHopView<'_> {
+  pub fn destination(&self) -> &NodeId {
+    self.destination
+  }
+
+  pub fn local(&self) -> &NodeId {
+    self.local
+  }
+
+  /// The live authenticated peers eligible as next hops.
+  pub fn peers(&self) -> &[NodeId] {
+    self.peers
+  }
+}
+
+/// The node-registered policy that picks the single next hop for a routed
+/// packet whose destination is not directly connected. Implementations run
+/// at every forwarding node under bounded work; returning a NodeId outside
+/// [`NextHopView::peers`] fails closed at the route boundary.
+pub trait RouteNextHop: fmt::Debug + Send + Sync + 'static {
+  fn next_hop<'a>(&'a self, view: NextHopView<'a>) -> BoxFuture<'a, Result<NodeId>>;
+}
+
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
