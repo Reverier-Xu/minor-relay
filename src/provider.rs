@@ -661,7 +661,9 @@ fn digest_store_value(value: &[u8]) -> Digest {
 /// receipts. This is the single definition shared by every storage adapter
 /// AND the reference provider in the storage contract suite, so a condition
 /// bug cannot hide by being copied into both the oracle and the adapter
-/// under test.
+/// under test. Without the `json` feature the only callers live in test
+/// builds (the contract suite), which is intentionally allowed.
+#[cfg_attr(not(feature = "json"), allow(dead_code))]
 pub(crate) fn condition_matches(
   entries: &std::collections::BTreeMap<(StoreNamespace, StoreKey), StoreValue>,
   receipts: &std::collections::BTreeMap<TransactionId, CommitReceipt>, operation: &StoreOperation,
@@ -694,6 +696,7 @@ pub(crate) fn condition_matches(
   }
 }
 
+#[cfg_attr(not(feature = "json"), allow(dead_code))]
 fn expectation_matches(value: Option<&StoreValue>, expected: &StoreExpectation) -> bool {
   match (value, expected) {
     (None, StoreExpectation::Absent) => true,

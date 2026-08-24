@@ -263,6 +263,17 @@ async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
   assert_eq!(providers.storage_drops.count(), 1);
   drop(providers.factory);
   drop(providers.keys);
+  // The supervisor task tears down its driver after the storage release
+  // resolves the wait above, so the remaining provider drops are awaited
+  // instead of raced.
+  tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::join!(
+      providers.factory_drops.wait_for(1),
+      providers.key_drops.wait_for(1),
+    );
+  })
+  .await
+  .unwrap();
   assert_eq!(providers.factory_drops.count(), 1);
   assert_eq!(providers.key_drops.count(), 1);
 }
