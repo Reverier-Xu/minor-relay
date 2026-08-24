@@ -204,8 +204,11 @@ impl Transport for WssTransport {
       let certificate = super::cert::EphemeralCertificate::generate(&crate::api::SystemEntropy)?;
       let config = super::tls::server_config(&certificate)?;
       let rules = crate::session::handshake_frame_rules()?;
+      let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
       Ok(Box::new(WssListener {
-        listener: tokio::sync::Mutex::new(Some(tcp)),
+        listener: tcp,
+        shutdown_tx,
+        shutdown: shutdown_rx,
         config,
         rules,
         leaf: certificate
@@ -238,7 +241,9 @@ impl Transport for WssTransport {
 
 /// A [`TransportListener`] for the built-in WSS transport.
 pub(crate) struct WssListener {
-  listener: tokio::sync::Mutex<Option<tokio::net::TcpListener>>,
+  listener: tokio::net::TcpListener,
+  shutdown_tx: tokio::sync::watch::Sender<()>,
+  shutdown: tokio::sync::watch::Receiver<()>,
   config: std::sync::Arc<rustls::ServerConfig>,
   rules: super::connection::FrameRules,
   leaf: Option<Vec<u8>>,
@@ -268,29 +273,33 @@ impl TransportListener for WssListener {
   ) -> BoxFuture<'a, Result<super::connection::Connection>> {
     let config = std::sync::Arc::clone(&self.config);
     let rules = self.rules;
+    let mut shutdown = self.shutdown.clone();
     Box::pin(async move {
-      // Borrow the inner listener for accept; close takes the option so a
-      // later accept observes shutdown instead of binding forever. The
-      // async mutex is held across the accept await by design.
-      let accepted = match self.listener.lock().await.as_ref() {
-        Some(listener) => listener.accept().await,
-        None => return Err(Error::shutting_down("transport listener")),
+      // The close signal cancels a pending kernel accept without any lock
+      // shared with this path: no close-vs-accept deadlock is possible.
+      let (tcp, _) = tokio::select! {
+        accepted = self.listener.accept() => {
+          accepted.map_err(|_| {
+            Error::provider(
+              crate::ProviderErrorKind::Io,
+              crate::ProviderErrorContext::TransportAccept,
+            )
+          })?
+        }
+        _ = shutdown.changed() => {
+          return Err(Error::shutting_down("transport listener"));
+        }
       };
-      let (tcp, _) = accepted.map_err(|_| {
-        Error::provider(
-          crate::ProviderErrorKind::Io,
-          crate::ProviderErrorContext::TransportAccept,
-        )
-      })?;
       super::connection::Connection::accept(tcp, config, rules, hint).await
     })
   }
 
   fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
     Box::pin(async move {
-      // Dropping the TCP listener releases the bound address immediately:
-      // close-then-rebind works (the previous no-op did not).
-      self.listener.lock().await.take();
+      // Signalling wakes the pending accept, which drops the listener and
+      // releases the bound address: close-then-rebind works (the previous
+      // no-op did not).
+      let _ = self.shutdown_tx.send(());
       Ok(())
     })
   }
@@ -481,7 +490,9 @@ impl Transport for CountingTransport {
   fn connect(
     &self, endpoint: Endpoint, client: std::sync::Arc<rustls::ClientConfig>,
   ) -> BoxFuture<'static, Result<super::connection::Connection>> {
-    self.connects.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    self
+      .connects
+      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     self.inner.connect(endpoint, client)
   }
 }
@@ -510,7 +521,10 @@ mod counting_tests {
 
     let dial_side = Arc::clone(&counting);
     let (client, accepted) = tokio::join!(
-      dial_side.connect(bound.clone(), super::super::tls::join_client_config().unwrap()),
+      dial_side.connect(
+        bound.clone(),
+        super::super::tls::join_client_config().unwrap()
+      ),
       listener.accept(None),
     );
     assert!(client.is_ok());

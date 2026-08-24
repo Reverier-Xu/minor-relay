@@ -23,6 +23,7 @@ Keep unit tests next to the code they validate in `#[cfg(test)]` modules. Add in
 - Do not add dependencies unless they remove meaningful complexity or provide required domain behavior.
 - Forbid `unsafe` code unless the user explicitly approves it and all safety invariants are documented.
 - Do not use `unwrap()` or `expect()` in production code. Return or propagate meaningful errors instead.
+- Use the standard tools for standard code operations: read files with the read tool, locate with grep/rg, and edit with the edit tool. Do not edit, generate, or patch code through python/shell one-off scripts — script-driven edits hide what changed and defeat review. Reserve python (or ad-hoc scripts) for complex behavior testing, numerical computation, and data analysis where they are genuinely the right tool.
 
 ## Formatting
 

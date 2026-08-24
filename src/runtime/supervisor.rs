@@ -493,8 +493,7 @@ impl Supervisor {
     let shutdown = self.shutdown_tx.subscribe();
     let connection_tasks = self.connection_tasks.clone();
     let accept_listener = std::sync::Arc::clone(&listener);
-    let insert_listener = std::sync::Arc::clone(&listener);
-    let abort = tasks.spawn(async move {
+    let insert_listener = std::sync::Arc::clone(&listener);    let abort = tasks.spawn(async move {
       loop {
         // The join hint is computed per accepted connection so the accept
         // path stays fast and never stalls on the credential issuer lock;
