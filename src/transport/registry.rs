@@ -448,12 +448,15 @@ mod tests {
 /// A transport wrapper that counts dial attempts at the registry boundary:
 /// the observation seam SC-G05-P0-22 requires (bounded configured attempts
 /// are visible to a caller without touching the session layer).
+#[cfg(test)]
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct CountingTransport {
   inner: Arc<dyn Transport>,
   connects: std::sync::atomic::AtomicUsize,
 }
 
+#[cfg(test)]
 impl CountingTransport {
   pub(crate) fn new(inner: Arc<dyn Transport>) -> Self {
     Self {
@@ -467,6 +470,7 @@ impl CountingTransport {
   }
 }
 
+#[cfg(test)]
 impl Transport for CountingTransport {
   fn bind<'a>(
     &'a self, endpoint: Endpoint,
