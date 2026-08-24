@@ -5,7 +5,7 @@ use crate::{
   EventSubscription, GetLocalNode, GetMember, GetNodeStatus, GetRoute, JoinCluster, Listen,
   NodeStatus, OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget, PageMembers,
   PageTopology, PageTrust, ProtocolTag, Query, Result, RotateJoinCredential, Shutdown,
-  StartRecovery, StopListener, TraceId, WaitForShutdown,
+  StartRecovery, StopListener, TraceId, UpdateNodeMetadata, WaitForShutdown,
   api::{BoxFuture, Entropy},
   extension_registry::ExtensionRegistry,
   runtime::RuntimeClient,
@@ -159,6 +159,14 @@ impl DispatchCommand for DisconnectPeer {
   }
 }
 
+impl DispatchCommand for UpdateNodeMetadata {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let (expected_revision, patch) = self.into_parts();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.update_node_metadata(expected_revision, patch).await })
+  }
+}
+
 impl DispatchQuery for GetRoute {
   fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
     let handle = self.handle().clone();
@@ -183,17 +191,30 @@ impl NodeHandle {
   /// until [`OutboundPacket::send_sync`] or [`OutboundPacket::send_async`]
   /// consumes the body.
   ///
-  /// The routing policy must resolve to the built-in direct policy, an
-  /// exact-node target rejects a load-balancer selection, and the protocol
-  /// tag must be registered in the node's [`ExtensionRegistry`].
+  /// An exact-node target rejects a load-balancer selection; a
+  /// matching-node target requires one whose tag resolves in the node's
+  /// [`ExtensionRegistry`] (T-G06-01). The routing policy must resolve to
+  /// the built-in direct policy, and the protocol tag must be registered.
   pub fn create_packet(
     &self, target: PacketTarget, protocol: ProtocolTag, policy: PacketPolicy,
     metadata: PacketMetadata,
   ) -> Result<OutboundPacket> {
-    let PacketTarget::Exact(_) = &target;
-    if policy.load_balancing_policy().is_some() {
-      return Err(Error::invalid_input("packet load balancer"));
-    }
+    let load_balancer = match (&target, policy.load_balancing_policy()) {
+      (PacketTarget::Exact(_), Some(_)) => {
+        return Err(Error::invalid_input("packet load balancer"));
+      }
+      (PacketTarget::Exact(_), None) => None,
+      (PacketTarget::MatchingNodes(_), None) => {
+        return Err(Error::invalid_input("packet load balancer"));
+      }
+      (PacketTarget::MatchingNodes(_), Some(tag)) => {
+        // Every referenced policy tag must resolve in the registry.
+        if !self.extensions.has_load_balancer(tag) {
+          return Err(Error::invalid_input("packet load balancer"));
+        }
+        Some(tag.clone())
+      }
+    };
     if !self.extensions.has_protocol(&protocol) {
       return Err(Error::unsupported("packet protocol"));
     }
@@ -201,6 +222,8 @@ impl NodeHandle {
     Ok(OutboundPacket::new(
       trace_id,
       target,
+      load_balancer,
+      policy.max_hops(),
       protocol,
       metadata,
       self.runtime.clone(),

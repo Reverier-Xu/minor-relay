@@ -61,6 +61,8 @@ pub struct ExtensionRegistry {
   protocols: std::sync::Mutex<BTreeMap<ProtocolTag, Arc<ProtocolRegistration>>>,
   transports: BTreeMap<TransportTag, Arc<dyn Transport>>,
   discoveries: BTreeMap<DiscoveryTag, Arc<dyn Discovery>>,
+  load_balancers:
+    std::sync::Mutex<BTreeMap<crate::QualifiedTag, Arc<dyn crate::LoadBalancingPolicy>>>,
 }
 
 impl ExtensionRegistry {
@@ -104,6 +106,49 @@ impl ExtensionRegistry {
   #[cfg(test)]
   pub(crate) fn discovery(&self, tag: &DiscoveryTag) -> Option<&Arc<dyn Discovery>> {
     self.discoveries.get(tag)
+  }
+
+  /// Registers one load-balancing policy under a canonical tag
+  /// (T-G06-01). A duplicate tag is a conflict; registration never
+  /// replaces an existing entry. Matching-node packet targets resolve
+  /// their `PacketPolicy` load-balancer tag here at send time.
+  pub fn register_load_balancer(
+    &mut self, tag: crate::QualifiedTag, value: Arc<dyn crate::LoadBalancingPolicy>,
+  ) -> Result<&mut Self> {
+    let conflict = {
+      let mut balancers = self
+        .load_balancers
+        .lock()
+        .map_err(|_| Error::internal("extension registry"))?;
+      use std::collections::btree_map::Entry;
+      match balancers.entry(tag) {
+        Entry::Occupied(_) => true,
+        Entry::Vacant(slot) => {
+          slot.insert(value);
+          false
+        }
+      }
+    };
+    if conflict {
+      return Err(Error::conflict("load balancer registration"));
+    }
+    Ok(self)
+  }
+
+  /// The registered load-balancing policy for one tag, when present.
+  pub(crate) fn load_balancer(
+    &self, tag: &crate::QualifiedTag,
+  ) -> Option<Arc<dyn crate::LoadBalancingPolicy>> {
+    self
+      .load_balancers
+      .lock()
+      .ok()
+      .and_then(|balancers| balancers.get(tag).cloned())
+  }
+
+  /// Whether the load-balancer tag is registered locally.
+  pub(crate) fn has_load_balancer(&self, tag: &crate::QualifiedTag) -> bool {
+    self.load_balancer(tag).is_some()
   }
 
   /// Registers one packet protocol and its consumer. A duplicate protocol

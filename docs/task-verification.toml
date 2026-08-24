@@ -489,14 +489,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G06-01"
 verification_id = "VERIFY-G06-01"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G06-01"
 owner_task = "T-G06-01"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g06-01-route-auth.sh"]
 timeout_seconds = 1800
 
 [[task]]

@@ -1,4 +1,4 @@
-use crate::{ClusterId, Endpoint, ErrorKind, NodeId, PublicKey, identity::ListenerId};
+use crate::{ClusterId, Endpoint, Error, ErrorKind, NodeId, PublicKey, identity::ListenerId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -164,6 +164,7 @@ pub struct MemberView {
   digest: crate::Digest,
   connectivity: ConnectivityStatus,
   endpoints: Vec<Endpoint>,
+  labels: crate::LabelSet,
 }
 
 impl MemberView {
@@ -191,9 +192,14 @@ impl MemberView {
     &self.endpoints
   }
 
+  /// The member's node-owned capability labels (SC-G06-P0-02).
+  pub fn labels(&self) -> &crate::LabelSet {
+    &self.labels
+  }
+
   pub(crate) fn new(
     node_id: NodeId, public_key: PublicKey, owner_revision: u64, digest: crate::Digest,
-    connectivity: ConnectivityStatus, endpoints: Vec<Endpoint>,
+    connectivity: ConnectivityStatus, endpoints: Vec<Endpoint>, labels: crate::LabelSet,
   ) -> Self {
     Self {
       node_id,
@@ -202,7 +208,78 @@ impl MemberView {
       digest,
       connectivity,
       endpoints,
+      labels,
     }
+  }
+}
+
+/// The caller-built patch behind the `UpdateNodeMetadata` command: the
+/// owning node's bounded edits to its own descriptor, applied at a strictly
+/// higher revision (ADR-0007 owner-only records).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NodeMetadataPatch {
+  add_endpoints: Vec<Endpoint>,
+  remove_endpoints: Vec<Endpoint>,
+  set_labels: Vec<(crate::LabelKey, crate::LabelValue)>,
+  remove_labels: Vec<crate::LabelKey>,
+}
+
+/// The validated edits carried by one [`NodeMetadataPatch`].
+pub(crate) type PatchParts = (
+  Vec<Endpoint>,
+  Vec<Endpoint>,
+  Vec<(crate::LabelKey, crate::LabelValue)>,
+  Vec<crate::LabelKey>,
+);
+
+impl NodeMetadataPatch {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Adds one endpoint candidate. Duplicates within one patch are
+  /// rejected.
+  pub fn add_endpoint(mut self, endpoint: Endpoint) -> crate::Result<Self> {
+    if self.add_endpoints.contains(&endpoint) {
+      return Err(Error::conflict("node metadata endpoint"));
+    }
+    self.add_endpoints.push(endpoint);
+    Ok(self)
+  }
+
+  /// Removes one endpoint candidate; removing an unknown endpoint fails.
+  /// Removals apply to the record as it exists after the additions.
+  pub fn remove_endpoint(mut self, endpoint: Endpoint) -> crate::Result<Self> {
+    self.remove_endpoints.push(endpoint);
+    Ok(self)
+  }
+
+  /// Sets one capability label. Setting the same key twice in one patch
+  /// is rejected.
+  pub fn set_capability(
+    mut self, key: crate::LabelKey, value: crate::LabelValue,
+  ) -> crate::Result<Self> {
+    if self.set_labels.iter().any(|(existing, _)| existing == &key) {
+      return Err(Error::conflict("node metadata label"));
+    }
+    self.set_labels.push((key, value));
+    Ok(self)
+  }
+
+  /// Removes one capability label; removing an unknown key fails at
+  /// apply time against the current record.
+  pub fn remove_capability(mut self, key: crate::LabelKey) -> crate::Result<Self> {
+    self.remove_labels.push(key);
+    Ok(self)
+  }
+
+  pub(crate) fn into_parts(self) -> PatchParts {
+    (
+      self.add_endpoints,
+      self.remove_endpoints,
+      self.set_labels,
+      self.remove_labels,
+    )
   }
 }
 

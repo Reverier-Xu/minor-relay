@@ -17,6 +17,7 @@ use super::{MAX_CHUNK_BYTES, PacketMetadata};
 use crate::{
   Error, NodeId, ProtocolTag, Result, TraceId,
   protocol::{CborLimits, decode_canonical, encode_canonical, offer::OFFER_CBOR_LIMITS},
+  routing::HopState,
 };
 
 /// Packet frames share the authentication phase's frame budget: one frame
@@ -61,6 +62,10 @@ pub(crate) struct OpenFrame {
   pub(crate) destination: NodeId,
   pub(crate) protocol: ProtocolTag,
   pub(crate) metadata: PacketMetadata,
+  /// The per-hop route envelope. `None` is the previous fixture shape: a
+  /// direct delivery where the authenticated source sent the frame
+  /// straight to this node (T-G06-01).
+  pub(crate) route: Option<HopState>,
 }
 
 /// A decoded packet-ack frame.
@@ -86,6 +91,21 @@ pub(crate) struct EndFrame {
   pub(crate) trace_id: TraceId,
 }
 
+/// The wire-carried per-hop route state of one routed open frame
+/// (canonical, bounded): the current upstream holder, the visited chain,
+/// and the remaining caller-selected hop budget. Identity fields (trace,
+/// source, destination) ride the frame itself and are not duplicated.
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct RouteWire {
+  #[n(0)]
+  current: String,
+  #[n(1)]
+  visited: Vec<String>,
+  #[n(2)]
+  remaining_hops: u32,
+}
+
 #[derive(Encode, Decode)]
 #[cbor(array)]
 struct OpenWire {
@@ -98,6 +118,25 @@ struct OpenWire {
   #[n(3)]
   protocol: String,
   /// Canonical metadata: key/value pairs sorted by key text, unique keys.
+  #[n(4)]
+  metadata: Vec<(String, ByteVec)>,
+  /// Present only on routed frames; direct frames end at `metadata`
+  /// (the previous fixture shape decodes without it).
+  #[n(5)]
+  route: Option<RouteWire>,
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct OpenWireV1 {
+  #[n(0)]
+  trace_id: String,
+  #[n(1)]
+  source: String,
+  #[n(2)]
+  destination: String,
+  #[n(3)]
+  protocol: String,
   #[n(4)]
   metadata: Vec<(String, ByteVec)>,
 }
@@ -138,6 +177,11 @@ pub(crate) fn encode_open(frame: &OpenFrame) -> Result<Vec<u8>> {
     .entries()
     .map(|(key, value)| (key.as_str().to_owned(), ByteVec::from(value.to_vec())))
     .collect();
+  let route = frame.route.as_ref().map(|route| RouteWire {
+    current: route.current.to_string(),
+    visited: route.visited.iter().map(NodeId::to_string).collect(),
+    remaining_hops: route.remaining_hops,
+  });
   encode_canonical(
     &OpenWire {
       trace_id: frame.trace_id.to_string(),
@@ -145,15 +189,39 @@ pub(crate) fn encode_open(frame: &OpenFrame) -> Result<Vec<u8>> {
       destination: frame.destination.to_string(),
       protocol: frame.protocol.to_string(),
       metadata,
+      route,
     },
     PACKET_CBOR_LIMITS,
   )
 }
 
 /// Decodes one packet-open frame body, enforcing canonical encoding,
-/// canonical metadata ordering, and the bounded metadata map.
+/// canonical metadata ordering, the bounded metadata map, and — for routed
+/// frames — a duplicate-free visited chain.
 pub(crate) fn decode_open(body: &[u8]) -> Result<OpenFrame> {
-  let wire: OpenWire = decode_checked(body)?;
+  // The current frame shape carries the optional route element.
+  if let Ok(wire) = decode_canonical::<OpenWire>(body, PACKET_CBOR_LIMITS)
+    && encode_canonical(&wire, PACKET_CBOR_LIMITS).is_ok_and(|encoded| encoded == body)
+  {
+    return open_from_wire(wire);
+  }
+  // The previous fixture shape ends at the metadata element.
+  let wire: OpenWireV1 = decode_canonical(body, PACKET_CBOR_LIMITS)
+    .map_err(|_| Error::invalid_input("packet open decode"))?;
+  if !encode_canonical(&wire, PACKET_CBOR_LIMITS).is_ok_and(|encoded| encoded == body) {
+    return Err(Error::invalid_input("packet open canonical"));
+  }
+  open_from_wire(OpenWire {
+    trace_id: wire.trace_id,
+    source: wire.source,
+    destination: wire.destination,
+    protocol: wire.protocol,
+    metadata: wire.metadata,
+    route: None,
+  })
+}
+
+fn open_from_wire(wire: OpenWire) -> Result<OpenFrame> {
   if !wire.metadata.windows(2).all(|pair| pair[0].0 < pair[1].0) {
     return Err(Error::invalid_input("packet metadata order"));
   }
@@ -161,12 +229,35 @@ pub(crate) fn decode_open(body: &[u8]) -> Result<OpenFrame> {
   for (key, value) in wire.metadata {
     metadata = metadata.insert(key.parse()?, Arc::from(value.as_slice()))?;
   }
+  let route = match wire.route {
+    Some(route) => {
+      let current = route.current.parse()?;
+      let mut visited: Vec<NodeId> = Vec::with_capacity(route.visited.len());
+      for node in route.visited {
+        visited.push(node.parse()?);
+      }
+      // A duplicate-free chain fails closed at the wire boundary.
+      let mut seen: std::collections::BTreeSet<NodeId> = std::collections::BTreeSet::new();
+      for node in &visited {
+        if !seen.insert(node.clone()) {
+          return Err(Error::invalid_input("packet route chain"));
+        }
+      }
+      Some(HopState {
+        current,
+        visited,
+        remaining_hops: route.remaining_hops,
+      })
+    }
+    None => None,
+  };
   Ok(OpenFrame {
     trace_id: wire.trace_id.parse()?,
     source: wire.source.parse()?,
     destination: wire.destination.parse()?,
     protocol: wire.protocol.parse()?,
     metadata,
+    route,
   })
 }
 
@@ -295,6 +386,7 @@ mod tests {
       destination,
       protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test-packets").unwrap(),
       metadata,
+      route: None,
     }
   }
 
@@ -329,6 +421,7 @@ mod tests {
           ByteVec::from(b"2".to_vec()),
         ),
       ],
+      route: None,
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
     let error = decode_open(&body).unwrap_err();
@@ -430,6 +523,7 @@ mod tests {
       destination: "node_000000000000000000002".to_owned(),
       protocol: "relay.woooo.tech/features/not-a-protocol".to_owned(),
       metadata: Vec::new(),
+      route: None,
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
     let error = decode_open(&body).unwrap_err();
@@ -447,5 +541,126 @@ mod tests {
     };
     let body = encode_chunk(&chunk).unwrap();
     assert!(decode_end(&body).is_err());
+  }
+}
+
+#[cfg(test)]
+mod route_tests {
+  use std::sync::Arc;
+
+  use minicbor::bytes::ByteVec;
+
+  use super::{OpenFrame, OpenWireV1, RouteWire, decode_open, encode_open};
+  use crate::{
+    NodeId, PacketMetadata, ProtocolTag, TraceId,
+    protocol::{encode_canonical, offer::OFFER_CBOR_LIMITS},
+    routing::HopState,
+  };
+
+  fn ids() -> (TraceId, NodeId, NodeId, NodeId) {
+    (
+      TraceId::parse("trace_000000000000000000001").unwrap(),
+      NodeId::parse("node_000000000000000000001").unwrap(),
+      NodeId::parse("node_000000000000000000002").unwrap(),
+      NodeId::parse("node_000000000000000000003").unwrap(),
+    )
+  }
+
+  /// The current routed-frame shape round-trips canonically with its
+  /// per-hop state.
+  #[test]
+  fn routed_open_frame_round_trips_canonically() {
+    let (trace_id, source, destination, holder) = ids();
+    let frame = OpenFrame {
+      trace_id,
+      source: source.clone(),
+      destination: destination.clone(),
+      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test-packets").unwrap(),
+      metadata: PacketMetadata::new(),
+      route: Some(HopState {
+        current: holder.clone(),
+        visited: vec![source],
+        remaining_hops: 3,
+      }),
+    };
+    let body = encode_open(&frame).unwrap();
+    let decoded = decode_open(&body).unwrap();
+    assert_eq!(decoded.destination, destination);
+    // Canonical: re-encoding reproduces the exact bytes.
+    assert_eq!(encode_open(&decoded).unwrap(), body);
+    let route = decoded.route.unwrap();
+    assert_eq!(route.current, holder);
+    assert_eq!(
+      route.visited,
+      vec![NodeId::parse("node_000000000000000000001").unwrap()]
+    );
+    assert_eq!(route.remaining_hops, 3);
+  }
+
+  /// The previous fixture shape (no route element) decodes with `None`
+  /// route state — direct delivery stays wire-compatible.
+  #[test]
+  fn direct_open_frame_decodes_without_route_state() {
+    let (trace_id, source, destination, _) = ids();
+    let wire = OpenWireV1 {
+      trace_id: trace_id.to_string(),
+      source: source.to_string(),
+      destination: destination.to_string(),
+      protocol: "relay.woooo.tech/protocols/test-packets".to_owned(),
+      metadata: Vec::new(),
+    };
+    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let decoded = decode_open(&body).unwrap();
+    assert!(decoded.route.is_none());
+    assert_eq!(decoded.source, source);
+    assert_eq!(decoded.destination, destination);
+  }
+
+  /// A duplicate-free chain is enforced at the wire boundary; reordered
+  /// (non-canonical) label maps and padded frames fail closed.
+  #[test]
+  fn routed_open_frame_rejects_duplicate_chain_entries() {
+    let (trace_id, source, destination, _) = ids();
+    let wire = super::OpenWire {
+      trace_id: trace_id.to_string(),
+      source: source.to_string(),
+      destination: destination.to_string(),
+      protocol: "relay.woooo.tech/protocols/test-packets".to_owned(),
+      metadata: Vec::new(),
+      route: Some(RouteWire {
+        current: "node_000000000000000000009".to_owned(),
+        visited: vec![
+          "node_000000000000000000005".to_owned(),
+          "node_000000000000000000005".to_owned(),
+        ],
+        remaining_hops: 2,
+      }),
+    };
+    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    assert!(decode_open(&body).is_err());
+
+    // Truncation and padding stay rejected on routed frames too.
+    let frame = OpenFrame {
+      trace_id,
+      source,
+      destination,
+      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test-packets").unwrap(),
+      metadata: PacketMetadata::new()
+        .insert(
+          "relay.woooo.tech/labels/alpha".parse().unwrap(),
+          Arc::from(&b"v"[..]),
+        )
+        .unwrap(),
+      route: Some(HopState {
+        current: NodeId::parse("node_000000000000000000009").unwrap(),
+        visited: Vec::new(),
+        remaining_hops: 1,
+      }),
+    };
+    let body = encode_open(&frame).unwrap();
+    let mut truncated = body.clone();
+    truncated.pop();
+    assert!(decode_open(&truncated).is_err());
+    let _ = ByteVec::from(Vec::<u8>::new());
   }
 }

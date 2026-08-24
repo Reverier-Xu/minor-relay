@@ -3,7 +3,7 @@ use std::{fmt, str::FromStr};
 use crate::{Error, Result};
 
 const MIN_TAG_LEN: usize = 5;
-const MAX_TAG_LEN: usize = 128;
+pub(crate) const MAX_TAG_LEN: usize = 128;
 const MAX_COMPONENT_LEN: usize = 63;
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]

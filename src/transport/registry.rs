@@ -481,9 +481,7 @@ impl CountingTransport {
 
 #[cfg(test)]
 impl Transport for CountingTransport {
-  fn bind<'a>(
-    &'a self, endpoint: Endpoint,
-  ) -> BoxFuture<'static, Result<Box<dyn TransportListener>>> {
+  fn bind(&self, endpoint: Endpoint) -> BoxFuture<'static, Result<Box<dyn TransportListener>>> {
     self.inner.bind(endpoint)
   }
 

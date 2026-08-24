@@ -336,6 +336,34 @@ impl Command for DisconnectPeer {
   type Output = ();
 }
 
+/// Updates the local node's own descriptor (owner-only node metadata,
+/// ADR-0007): endpoint candidates and capability labels are applied at a
+/// strictly higher revision than `expected_revision`, and the updated
+/// member view is returned. Same-revision or stale expectations conflict.
+pub struct UpdateNodeMetadata {
+  expected_revision: u64,
+  patch: crate::NodeMetadataPatch,
+}
+
+impl UpdateNodeMetadata {
+  pub fn new(expected_revision: u64, patch: crate::NodeMetadataPatch) -> Self {
+    Self {
+      expected_revision,
+      patch,
+    }
+  }
+
+  pub(crate) fn into_parts(self) -> (u64, crate::NodeMetadataPatch) {
+    (self.expected_revision, self.patch)
+  }
+}
+
+impl private::Sealed for UpdateNodeMetadata {}
+
+impl Command for UpdateNodeMetadata {
+  type Output = crate::MemberView;
+}
+
 /// Queries the in-memory route status of one packet route handle
 /// (ADR-0007: bounded trace metadata only, no durability claim).
 pub struct GetRoute {

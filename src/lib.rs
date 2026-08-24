@@ -32,12 +32,14 @@ mod error;
 mod extension_registry;
 mod hex;
 mod identity;
+mod label;
 mod membership;
 mod node;
 mod operation;
 mod packet;
 mod protocol;
 mod provider;
+mod routing;
 mod runtime;
 mod session;
 mod storage;
@@ -55,11 +57,12 @@ pub use identity::{
   ClusterId, Digest, IssuedJoinCredential, JoinCredential, ListenerId, NodeId, OperationId,
   PublicKey, SessionId, Signature, TraceId, TransactionId,
 };
+pub use label::{LabelKey, LabelSet, LabelValue};
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{
   Command, ConnectMember, CreateCluster, DisconnectPeer, Event, GetLocalNode, GetMember,
   GetNodeStatus, GetRoute, JoinCluster, Listen, PageMembers, PageTopology, PageTrust, Query,
-  RotateJoinCredential, Shutdown, StartRecovery, StopListener, WaitForShutdown,
+  RotateJoinCredential, Shutdown, StartRecovery, StopListener, UpdateNodeMetadata, WaitForShutdown,
 };
 pub use packet::{
   DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,
@@ -74,13 +77,14 @@ pub use provider::{
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
   StoreTransaction, StoreValue,
 };
+pub use routing::{CandidateNodeReader, LoadBalancingPolicy, RouteContext, Selector};
 pub use transport::{
   ChannelBinding, Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor,
 };
 pub use view::{
   AdmissionView, ClusterView, ConnectivityStatus, ListenerView, LocalNodeView, MemberPage,
-  MemberView, NodeStatus, PageSpec, RecoveryView, ShutdownOutcome, ShutdownReason,
-  TopologyEdgeView, TopologyPage, TrustPage, TrustStatus, TrustedIdentityView,
+  MemberView, NodeMetadataPatch, NodeStatus, PageSpec, RecoveryView, ShutdownOutcome,
+  ShutdownReason, TopologyEdgeView, TopologyPage, TrustPage, TrustStatus, TrustedIdentityView,
 };
 
 pub mod extension {

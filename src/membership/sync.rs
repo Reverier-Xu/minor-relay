@@ -498,7 +498,9 @@ async fn send_payload(
   let (ack_notify, _ack) = tokio::sync::oneshot::channel();
   let request = crate::packet::OutboundRequest {
     trace_id,
-    destination: peer.clone(),
+    target: crate::PacketTarget::Exact(peer.clone()),
+    load_balancer: None,
+    max_hops: 1,
     protocol: protocol.clone(),
     metadata: crate::packet::PacketMetadata::new(),
     body,

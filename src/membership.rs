@@ -11,18 +11,23 @@
 
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
-use crate::{Endpoint, NodeId, PublicKey, Result, protocol::encode_canonical};
+use crate::{Endpoint, LabelSet, NodeId, PublicKey, Result, protocol::encode_canonical};
 
 /// The durable schema, namespace, and key of one node descriptor record.
 pub(crate) const NODE_DESCRIPTOR_SCHEMA: &str = "relay.woooo.tech/schemas/node-descriptor-v1";
 pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "relay.woooo.tech/metadata/node-descriptor-v1";
 
 /// One owner-marked node descriptor.
+///
+/// The record carries the owning node's capability labels from G6 onward
+/// (record version 2); version 1 records without labels remain decodable
+/// as the previous fixture shape and always decode to an empty label set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NodeDescriptorV1 {
   node: NodeId,
   public_key: PublicKey,
   endpoints: Vec<Endpoint>,
+  labels: LabelSet,
   revision: u64,
   removed: bool,
   version: u16,
@@ -47,6 +52,11 @@ struct DescriptorWire {
   removed: bool,
   #[n(7)]
   version: u16,
+  /// Canonical capability labels: key/value pairs sorted by key text,
+  /// unique keys. Present from record version 2 on; version 1 records
+  /// end at `version` and always decode to an empty label set.
+  #[n(8)]
+  labels: Vec<(String, String)>,
 }
 
 impl NodeDescriptorV1 {
@@ -58,10 +68,18 @@ impl NodeDescriptorV1 {
       node,
       public_key,
       endpoints,
+      labels: LabelSet::new(),
       revision,
       removed,
       version,
     }
+  }
+
+  /// Replaces this descriptor's capability labels (the owner-only label
+  /// mutation path behind `UpdateNodeMetadata`).
+  pub(crate) fn with_labels(mut self, labels: LabelSet) -> Self {
+    self.labels = labels;
+    self
   }
 
   pub(crate) const fn node(&self) -> &NodeId {
@@ -80,6 +98,10 @@ impl NodeDescriptorV1 {
     &self.endpoints
   }
 
+  pub(crate) const fn labels(&self) -> &LabelSet {
+    &self.labels
+  }
+
   pub(crate) const fn removed(&self) -> bool {
     self.removed
   }
@@ -91,7 +113,9 @@ impl NodeDescriptorV1 {
   fn wire(&self) -> DescriptorWire {
     DescriptorWire {
       schema: NODE_DESCRIPTOR_SCHEMA.to_owned(),
-      record_version: 1,
+      // Version 2 records carry capability labels; the decoder still
+      // accepts version 1 (the previous fixture shape, no labels).
+      record_version: 2,
       node: self.node.as_str().to_owned(),
       public_key: ByteVec::from(self.public_key.as_bytes().to_vec()),
       endpoints: self
@@ -99,11 +123,39 @@ impl NodeDescriptorV1 {
         .iter()
         .map(|endpoint| endpoint.as_str().to_owned())
         .collect(),
+      labels: self
+        .labels
+        .entries()
+        .map(|(key, value)| (key.as_str().to_owned(), value.as_str().to_owned()))
+        .collect(),
       revision: self.revision,
       removed: self.removed,
       version: self.version,
     }
   }
+}
+
+/// The previous-fixture wire shape (record version 1): identical to the
+/// current shape minus the capability-label map.
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct DescriptorWireV1 {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  record_version: u16,
+  #[n(2)]
+  node: String,
+  #[n(3)]
+  public_key: ByteVec,
+  #[n(4)]
+  endpoints: Vec<String>,
+  #[n(5)]
+  revision: u64,
+  #[n(6)]
+  removed: bool,
+  #[n(7)]
+  version: u16,
 }
 
 /// The digest of one descriptor's canonical encoding, for public views.

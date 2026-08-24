@@ -49,13 +49,17 @@ pub(crate) const METADATA_MAX_BYTES: usize = 32 * 1_024;
 /// public limit; core chunks large caller writes stay constant-memory.
 pub(crate) const MAX_CHUNK_BYTES: usize = 32 * 1_024;
 
-/// A packet destination. Only exact-node delivery exists at this gate;
-/// selector targets arrive with label routing (G6/G9).
+/// A packet destination: an exact authenticated node, or one node selected
+/// by the registered load balancer from the members whose owned labels
+/// match the selector (T-G06-01).
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PacketTarget {
   /// Delivers to exactly this authenticated node.
   Exact(NodeId),
+  /// Delivers to the single node a registered load-balancing policy
+  /// selects among the label-matching members.
+  MatchingNodes(crate::Selector),
 }
 
 /// The caller-selected routing policy for one packet.
@@ -182,6 +186,8 @@ impl PacketBody for StaticBody {
 pub struct OutboundPacket {
   trace_id: TraceId,
   target: PacketTarget,
+  load_balancer: Option<QualifiedTag>,
+  max_hops: u32,
   protocol: ProtocolTag,
   metadata: PacketMetadata,
   runtime: RuntimeClient,
@@ -189,12 +195,14 @@ pub struct OutboundPacket {
 
 impl OutboundPacket {
   pub(crate) fn new(
-    trace_id: TraceId, target: PacketTarget, protocol: ProtocolTag, metadata: PacketMetadata,
-    runtime: RuntimeClient,
+    trace_id: TraceId, target: PacketTarget, load_balancer: Option<QualifiedTag>, max_hops: u32,
+    protocol: ProtocolTag, metadata: PacketMetadata, runtime: RuntimeClient,
   ) -> Self {
     Self {
       trace_id,
       target,
+      load_balancer,
+      max_hops,
       protocol,
       metadata,
       runtime,
@@ -213,11 +221,15 @@ impl OutboundPacket {
   /// stream, never durable retention, processing, or success.
   pub fn send_sync(self, body: Box<dyn PacketBody>) -> BoxFuture<'static, Result<DeliveryAck>> {
     let trace_id = self.trace_id.clone();
-    let (destination, request, outcome) = self.into_request(body);
+    let (request, outcome) = self.into_request(body);
     Box::pin(async move {
       request.runtime.send_packet(request.inner).await?;
       match outcome.await {
-        Ok(Ok(admitted_at)) => Ok(DeliveryAck::new(trace_id, destination, admitted_at)),
+        Ok(Ok(admission)) => Ok(DeliveryAck::new(
+          trace_id,
+          admission.by,
+          admission.admitted_at,
+        )),
         Ok(Err(kind)) => Err(ack_error(kind)),
         Err(_) => Err(Error::stream_interrupted("packet stream")),
       }
@@ -231,26 +243,24 @@ impl OutboundPacket {
     let handle = RouteHandle {
       trace_id: self.trace_id.clone(),
     };
-    let (_, request, _) = self.into_request(body);
+    let (request, _) = self.into_request(body);
     request.runtime.try_send_packet(request.inner)?;
     Ok(handle)
   }
 
-  fn into_request(
-    self, body: Box<dyn PacketBody>,
-  ) -> (NodeId, SendRequest, oneshot::Receiver<AckOutcome>) {
-    let PacketTarget::Exact(destination) = self.target;
+  fn into_request(self, body: Box<dyn PacketBody>) -> (SendRequest, oneshot::Receiver<AckOutcome>) {
     let (notify, outcome) = oneshot::channel();
     let inner = OutboundRequest {
       trace_id: self.trace_id,
-      destination: destination.clone(),
+      target: self.target,
+      load_balancer: self.load_balancer,
+      max_hops: self.max_hops,
       protocol: self.protocol,
       metadata: self.metadata,
       body,
       ack_notify: notify,
     };
     (
-      destination,
       SendRequest {
         inner,
         runtime: self.runtime,
@@ -361,6 +371,8 @@ impl IncomingPacket {
     Ok(OutboundPacket::new(
       self.trace_id.clone(),
       PacketTarget::Exact(self.source.clone()),
+      None,
+      1,
       protocol,
       metadata,
       self.reply.runtime.clone(),
@@ -475,14 +487,23 @@ impl RouteStatusView {
   }
 }
 
-/// The admission outcome delivered to a synchronous sender: the
-/// destination's admission wall-clock time, or the typed rejection kind.
-pub(crate) type AckOutcome = Result<SystemTime, ErrorKind>;
+/// The destination's current-process admission outcome delivered to a
+/// synchronous sender: the admitting node and its admission wall-clock
+/// time, or the typed rejection kind.
+pub(crate) struct Admission {
+  pub(crate) by: NodeId,
+  pub(crate) admitted_at: SystemTime,
+}
+
+/// The admission outcome delivered to a synchronous sender.
+pub(crate) type AckOutcome = Result<Admission, ErrorKind>;
 
 /// One outbound send request flowing from the facade to the supervisor.
 pub(crate) struct OutboundRequest {
   pub(crate) trace_id: TraceId,
-  pub(crate) destination: NodeId,
+  pub(crate) target: PacketTarget,
+  pub(crate) load_balancer: Option<QualifiedTag>,
+  pub(crate) max_hops: u32,
   pub(crate) protocol: ProtocolTag,
   pub(crate) metadata: PacketMetadata,
   pub(crate) body: Box<dyn PacketBody>,
@@ -553,6 +574,18 @@ impl RouteRecord {
     Self {
       trace_id,
       selected_node: Some(selected_node),
+      state: RouteState::Routing,
+      bytes_forwarded: 0,
+      updated_at: SystemTime::now(),
+    }
+  }
+
+  /// A route record for a delivery that failed before any destination was
+  /// selected (bounded terminal trace metadata only).
+  pub(crate) fn failing(trace_id: TraceId) -> Self {
+    Self {
+      trace_id,
+      selected_node: None,
       state: RouteState::Routing,
       bytes_forwarded: 0,
       updated_at: SystemTime::now(),

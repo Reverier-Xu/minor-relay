@@ -31,7 +31,7 @@ use minicbor::{Decode, Encode};
 
 use super::{NodeDescriptorV1, store};
 use crate::{
-  Error, NodeId, Result,
+  Error, LabelKey, LabelSet, LabelValue, NodeId, Result,
   protocol::{decode_canonical, encode_canonical},
 };
 
@@ -124,6 +124,10 @@ impl MembershipPage {
       descriptor.removed.hash(&mut hasher);
       for endpoint in &descriptor.endpoints {
         endpoint.as_str().hash(&mut hasher);
+      }
+      for (key, value) in descriptor.labels.entries() {
+        key.as_str().hash(&mut hasher);
+        value.as_str().hash(&mut hasher);
       }
     }
     hasher.finish()
@@ -232,38 +236,121 @@ pub(crate) mod sync {
 /// The single canonical descriptor decoder: wire rules and error strings
 /// live in exactly one place. Entries are trusted through the session
 /// that delivered them, so decoding checks only schema, version, and
-/// canonical wire rules (ADR-0008).
+/// canonical wire rules (ADR-0008). Both record shapes are accepted: the
+/// current version 2 (capability labels) and the previous version 1
+/// fixture shape (no labels, empty label set).
 pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
-  let wire: super::DescriptorWire =
+  // The current record shape (version 2) carries capability labels.
+  if let Ok(wire) =
+    decode_canonical::<super::DescriptorWire>(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
+    && encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
+      .is_ok_and(|encoded| encoded == bytes)
+  {
+    return decode_wire(
+      wire.schema,
+      wire.record_version,
+      wire.version,
+      DescriptorFields {
+        node: &wire.node,
+        public_key: &wire.public_key,
+        endpoints: &wire.endpoints,
+        revision: wire.revision,
+        removed: wire.removed,
+        labels: Some(&wire.labels),
+      },
+    );
+  }
+  // The previous fixture shape (record version 1) ends at the `version`
+  // element; a strict version 2 decode fails on the missing labels and
+  // the record falls back to this shape.
+  let wire: super::DescriptorWireV1 =
     decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
       .map_err(|_| Error::invalid_input("node descriptor decode"))?;
-  if wire.schema != super::NODE_DESCRIPTOR_SCHEMA || wire.record_version != 1 {
+  if !encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
+    .is_ok_and(|encoded| encoded == bytes)
+  {
+    return Err(Error::invalid_input("node descriptor canonical"));
+  }
+  decode_wire(
+    wire.schema,
+    wire.record_version,
+    wire.version,
+    DescriptorFields {
+      node: &wire.node,
+      public_key: &wire.public_key,
+      endpoints: &wire.endpoints,
+      revision: wire.revision,
+      removed: wire.removed,
+      labels: None,
+    },
+  )
+}
+
+/// The version-independent decoded fields of one descriptor record.
+struct DescriptorFields<'a> {
+  node: &'a str,
+  public_key: &'a minicbor::bytes::ByteVec,
+  endpoints: &'a [String],
+  revision: u64,
+  removed: bool,
+  /// `Some` for record versions that carry capability labels.
+  labels: Option<&'a [(String, String)]>,
+}
+
+fn decode_wire(
+  schema: String, record_version: u16, version: u16, fields: DescriptorFields<'_>,
+) -> Result<NodeDescriptorV1> {
+  if schema != super::NODE_DESCRIPTOR_SCHEMA || !(record_version == 1 || record_version == 2) {
     return Err(Error::invalid_input("node descriptor schema"));
   }
-  // Only version 1 is known; an unknown version fails closed
-  // (SC-G05-P0-05).
-  if wire.version != 1 {
+  // Version 1 records carry no labels element; version 2 records must
+  // carry it. Unknown wire or record versions fail closed (SC-G05-P0-05,
+  // extended by T-G06-01 with the labels element).
+  if version != 1 {
     return Err(Error::invalid_input("node descriptor version"));
   }
-  let node = NodeId::parse(&wire.node).map_err(|_| Error::invalid_input("node descriptor node"))?;
+  if (record_version == 2) != fields.labels.is_some() {
+    return Err(Error::invalid_input("node descriptor version"));
+  }
+  let node =
+    NodeId::parse(fields.node).map_err(|_| Error::invalid_input("node descriptor node"))?;
   let public_key = crate::PublicKey::from_bytes(
-    <[u8; 32]>::try_from(wire.public_key.as_ref())
+    <[u8; 32]>::try_from(fields.public_key.as_ref())
       .map_err(|_| Error::invalid_input("node descriptor key"))?,
   );
-  let mut endpoints = Vec::with_capacity(wire.endpoints.len());
-  for text in &wire.endpoints {
+  let mut endpoints = Vec::with_capacity(fields.endpoints.len());
+  for text in fields.endpoints {
     endpoints.push(
       crate::Endpoint::parse(text).map_err(|_| Error::invalid_input("node descriptor endpoint"))?,
     );
   }
-  Ok(NodeDescriptorV1::new(
-    node,
-    public_key,
-    endpoints,
-    wire.revision,
-    wire.removed,
-    wire.version,
-  ))
+  let mut labels = LabelSet::new();
+  let mut previous_key: Option<&str> = None;
+  for (key_text, value_text) in fields.labels.unwrap_or(&[]) {
+    // Strictly ascending canonical keys fail closed on reordered or
+    // duplicate entries; values are validated bounded opaque text
+    // (SC-G06-P0-02 node-owned labels).
+    if previous_key.is_some_and(|previous| previous >= key_text.as_str()) {
+      return Err(Error::invalid_input("node descriptor label order"));
+    }
+    previous_key = Some(key_text);
+    labels = labels.insert(
+      LabelKey::parse(key_text).map_err(|_| Error::invalid_input("node descriptor label"))?,
+      LabelValue::parse(value_text)
+        .map_err(|_| Error::invalid_input("node descriptor label value"))?,
+    )?;
+  }
+  Ok(
+    NodeDescriptorV1::new(
+      node,
+      public_key,
+      endpoints,
+      fields.revision,
+      fields.removed,
+      version,
+    )
+    .with_labels(labels),
+  )
 }
 
 #[cfg(test)]
@@ -371,5 +458,107 @@ mod tests {
     assert!(page.cursor_loops(Some(&[1])));
     assert!(!page.cursor_loops(Some(&[2])));
     assert!(!page.cursor_loops(None));
+  }
+}
+
+#[cfg(test)]
+mod label_fixture_tests {
+  use super::{
+    super::{NODE_DESCRIPTOR_SCHEMA, NodeDescriptorV1},
+    decode_descriptor,
+  };
+  use crate::{
+    Endpoint, LabelKey, LabelSet, LabelValue, NodeId,
+    membership::DescriptorWire,
+    protocol::{decode_canonical, encode_canonical, offer::OFFER_CBOR_LIMITS},
+  };
+
+  fn node(value: u8) -> NodeId {
+    NodeId::parse(&format!("node_{value:021}")).unwrap()
+  }
+
+  fn key(name: &str) -> LabelKey {
+    LabelKey::parse(&format!("relay.woooo.tech/labels/{name}")).unwrap()
+  }
+
+  fn base(node_index: u8) -> NodeDescriptorV1 {
+    use crate::identity::testing::scripted_signing;
+    let signing = scripted_signing(u64::from(node_index));
+    NodeDescriptorV1::new(
+      node(node_index),
+      crate::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+      vec![Endpoint::parse("wss://edge:9000").unwrap()],
+      1,
+      false,
+      1,
+    )
+  }
+
+  /// Current fixtures: a version 2 descriptor round-trips its capability
+  /// labels canonically.
+  #[test]
+  fn version_two_descriptor_round_trips_labels() {
+    let descriptor = base(1).with_labels(
+      LabelSet::new()
+        .insert(key("zone"), LabelValue::parse("edge").unwrap())
+        .unwrap()
+        .insert(key("gpu"), LabelValue::parse("yes").unwrap())
+        .unwrap(),
+    );
+    let bytes = descriptor.encode().unwrap();
+    let decoded = decode_descriptor(&bytes).unwrap();
+    assert_eq!(decoded.labels(), descriptor.labels());
+    assert_eq!(decoded.labels().entries().count(), 2);
+    // Canonical bytes are stable across re-encoding.
+    assert_eq!(decoded.encode().unwrap(), bytes);
+  }
+
+  /// Previous fixtures: a version 1 record (no labels element) decodes to
+  /// an empty label set and re-encodes as version 2.
+  #[test]
+  fn version_one_descriptor_decodes_with_empty_labels() {
+    let previous = base(2);
+    // Hand-encode the previous wire shape (record_version 1).
+    let wire = super::super::DescriptorWireV1 {
+      schema: NODE_DESCRIPTOR_SCHEMA.to_owned(),
+      record_version: 1,
+      node: previous.node().to_string(),
+      public_key: minicbor::bytes::ByteVec::from(previous.public_key().as_bytes().to_vec()),
+      endpoints: previous
+        .endpoints()
+        .iter()
+        .map(|endpoint| endpoint.as_str().to_owned())
+        .collect(),
+      revision: previous.revision(),
+      removed: previous.removed(),
+      version: 1,
+    };
+    let bytes = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let decoded = decode_descriptor(&bytes).unwrap();
+    assert_eq!(decoded.labels().entries().count(), 0);
+    assert_eq!(decoded.node(), previous.node());
+    assert_eq!(decoded.revision(), previous.revision());
+  }
+
+  /// Reordered or duplicate capability labels fail closed instead of
+  /// silently normalizing, keeping descriptor digests deterministic.
+  #[test]
+  fn noncanonical_label_order_fails_closed() {
+    let descriptor = base(3).with_labels(
+      LabelSet::new()
+        .insert(key("alpha"), LabelValue::parse("1").unwrap())
+        .unwrap()
+        .insert(key("zeta"), LabelValue::parse("2").unwrap())
+        .unwrap(),
+    );
+    let good = decode_descriptor(&descriptor.encode().unwrap()).unwrap();
+
+    // Swap the two entries on the wire.
+    let mut tampered: DescriptorWire =
+      decode_canonical(&descriptor.encode().unwrap(), OFFER_CBOR_LIMITS).unwrap();
+    tampered.labels.reverse();
+    let bytes = encode_canonical(&tampered, OFFER_CBOR_LIMITS).unwrap();
+    assert!(decode_descriptor(&bytes).is_err());
+    let _ = good;
   }
 }

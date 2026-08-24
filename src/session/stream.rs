@@ -36,7 +36,7 @@ use crate::{
   extension_registry::ExtensionRegistry,
   packet::{
     AckOutcome, ChannelBody, IncomingPacket, MAX_CHUNK_BYTES, OutboundRequest, PacketReplyContext,
-    RouteRecord, RouteState, StreamItem,
+    PacketTarget, RouteRecord, RouteState, StreamItem,
     wire::{self, AckFrame, AckStatus, ChunkFrame, EndFrame, OpenFrame},
   },
   protocol::wire::PacketKind,
@@ -628,7 +628,7 @@ async fn read_loop(
         }
       },
       PacketKind::Ack => match wire::decode_ack(&message.body) {
-        Ok(ack) => resolve_ack(ack, pending_acks),
+        Ok(ack) => resolve_ack(ack, pending_acks, session.peer()),
         Err(_) => {
           warn!("malformed packet ack frame");
           break;
@@ -641,6 +641,13 @@ async fn read_loop(
 /// Validates one open frame against the authenticated session and the
 /// local registry, admits it into the bounded incoming stream table, and
 /// acknowledges current-process admission (or the typed rejection).
+///
+/// Routed frames (T-G06-01) carry a route envelope that is re-validated
+/// against the session-authenticated peer before admission; any mutation,
+/// loop, or exhausted budget fails closed before a consumer runs. Until
+/// the T-G06-03 forwarder consumes the forwarding arm, frames addressed to
+/// another node are rejected as unsupported — fail-closed, with no
+/// consumer invocation and only bounded metadata recorded.
 async fn admit_open(
   open: OpenFrame, session: &EstablishedSession, context: &SessionPacketContext,
   frames: &BoundedSender, incoming: &mut HashMap<TraceId, (mpsc::Sender<StreamItem>, u64)>,
@@ -648,12 +655,40 @@ async fn admit_open(
 ) -> Result<()> {
   let trace_id = open.trace_id.clone();
   let ack_protocol = open.protocol.clone();
-  let status = if open.source != *session.peer() || open.destination != *context.local() {
-    // Endpoints must match the session-authenticated identities exactly.
-    AckStatus::Unsupported
-  } else if incoming.contains_key(&open.trace_id) {
-    AckStatus::Unsupported
-  } else {
+  let local = context.local().clone();
+  let status = 'status: {
+    // A routed frame re-validates its envelope against the
+    // session-authenticated holder before anything else (SC-G06-P0-01);
+    // the chain itself then authenticates the original source.
+    if let Some(route) = open.route.clone() {
+      let envelope = crate::routing::RouteContext::from_frame(
+        trace_id.clone(),
+        open.source.clone(),
+        open.destination.clone(),
+        Some(route),
+      );
+      // Forwarding work belongs to the route forwarder (T-G06-03); this
+      // admission boundary never branches a body, so any frame that does
+      // not arrive exactly here fails closed without a consumer.
+      if !matches!(
+        envelope.receive(&local, session.peer(), |_| {
+          Err(Error::unsupported("route forwarding"))
+        }),
+        Ok(crate::routing::RouteProgress::Arrive)
+      ) {
+        break 'status AckStatus::Unsupported;
+      }
+    } else if open.source != *session.peer() {
+      // Direct frames: endpoints must match the session-authenticated
+      // identities exactly.
+      break 'status AckStatus::Unsupported;
+    }
+    if open.destination != local {
+      break 'status AckStatus::Unsupported;
+    }
+    if incoming.contains_key(&open.trace_id) {
+      break 'status AckStatus::Unsupported;
+    }
     match context.registry.protocol(&open.protocol) {
       Some(registration)
         if session
@@ -661,32 +696,31 @@ async fn admit_open(
           .contains(registration.definition.owning_feature()) =>
       {
         if incoming.len() >= context.policy.queue_messages {
-          AckStatus::Overloaded
-        } else {
-          let (stream, body) = mpsc::channel(INCOMING_STREAM_CHUNKS);
-          incoming.insert(open.trace_id.clone(), (stream, 0));
-          let packet = IncomingPacket::new(
-            open.source,
-            open.destination,
-            open.trace_id,
-            open.protocol,
-            open.metadata,
-            ChannelBody::new(body),
-            PacketReplyContext::new(context.registry.clone(), context.runtime.clone()),
-          );
-          let consumer = Arc::clone(&registration.consumer);
-          let consumer_trace = trace_id.clone();
-          debug!(trace_id = %consumer_trace, "incoming consumer spawned");
-          consumers.spawn(async move {
-            let result = consumer.accept(packet).await;
-            debug!(
-              trace_id = %consumer_trace,
-              ok = result.is_ok(),
-              "packet consumer finished"
-            );
-          });
-          AckStatus::Admitted
+          break 'status AckStatus::Overloaded;
         }
+        let (stream, body) = mpsc::channel(INCOMING_STREAM_CHUNKS);
+        incoming.insert(open.trace_id.clone(), (stream, 0));
+        let packet = IncomingPacket::new(
+          open.source,
+          open.destination,
+          open.trace_id,
+          open.protocol,
+          open.metadata,
+          ChannelBody::new(body),
+          PacketReplyContext::new(context.registry.clone(), context.runtime.clone()),
+        );
+        let consumer = Arc::clone(&registration.consumer);
+        let consumer_trace = trace_id.clone();
+        debug!(trace_id = %consumer_trace, "incoming consumer spawned");
+        consumers.spawn(async move {
+          let result = consumer.accept(packet).await;
+          debug!(
+            trace_id = %consumer_trace,
+            ok = result.is_ok(),
+            "packet consumer finished"
+          );
+        });
+        AckStatus::Admitted
       }
       // Unknown protocol tag or owning feature not selected on this
       // session: rejected before admission, never reaching a consumer.
@@ -741,9 +775,12 @@ async fn forward_chunk(
   true
 }
 
-/// Resolves one pending outbound admission.
+/// Resolves one pending outbound admission. The admitting node is this
+/// session's authenticated peer, so the acknowledgement can name it for
+/// the synchronous sender's `DeliveryAck`.
 fn resolve_ack(
   ack: AckFrame, pending_acks: &Arc<Mutex<HashMap<TraceId, oneshot::Sender<AckOutcome>>>>,
+  peer: &NodeId,
 ) {
   let notify = pending_acks
     .lock()
@@ -752,7 +789,10 @@ fn resolve_ack(
     .flatten();
   if let Some(notify) = notify {
     let outcome = match ack.status {
-      AckStatus::Admitted => Ok(UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis)),
+      AckStatus::Admitted => Ok(crate::packet::Admission {
+        by: peer.clone(),
+        admitted_at: UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis),
+      }),
       AckStatus::Unsupported => Err(ErrorKind::Unsupported),
       AckStatus::Overloaded => Err(ErrorKind::Overloaded),
     };
@@ -767,12 +807,21 @@ fn resolve_ack(
 /// proves current-process admission only).
 #[instrument(name = "packet", skip_all, fields(
   trace_id = %request.trace_id,
-  destination = %request.destination,
+  target = ?request.target,
   local = %local,
 ))]
 pub(crate) async fn run_outbound(
   entry: SessionEntry, local: NodeId, request: OutboundRequest, routes: RouteTable,
 ) {
+  // The supervisor resolves selector targets before spawning the pump; a
+  // matching-node request that reaches this point is an internal error.
+  let destination = match request.target.clone() {
+    PacketTarget::Exact(destination) => destination,
+    PacketTarget::MatchingNodes(_) => {
+      request.reject(ErrorKind::Internal);
+      return;
+    }
+  };
   let trace_id = request.trace_id.clone();
   let (ack_tx, ack_rx) = oneshot::channel();
   if !entry.alive() {
@@ -797,12 +846,29 @@ pub(crate) async fn run_outbound(
     }
   }
 
+  // Selector-selected deliveries carry the route envelope (the current
+  // wire fixture): the selected destination re-validates the chain before
+  // admission. Direct exact-node sends keep the previous frame shape.
+  let route = if matches!(request.target, PacketTarget::MatchingNodes(_)) {
+    Some(
+      crate::routing::RouteContext::new(
+        trace_id.clone(),
+        local.clone(),
+        destination.clone(),
+        request.max_hops,
+      )
+      .hop_state(),
+    )
+  } else {
+    None
+  };
   let open = OpenFrame {
     trace_id: trace_id.clone(),
     source: local,
-    destination: request.destination.clone(),
+    destination: destination.clone(),
     protocol: request.protocol.clone(),
     metadata: request.metadata.clone(),
+    route,
   };
   let body = match wire::encode_open(&open) {
     Ok(body) => body,
@@ -836,9 +902,13 @@ pub(crate) async fn run_outbound(
   // Wait for the destination's current-process admission before streaming
   // body chunks; a dead session resolves the wait with StreamInterrupted.
   let outcome = ack_rx.await.unwrap_or(Err(ErrorKind::StreamInterrupted));
+  let failure = outcome.as_ref().err().copied();
   let _ = request.ack_notify.send(outcome);
-  debug!(admitted = outcome.is_ok(), "packet admission acknowledged");
-  if let Err(kind) = outcome {
+  debug!(
+    admitted = failure.is_none(),
+    "packet admission acknowledged"
+  );
+  if let Some(kind) = failure {
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(kind));
     });

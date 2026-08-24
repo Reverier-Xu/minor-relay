@@ -8,7 +8,8 @@ use tokio::{
 
 use crate::{
   AdmissionView, ClusterView, Endpoint, Error, ErrorKind, IssuedJoinCredential, ListenerView,
-  LocalNodeView, NodeConfig, NodeId, Result, ShutdownOutcome, ShutdownReason,
+  LocalNodeView, NodeConfig, NodeId, PacketTarget, Result, ShutdownOutcome, ShutdownReason,
+  TraceId,
   api::Entropy,
   extension_registry::ExtensionRegistry,
   identity::{
@@ -248,13 +249,21 @@ async fn supervise(
         let result = supervisor.disconnect_peer(&peer);
         let _ = reply.send(result);
       }
+      Control::UpdateNodeMetadata {
+        expected_revision,
+        patch,
+        reply,
+      } => {
+        let result = supervisor.update_node_metadata(expected_revision, patch).await;
+        let _ = reply.send(result);
+      }
         }
       }
       request = packets.recv() => {
         let Some(request) = request else {
           continue;
         };
-        let _ = supervisor.send_packet(request, &mut tasks);
+        let _ = supervisor.send_packet(request, &mut tasks).await;
       }
       _ = recovery_timer.tick() => {
         let _ = supervisor.recovery_tick(&mut tasks).await;
@@ -493,7 +502,8 @@ impl Supervisor {
     let shutdown = self.shutdown_tx.subscribe();
     let connection_tasks = self.connection_tasks.clone();
     let accept_listener = std::sync::Arc::clone(&listener);
-    let insert_listener = std::sync::Arc::clone(&listener);    let abort = tasks.spawn(async move {
+    let insert_listener = std::sync::Arc::clone(&listener);
+    let abort = tasks.spawn(async move {
       loop {
         // The join hint is computed per accepted connection so the accept
         // path stays fast and never stalls on the credential issuer lock;
@@ -645,12 +655,51 @@ impl Supervisor {
     .await
   }
 
-  /// Routes one outbound packet over the established session to its exact
-  /// destination. Failure paths still record the terminal route state so
-  /// asynchronous senders can observe them through `GetRoute`.
-  fn send_packet(&mut self, request: OutboundRequest, tasks: &mut JoinSet<()>) -> Result<()> {
+  /// Routes one outbound packet. Matching-node targets resolve through the
+  /// registered load-balancing policy over the descriptor store before the
+  /// pump starts; the selected node is validated against the authoritative
+  /// descriptors (SC-G06-P0-02). Failure paths still record the terminal
+  /// route state so asynchronous senders can observe them through
+  /// `GetRoute`.
+  async fn send_packet(
+    &mut self, mut request: OutboundRequest, tasks: &mut JoinSet<()>,
+  ) -> Result<()> {
     let trace_id = request.trace_id.clone();
-    let destination = request.destination.clone();
+    // Resolve matching-node targets to exactly one eligible destination
+    // before any frame moves: candidates stream from the descriptor store,
+    // the caller's policy picks one, and core re-validates the pick.
+    let resolved = match &request.target {
+      PacketTarget::Exact(destination) => Ok(destination.clone()),
+      PacketTarget::MatchingNodes(selector) => {
+        self
+          .select_matching_destination(&trace_id, selector, request.load_balancer.as_ref())
+          .await
+      }
+    };
+    let destination = match resolved {
+      Ok(destination) => {
+        // The resolved target drives the rest of the pump.
+        request.target = PacketTarget::Exact(destination.clone());
+        destination
+      }
+      Err(error) => {
+        // A failed selection records bounded terminal trace metadata
+        // only: identity and typed failure, never a body or a fabricated
+        // selected node.
+        let _ = insert_route(
+          &self.dependencies.routes,
+          self.route_capacity,
+          RouteRecord::failing(trace_id.clone()),
+        );
+        if let Ok(mut routes) = self.dependencies.routes.lock()
+          && let Some(record) = routes.get_mut(&trace_id)
+        {
+          record.update(RouteState::Failed(error.kind()));
+        }
+        request.reject(error.kind());
+        return Ok(());
+      }
+    };
     if let Err(error) = insert_route(
       &self.dependencies.routes,
       self.route_capacity,
@@ -659,14 +708,13 @@ impl Supervisor {
       request.reject(error.kind());
       return Err(error);
     }
-    let fail = |request: OutboundRequest, kind: ErrorKind, error: Error| {
+    let fail = |request: OutboundRequest, kind: ErrorKind| {
       if let Ok(mut routes) = self.dependencies.routes.lock()
         && let Some(record) = routes.get_mut(&trace_id)
       {
         record.update(RouteState::Failed(kind));
       }
       request.reject(kind);
-      error
     };
     let entry = self
       .dependencies
@@ -676,18 +724,12 @@ impl Supervisor {
       .get(&destination)
       .cloned();
     let Some(entry) = entry else {
-      return Err(fail(
-        request,
-        ErrorKind::RouteUnavailable,
-        Error::route_unavailable("packet session"),
-      ));
+      fail(request, ErrorKind::RouteUnavailable);
+      return Err(Error::route_unavailable("packet session"));
     };
     if !entry.alive() {
-      return Err(fail(
-        request,
-        ErrorKind::StreamInterrupted,
-        Error::stream_interrupted("packet session"),
-      ));
+      fail(request, ErrorKind::StreamInterrupted);
+      return Err(Error::stream_interrupted("packet session"));
     }
     let local = self.packet.local().clone();
     let routes = self.dependencies.routes.clone();
@@ -695,6 +737,39 @@ impl Supervisor {
       run_outbound(entry, local, request, routes).await;
     });
     Ok(())
+  }
+
+  /// Resolves one matching-node target to exactly one eligible destination
+  /// (SC-G06-P0-02): the registered load-balancing policy selects among the
+  /// incrementally streamed candidates, and core independently validates
+  /// the pick against the authoritative descriptors — an unknown, removed,
+  /// or nonmatching node fails closed before any frame moves.
+  async fn select_matching_destination(
+    &self, trace_id: &TraceId, selector: &crate::Selector,
+    load_balancer: Option<&crate::QualifiedTag>,
+  ) -> Result<NodeId> {
+    let Some(load_balancer) = load_balancer else {
+      return Err(Error::invalid_input("packet load balancer"));
+    };
+    let policy = self
+      .dependencies
+      .extensions
+      .load_balancer(load_balancer)
+      .ok_or_else(|| Error::invalid_input("packet load balancer"))?;
+    let _ = trace_id;
+    let snapshot = self.context()?.store().snapshot().await?;
+    let reader = crate::routing::StoreCandidateReader::new(snapshot);
+    let selected = policy.select(selector, &reader).await?;
+    // Authoritative re-validation of the selected destination.
+    let descriptor =
+      crate::membership::store::read_descriptor_ctx(self.context()?.store(), &selected).await?;
+    let Some(descriptor) = descriptor else {
+      return Err(Error::not_found("packet destination"));
+    };
+    if descriptor.removed() || !selector.matches(descriptor.labels()) {
+      return Err(Error::not_trusted("packet destination"));
+    }
+    Ok(selected)
   }
 
   /// Lazily publishes this node's own signed descriptor (revision 1) so
@@ -745,6 +820,7 @@ impl Supervisor {
         crate::ConnectivityStatus::Reachable
       },
       descriptor.endpoints().to_vec(),
+      descriptor.labels().clone(),
     )))
   }
 
@@ -792,6 +868,7 @@ impl Supervisor {
           crate::ConnectivityStatus::Reachable
         },
         descriptor.endpoints().to_vec(),
+        descriptor.labels().clone(),
       ));
       last_key = Some(key.to_vec());
       if items.len() >= limit {
@@ -904,6 +981,76 @@ impl Supervisor {
     // is deliberately re-established (a new session to the peer).
     self.recovery_excluded.insert(peer.clone());
     Ok(())
+  }
+
+  /// Applies one owner-only metadata patch to this node's own descriptor
+  /// (`UpdateNodeMetadata`): endpoint candidates and capability labels are
+  /// replaced at a strictly higher revision than `expected_revision`, and
+  /// the updated member view is returned (ADR-0007 owner records).
+  async fn update_node_metadata(
+    &mut self, expected_revision: u64, patch: crate::NodeMetadataPatch,
+  ) -> Result<crate::MemberView> {
+    self.require_unblocked()?;
+    let context = self.context()?;
+    let local = context.identity().node().clone();
+    let store = context.store();
+    let current = crate::membership::store::read_descriptor_ctx(store, &local)
+      .await?
+      .ok_or_else(|| Error::not_ready("local descriptor"))?;
+    if current.revision() != expected_revision {
+      return Err(Error::conflict("node metadata revision"));
+    }
+    let (add_endpoints, remove_endpoints, set_labels, remove_labels) = patch.into_parts();
+    let mut endpoints: Vec<crate::Endpoint> = current.endpoints().to_vec();
+    for endpoint in add_endpoints {
+      if endpoints.contains(&endpoint) {
+        return Err(Error::conflict("node metadata endpoint"));
+      }
+      endpoints.push(endpoint);
+    }
+    for endpoint in remove_endpoints {
+      let Some(position) = endpoints
+        .iter()
+        .position(|candidate| *candidate == endpoint)
+      else {
+        return Err(Error::not_found("node metadata endpoint"));
+      };
+      endpoints.remove(position);
+    }
+    let mut labels = current.labels().clone();
+    for (key, value) in set_labels {
+      labels = labels.insert(key, value)?;
+    }
+    for key in remove_labels {
+      if !labels.contains_key(&key) {
+        return Err(Error::not_found("node metadata label"));
+      }
+      labels.remove(&key);
+    }
+    let updated = crate::membership::NodeDescriptorV1::new(
+      current.node().clone(),
+      current.public_key().clone(),
+      endpoints,
+      current.revision() + 1,
+      false,
+      1,
+    )
+    .with_labels(labels);
+    crate::membership::store::store_descriptor_ctx(
+      store,
+      self.dependencies.entropy.as_ref(),
+      &updated,
+    )
+    .await?;
+    Ok(crate::MemberView::new(
+      updated.node().clone(),
+      updated.public_key().clone(),
+      updated.revision(),
+      crate::membership::node_descriptor_digest(&updated)?,
+      crate::ConnectivityStatus::Connected,
+      updated.endpoints().to_vec(),
+      updated.labels().clone(),
+    ))
   }
 
   /// The public recovery observation: whether every known online member

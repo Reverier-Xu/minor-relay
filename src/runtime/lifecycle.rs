@@ -116,6 +116,11 @@ pub(crate) enum Control {
     peer: NodeId,
     reply: oneshot::Sender<Result<()>>,
   },
+  UpdateNodeMetadata {
+    expected_revision: u64,
+    patch: crate::NodeMetadataPatch,
+    reply: oneshot::Sender<Result<crate::MemberView>>,
+  },
 }
 
 #[derive(Clone)]
@@ -304,6 +309,19 @@ impl RuntimeClient {
   pub(crate) async fn disconnect_peer(&self, peer: NodeId) -> Result<()> {
     self
       .send_command(|reply| Control::DisconnectPeer { peer, reply })
+      .await
+  }
+
+  /// Updates the local node's own descriptor (owner-only node metadata).
+  pub(crate) async fn update_node_metadata(
+    &self, expected_revision: u64, patch: crate::NodeMetadataPatch,
+  ) -> Result<crate::MemberView> {
+    self
+      .send_command(|reply| Control::UpdateNodeMetadata {
+        expected_revision,
+        patch,
+        reply,
+      })
       .await
   }
 
