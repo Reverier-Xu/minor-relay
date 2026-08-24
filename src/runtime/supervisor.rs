@@ -165,6 +165,18 @@ async fn supervise(
   }
 
   let mut supervisor = Supervisor::new(dependencies);
+  // Any trace records still non-terminal from a previous incarnation
+  // terminate explicitly at startup: a restart never continues a body.
+  if let Some(context) = supervisor.dependencies.context.as_ref()
+    && let Err(error) = crate::routing::trace::terminate_stale(
+      context.store(),
+      supervisor.dependencies.entropy.as_ref(),
+      &crate::storage::receipt::HostWallClock,
+    )
+    .await
+  {
+    tracing::warn!(kind = ?error.kind(), "stale trace termination failed");
+  }
   let mut recovery_timer = tokio::time::interval(std::time::Duration::from_secs(2));
   recovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
   loop {
@@ -267,6 +279,7 @@ async fn supervise(
       }
       _ = recovery_timer.tick() => {
         let _ = supervisor.recovery_tick(&mut tasks).await;
+        supervisor.trace_retention_sweep().await;
       }
     }
   }
@@ -332,6 +345,7 @@ struct Supervisor {
   // storage handle is released promptly (a restarted node reopening the
   // same factory must not race a lingering driver).
   sync_driver: Option<tokio::task::JoinHandle<()>>,
+  trace_sink: crate::routing::trace::TraceSink,
 }
 
 impl Supervisor {
@@ -360,8 +374,9 @@ impl Supervisor {
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let sync_context = Arc::clone(&context);
+    let driver_context = Arc::clone(&context);
     let driver = SessionDriver::new(
-      context,
+      driver_context,
       dependencies.keys.clone(),
       dependencies.entropy.clone(),
       Arc::new(std::sync::Mutex::new(JoinCredentialIssuer::new())),
@@ -419,6 +434,13 @@ impl Supervisor {
       })
     };
     let sync_driver = Some(sync_driver);
+    // The durable trace-metadata sink shares the runtime identity context
+    // and injected entropy; persistence failures never touch the data plane.
+    let trace_sink = crate::routing::trace::TraceSink::new(
+      Arc::clone(&context),
+      dependencies.entropy.clone(),
+      std::sync::Arc::new(crate::storage::receipt::HostWallClock),
+    );
     let recovery = crate::membership::recovery::RecoveryController::new(
       crate::membership::recovery::RecoveryPolicy::new(
         dependencies.config.recovery().neighbors(),
@@ -441,6 +463,7 @@ impl Supervisor {
       recovery_history: std::collections::BTreeSet::new(),
       recovery_excluded: std::collections::BTreeSet::new(),
       sync_driver,
+      trace_sink,
     }
   }
 
@@ -531,7 +554,8 @@ impl Supervisor {
           match driver.respond(&mut connection).await {
             Ok(session) => {
               // Keep the authenticated session open: it serves packet
-              // streams until the connection closes (ADR-0007).
+              // streams until the connection closes (ADR-0007). The
+              // accept side has no dialing caller to signal.
               run_session(
                 connection,
                 session,
@@ -539,6 +563,7 @@ impl Supervisor {
                 sessions,
                 shutdown,
                 crate::session::stream::DialDirection::Incoming,
+                None,
               )
               .await;
             }
@@ -611,9 +636,12 @@ impl Supervisor {
         .record_peer_spki(&peer, hint.leaf_spki().to_vec());
     }
     // Keep the join session open so both sides can stream packets over it.
+    // The admission view returns only after the session table registers
+    // the entry, so the caller's first packet cannot race registration.
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
+    let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
     tasks.spawn(async move {
       run_session(
         connection,
@@ -622,9 +650,13 @@ impl Supervisor {
         sessions,
         shutdown,
         crate::session::stream::DialDirection::Outgoing,
+        Some(registered_tx),
       )
       .await;
     });
+    if registered_rx.await.is_err() {
+      return Err(Error::internal("session registration"));
+    }
     Ok(view)
   }
 
@@ -733,10 +765,46 @@ impl Supervisor {
     }
     let local = self.packet.local().clone();
     let routes = self.dependencies.routes.clone();
+    let trace = self.trace_sink.clone();
+    // The initial routing record (identity, selected destination, attempt
+    // count) persists before the pump starts; transitions follow in the
+    // pump. Persistence never blocks or fails the data plane.
+    {
+      let trace = trace.clone();
+      let record = crate::routing::trace::TraceRecord::new(
+        trace_id.clone(),
+        local.clone(),
+        destination.clone(),
+        trace.clock_now(),
+      );
+      tokio::spawn(async move { trace.record(record).await });
+    }
     tasks.spawn(async move {
-      run_outbound(entry, local, request, routes).await;
+      run_outbound(entry, local, request, routes, Some(trace)).await;
     });
     Ok(())
+  }
+
+  /// One host-wall-clock retention pass over the durable route-trace
+  /// records: terminal records expire at their configured deadline and the
+  /// terminal population stays within the caller-selected cap; active
+  /// records are never removed.
+  async fn trace_retention_sweep(&mut self) {
+    let limits = self.dependencies.config.trace_metadata_limits();
+    let Ok(context) = self.context() else {
+      return;
+    };
+    if let Err(error) = crate::routing::trace::sweep(
+      context.store(),
+      self.dependencies.entropy.as_ref(),
+      &crate::storage::receipt::HostWallClock,
+      limits.terminal(),
+      limits.retention(),
+    )
+    .await
+    {
+      tracing::warn!(kind = ?error.kind(), "trace retention sweep failed");
+    }
   }
 
   /// Resolves one matching-node target to exactly one eligible destination
@@ -1223,6 +1291,10 @@ async fn dial_member(
   let local_packet = packet;
   let table = sessions.clone();
   let signal = shutdown;
+  // The member-mode dial returns only after the session table settles, so
+  // the caller's first packet cannot race registration (including the
+  // crossed-dial loser outcome, which reports no usable session).
+  let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
   tokio::spawn(async move {
     run_session(
       connection,
@@ -1231,9 +1303,13 @@ async fn dial_member(
       table,
       signal,
       crate::session::stream::DialDirection::Outgoing,
+      Some(registered_tx),
     )
     .await;
   });
+  if registered_rx.await.is_err() {
+    return Err(Error::internal("session registration"));
+  }
   Ok(authenticated)
 }
 

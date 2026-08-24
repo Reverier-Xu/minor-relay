@@ -172,9 +172,7 @@ impl Default for ParserLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TraceMetadataLimits {
   active: usize,
-  // TODO(G6): consumed by the route-status retention when G6 lands.
   terminal: usize,
-  // TODO(G6): consumed by the route-status retention when G6 lands.
   retention: Duration,
 }
 
@@ -192,6 +190,18 @@ impl TraceMetadataLimits {
 
   pub(crate) const fn active(&self) -> usize {
     self.active
+  }
+
+  /// The caller-selected terminal-record population cap, enforced by the
+  /// trace retention sweep (T-G06-02).
+  pub(crate) const fn terminal(&self) -> usize {
+    self.terminal
+  }
+
+  /// The caller-selected host-wall-clock retention window for terminal
+  /// records (T-G06-02).
+  pub(crate) const fn retention(&self) -> Duration {
+    self.retention
   }
 }
 

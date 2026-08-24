@@ -25,6 +25,8 @@ use crate::{
   Error, NodeId, Result, api::BoxFuture, protocol::tag::MAX_TAG_LEN as SELECTOR_INPUT_MAX_LEN,
 };
 
+pub(crate) mod trace;
+
 /// The maximum number of predicates in one selector.
 pub(crate) const SELECTOR_MAX_PREDICATES: usize = 16;
 

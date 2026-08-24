@@ -502,14 +502,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G06-02"
 verification_id = "VERIFY-G06-02"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G06-02"
 owner_task = "T-G06-02"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g06-02-trace-store.sh"]
 timeout_seconds = 1800
 
 [[task]]

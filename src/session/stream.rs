@@ -256,6 +256,7 @@ impl SessionEntry {
 pub(crate) async fn run_session(
   connection: Connection, session: EstablishedSession, context: Arc<SessionPacketContext>,
   table: SessionTable, shutdown: watch::Receiver<()>, direction: DialDirection,
+  registered: Option<oneshot::Sender<()>>,
 ) {
   let peer = session.peer().clone();
   let (writer, mut reader) = connection.into_split();
@@ -291,6 +292,9 @@ pub(crate) async fn run_session(
       Ok(guard) => guard,
       Err(_) => {
         alive.store(false, Ordering::SeqCst);
+        if let Some(registered) = registered {
+          let _ = registered.send(());
+        }
         return;
       }
     };
@@ -318,13 +322,23 @@ pub(crate) async fn run_session(
     };
     if replace {
       let previous = guard.insert(peer.clone(), entry);
+      drop(guard);
+      // The dialing caller waits on this signal, so its first packet
+      // cannot race the session-table registration.
+      if let Some(registered) = registered {
+        let _ = registered.send(());
+      }
       if let Some(previous) = previous {
         debug!("session replaced; draining the previous connection");
         retire(&previous);
       }
     } else {
+      drop(guard);
       debug!("crossed dial: keeping the deterministic owner, closing this connection");
       alive.store(false, Ordering::SeqCst);
+      if let Some(registered) = registered {
+        let _ = registered.send(());
+      }
       return;
     }
   }
@@ -812,6 +826,7 @@ fn resolve_ack(
 ))]
 pub(crate) async fn run_outbound(
   entry: SessionEntry, local: NodeId, request: OutboundRequest, routes: RouteTable,
+  trace: Option<crate::routing::trace::TraceSink>,
 ) {
   // The supervisor resolves selector targets before spawning the pump; a
   // matching-node request that reaches this point is an internal error.
@@ -822,7 +837,25 @@ pub(crate) async fn run_outbound(
       return;
     }
   };
+  let source = local.clone();
   let trace_id = request.trace_id.clone();
+  // Fire-and-forget persistence of one durable trace transition; the
+  // data plane never waits on metadata storage.
+  let persist =
+    |phase: crate::routing::trace::TraceTransition| -> Option<tokio::task::JoinHandle<()>> {
+      if let Some(trace) = &trace {
+        let record = crate::routing::trace::TraceRecord::new(
+          trace_id.clone(),
+          source.clone(),
+          destination.clone(),
+          trace.clock_now(),
+        )
+        .with_transition(phase, trace.clock_now());
+        let trace = trace.clone();
+        return Some(tokio::spawn(async move { trace.record(record).await }));
+      }
+      None
+    };
   let (ack_tx, ack_rx) = oneshot::channel();
   if !entry.alive() {
     debug!("packet rejected: session not alive");
@@ -830,6 +863,9 @@ pub(crate) async fn run_outbound(
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
     });
+    let _ = persist(crate::routing::trace::TraceTransition::Failed(
+      ErrorKind::StreamInterrupted,
+    ));
     return;
   }
   {
@@ -842,6 +878,9 @@ pub(crate) async fn run_outbound(
       update_route(&routes, &trace_id, |record| {
         record.update(RouteState::Failed(ErrorKind::Internal));
       });
+      let _ = persist(crate::routing::trace::TraceTransition::Failed(
+        ErrorKind::Internal,
+      ));
       return;
     }
   }
@@ -878,6 +917,7 @@ pub(crate) async fn run_outbound(
       update_route(&routes, &trace_id, |record| {
         record.update(RouteState::Failed(error.kind()));
       });
+      let _ = persist(crate::routing::trace::TraceTransition::Failed(error.kind()));
       return;
     }
   };
@@ -895,6 +935,9 @@ pub(crate) async fn run_outbound(
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
     });
+    let _ = persist(crate::routing::trace::TraceTransition::Failed(
+      ErrorKind::StreamInterrupted,
+    ));
     return;
   }
   trace!("packet open queued");
@@ -912,11 +955,13 @@ pub(crate) async fn run_outbound(
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(kind));
     });
+    let _ = persist(crate::routing::trace::TraceTransition::Failed(kind));
     return;
   }
   update_route(&routes, &trace_id, |record| {
     record.update(RouteState::Streaming);
   });
+  let _ = persist(crate::routing::trace::TraceTransition::Streaming);
 
   let mut sequence = 0_u64;
   let mut body = request.body;
@@ -927,6 +972,9 @@ pub(crate) async fn run_outbound(
           update_route(&routes, &trace_id, |record| {
             record.update(RouteState::Failed(ErrorKind::InvalidInput));
           });
+          let _ = persist(crate::routing::trace::TraceTransition::Failed(
+            ErrorKind::InvalidInput,
+          ));
           return;
         }
         let forwarded = bytes.len() as u64;
@@ -942,6 +990,7 @@ pub(crate) async fn run_outbound(
             update_route(&routes, &trace_id, |record| {
               record.update(RouteState::Failed(error.kind()));
             });
+            let _ = persist(crate::routing::trace::TraceTransition::Failed(error.kind()));
             return;
           }
         };
@@ -957,6 +1006,9 @@ pub(crate) async fn run_outbound(
           update_route(&routes, &trace_id, |record| {
             record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
           });
+          let _ = persist(crate::routing::trace::TraceTransition::Failed(
+            ErrorKind::StreamInterrupted,
+          ));
           return;
         }
         trace!(sequence, bytes = forwarded, "packet chunk queued");
@@ -969,6 +1021,7 @@ pub(crate) async fn run_outbound(
         update_route(&routes, &trace_id, |record| {
           record.update(RouteState::Failed(error.kind()));
         });
+        let _ = persist(crate::routing::trace::TraceTransition::Failed(error.kind()));
         return;
       }
     }
@@ -982,6 +1035,7 @@ pub(crate) async fn run_outbound(
       update_route(&routes, &trace_id, |record| {
         record.update(RouteState::Failed(error.kind()));
       });
+      let _ = persist(crate::routing::trace::TraceTransition::Failed(error.kind()));
       return;
     }
   };
@@ -993,13 +1047,19 @@ pub(crate) async fn run_outbound(
     })
     .await
     .is_err();
-  update_route(&routes, &trace_id, |record| {
-    if interrupted {
+  if interrupted {
+    update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
-    } else {
+    });
+    let _ = persist(crate::routing::trace::TraceTransition::Failed(
+      ErrorKind::StreamInterrupted,
+    ));
+  } else {
+    update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Delivered);
-    }
-  });
+    });
+    let _ = persist(crate::routing::trace::TraceTransition::Delivered);
+  }
   debug!(interrupted, "packet stream finished");
 }
 

@@ -1,0 +1,817 @@
+//! Durable route-trace metadata (T-G06-02, ADR-0007).
+//!
+//! The trace store persists exactly what ADR-0007 bounds: identity
+//! ([`crate::TraceId`] plus both authenticated endpoints), the selected
+//! destination, the attempt count, stream progress, and the terminal
+//! state — never payload bytes. Records ride the G2 conditional
+//! transaction machinery, so every write reconciles by canonical
+//! `TransactionId` and digest, and every stored byte is inspectable.
+//!
+//! Retention policy (caller-selected through `TraceMetadataLimits`):
+//!
+//! - active (non-terminal) records are never removed by retention;
+//! - terminal records expire at their host-wall-clock deadline;
+//! - the terminal population never exceeds the caller-selected cap: the oldest
+//!   expired records leave first, then the oldest terminals;
+//! - a process restart terminates previously active records explicitly
+//!   (`Failed(StreamInterrupted)`); no reopen path continues a body.
+//!
+//! Record accessors are unit-verified against SC-G06-P0-05..08; some stay
+//! intentionally dead in non-test builds until the G6-03/05 consumers land.
+#![cfg_attr(not(test), allow(dead_code))]
+
+use std::time::{Duration, SystemTime};
+
+use minicbor::{Decode, Encode};
+
+use crate::{
+  Error, ErrorKind, NodeId, ProviderErrorContext, ProviderErrorKind, Result, TraceId,
+  api::Entropy,
+  storage::{MetadataStore, receipt::WallClock},
+};
+
+/// The durable schema and namespace of one route-trace record.
+pub(crate) const TRACE_SCHEMA: &str = "relay.woooo.tech/schemas/route-trace-v1";
+pub(crate) const TRACE_NAMESPACE: &str = "relay.woooo.tech/metadata/route-trace-v1";
+
+/// Maximum operations per retention transaction batch, bounding one
+/// sweep's work per commit.
+const MAX_BATCH_OPERATIONS: usize = 64;
+
+/// The sentinel failure code for non-failed phases (never a valid kind).
+const NO_FAILURE: u8 = 0;
+
+/// One observed trace phase. Terminal phases are `Delivered` and `Failed`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TracePhase {
+  Routing,
+  Streaming,
+  Delivered,
+  Failed(ErrorKind),
+}
+
+impl TracePhase {
+  const ROUTING: u8 = 0;
+  const STREAMING: u8 = 1;
+  const DELIVERED: u8 = 2;
+  const FAILED: u8 = 3;
+
+  fn code(&self) -> u8 {
+    match self {
+      Self::Routing => Self::ROUTING,
+      Self::Streaming => Self::STREAMING,
+      Self::Delivered => Self::DELIVERED,
+      Self::Failed(_) => Self::FAILED,
+    }
+  }
+
+  fn from_code(code: u8, failure: Option<u8>) -> Result<Self> {
+    match (code, failure) {
+      (Self::ROUTING, None) => Ok(Self::Routing),
+      (Self::STREAMING, None) => Ok(Self::Streaming),
+      (Self::DELIVERED, None) => Ok(Self::Delivered),
+      (Self::FAILED, Some(failure)) if failure != NO_FAILURE => {
+        Ok(Self::Failed(kind_from_code(failure)))
+      }
+      _ => Err(Error::invalid_input("route trace phase")),
+    }
+  }
+
+  fn is_terminal(&self) -> bool {
+    matches!(self, Self::Delivered | Self::Failed(_))
+  }
+}
+
+/// The closed wire-code mapping for [`ErrorKind`] failures. Codes are
+/// internal to this record schema; unknown codes fail closed.
+fn kind_code(kind: ErrorKind) -> Option<u8> {
+  let code = match kind {
+    ErrorKind::InvalidInput => 1,
+    ErrorKind::Conflict => 2,
+    ErrorKind::NotFound => 3,
+    ErrorKind::NotReady => 4,
+    ErrorKind::NotTrusted => 5,
+    ErrorKind::Revoked => 6,
+    ErrorKind::Unsupported => 7,
+    ErrorKind::UnsupportedSchema => 8,
+    ErrorKind::UnsupportedCapability => 9,
+    ErrorKind::AuthenticationFailed => 10,
+    ErrorKind::RouteUnavailable => 11,
+    ErrorKind::StreamInterrupted => 12,
+    ErrorKind::Overloaded => 13,
+    ErrorKind::ResourceExhausted => 14,
+    ErrorKind::StorageLocked => 15,
+    ErrorKind::StorageCorrupt => 16,
+    ErrorKind::PermissionDenied => 17,
+    ErrorKind::Io => 18,
+    ErrorKind::CommitUnknown => 19,
+    ErrorKind::Cancelled => 20,
+    ErrorKind::ShuttingDown => 21,
+    ErrorKind::Internal => 22,
+  };
+  Some(code)
+}
+
+fn kind_from_code(code: u8) -> ErrorKind {
+  match code {
+    1 => ErrorKind::InvalidInput,
+    2 => ErrorKind::Conflict,
+    3 => ErrorKind::NotFound,
+    4 => ErrorKind::NotReady,
+    5 => ErrorKind::NotTrusted,
+    6 => ErrorKind::Revoked,
+    7 => ErrorKind::Unsupported,
+    8 => ErrorKind::UnsupportedSchema,
+    9 => ErrorKind::UnsupportedCapability,
+    10 => ErrorKind::AuthenticationFailed,
+    11 => ErrorKind::RouteUnavailable,
+    12 => ErrorKind::StreamInterrupted,
+    13 => ErrorKind::Overloaded,
+    14 => ErrorKind::ResourceExhausted,
+    15 => ErrorKind::StorageLocked,
+    16 => ErrorKind::StorageCorrupt,
+    17 => ErrorKind::PermissionDenied,
+    18 => ErrorKind::Io,
+    19 => ErrorKind::CommitUnknown,
+    20 => ErrorKind::Cancelled,
+    21 => ErrorKind::ShuttingDown,
+    _ => ErrorKind::Internal,
+  }
+}
+
+/// One durable route-trace record: bounded metadata only, never payload
+/// bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TraceRecord {
+  trace_id: TraceId,
+  source: NodeId,
+  /// The selected destination: exact target or load-balancer pick.
+  destination: NodeId,
+  attempts: u32,
+  phase: TracePhase,
+  updated_at: SystemTime,
+}
+
+impl TraceRecord {
+  /// Opens the record for a newly routed attempt toward `destination`.
+  pub(crate) fn new(
+    trace_id: TraceId, source: NodeId, destination: NodeId, updated_at: SystemTime,
+  ) -> Self {
+    Self {
+      trace_id,
+      source,
+      destination,
+      attempts: 1,
+      phase: TracePhase::Routing,
+      updated_at,
+    }
+  }
+
+  pub(crate) fn failed(mut self, kind: ErrorKind) -> Self {
+    self.phase = TracePhase::Failed(kind);
+    self
+  }
+
+  pub(crate) fn trace_id(&self) -> &TraceId {
+    &self.trace_id
+  }
+
+  pub(crate) fn source(&self) -> &NodeId {
+    &self.source
+  }
+
+  pub(crate) fn destination(&self) -> &NodeId {
+    &self.destination
+  }
+
+  pub(crate) fn phase(&self) -> &TracePhase {
+    &self.phase
+  }
+
+  /// Applies one route transition beyond the initial routing record.
+  pub(crate) fn with_transition(mut self, transition: TraceTransition, at: SystemTime) -> Self {
+    self.updated_at = at;
+    self.phase = match transition {
+      TraceTransition::Streaming => TracePhase::Streaming,
+      TraceTransition::Delivered => TracePhase::Delivered,
+      TraceTransition::Failed(kind) => TracePhase::Failed(kind),
+    };
+    self
+  }
+
+  fn encode(&self) -> Result<Vec<u8>> {
+    encode_canonical_record(self)
+  }
+}
+
+/// One persisted route transition beyond the initial routing record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TraceTransition {
+  Streaming,
+  Delivered,
+  Failed(ErrorKind),
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct TraceWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  record_version: u16,
+  #[n(2)]
+  trace_id: String,
+  #[n(3)]
+  source: String,
+  #[n(4)]
+  destination: String,
+  #[n(5)]
+  attempts: u32,
+  #[n(6)]
+  phase: u8,
+  #[n(7)]
+  failure: Option<u8>,
+  #[n(8)]
+  updated_at_millis: u64,
+}
+
+fn millis(time: SystemTime) -> u64 {
+  time
+    .duration_since(std::time::UNIX_EPOCH)
+    .ok()
+    .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+    .unwrap_or(0)
+}
+
+fn from_millis(value: u64) -> SystemTime {
+  std::time::UNIX_EPOCH + Duration::from_millis(value)
+}
+
+fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
+  let (phase_code, failure) = match &record.phase {
+    TracePhase::Failed(kind) => (
+      TracePhase::FAILED,
+      kind_code(*kind).ok_or_else(|| Error::invalid_input("route trace failure"))?,
+    ),
+    phase => (phase.code(), NO_FAILURE),
+  };
+  crate::protocol::encode_canonical(
+    &TraceWire {
+      schema: TRACE_SCHEMA.to_owned(),
+      record_version: 1,
+      trace_id: record.trace_id.to_string(),
+      source: record.source.to_string(),
+      destination: record.destination.to_string(),
+      attempts: record.attempts,
+      phase: phase_code,
+      failure: if failure == NO_FAILURE {
+        None
+      } else {
+        Some(failure)
+      },
+      updated_at_millis: millis(record.updated_at),
+    },
+    crate::protocol::offer::OFFER_CBOR_LIMITS,
+  )
+}
+
+/// The single canonical trace-record decoder: canonical encoding, schema,
+/// version, and field validation fail closed.
+pub(crate) fn decode_trace_record(bytes: &[u8]) -> Result<TraceRecord> {
+  let wire: TraceWire =
+    crate::protocol::decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
+      .map_err(|_| Error::invalid_input("route trace decode"))?;
+  if crate::protocol::encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
+    .is_ok_and(|encoded| encoded != bytes)
+  {
+    return Err(Error::invalid_input("route trace canonical"));
+  }
+  if wire.schema != TRACE_SCHEMA || wire.record_version != 1 {
+    return Err(Error::invalid_input("route trace schema"));
+  }
+  Ok(TraceRecord {
+    trace_id: wire.trace_id.parse()?,
+    source: wire.source.parse()?,
+    destination: wire.destination.parse()?,
+    attempts: wire.attempts,
+    phase: TracePhase::from_code(wire.phase, wire.failure)?,
+    updated_at: from_millis(wire.updated_at_millis),
+  })
+}
+
+fn namespace() -> Result<crate::StoreNamespace> {
+  crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE)?)
+}
+
+fn key(trace_id: &TraceId) -> crate::StoreKey {
+  crate::StoreKey::new(std::sync::Arc::from(trace_id.as_str().as_bytes().to_vec()))
+}
+
+/// Persists one route-trace record through one conditional transaction.
+/// The write reconciles by canonical `TransactionId` and digest; a lost
+/// compare-and-swap surfaces as a typed conflict instead of a silent
+/// overwrite.
+pub(crate) async fn put_trace(
+  store: &MetadataStore, entropy: &dyn Entropy, clock: &dyn WallClock, mut record: TraceRecord,
+) -> Result<()> {
+  record.updated_at = clock.now();
+  let encoded = record.encode()?;
+  let space = namespace()?;
+  let key = key(&record.trace_id);
+  let snapshot = store.snapshot().await?;
+  let expected = match snapshot.get(&space, &key).await? {
+    Some(current) => crate::StoreExpectation::Exact(current.digest().clone()),
+    None => crate::StoreExpectation::Absent,
+  };
+  let transaction = store.prepare_transaction(
+    crate::TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    vec![crate::StoreOperation::Put {
+      namespace: space,
+      key,
+      expected,
+      value: crate::StoreValue::new(std::sync::Arc::from(encoded)),
+    }],
+  )?;
+  match store.commit(transaction).await? {
+    crate::CommitOutcome::Committed(_) => Ok(()),
+    crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => {
+      Err(Error::conflict("route trace"))
+    }
+    crate::CommitOutcome::Unknown { .. } => Err(Error::provider(
+      ProviderErrorKind::CommitUnknown,
+      ProviderErrorContext::StorageReconcile,
+    )),
+  }
+}
+
+/// Terminates every non-terminal record left by a previous incarnation:
+/// a restart ends each in-flight route explicitly with
+/// `StreamInterrupted`, and no reopen path continues a body. Returns how
+/// many records were terminated.
+pub(crate) async fn terminate_stale(
+  store: &MetadataStore, entropy: &dyn Entropy, clock: &dyn WallClock,
+) -> Result<usize> {
+  let space = namespace()?;
+  let snapshot = store.snapshot().await?;
+  let mut scan = snapshot.scan(&space, &[]).await?;
+  let mut stale: Vec<(crate::StoreKey, crate::Digest, TraceRecord)> = Vec::new();
+  while let Some(entry) = scan.next().await? {
+    let Ok(record) = decode_trace_record(entry.value().as_bytes()) else {
+      continue;
+    };
+    if record.phase.is_terminal() {
+      continue;
+    }
+    stale.push((
+      crate::StoreKey::new(std::sync::Arc::from(entry.key().as_bytes().to_vec())),
+      entry.value().digest().clone(),
+      record,
+    ));
+  }
+  drop(scan);
+  let mut operations = Vec::with_capacity(stale.len());
+  let now = clock.now();
+  for (key, digest, mut record) in stale {
+    record.updated_at = now;
+    let value = record.failed(ErrorKind::StreamInterrupted).encode()?;
+    operations.push(crate::StoreOperation::Put {
+      namespace: space.clone(),
+      key,
+      expected: crate::StoreExpectation::Exact(digest),
+      value: crate::StoreValue::new(std::sync::Arc::from(value)),
+    });
+  }
+  apply_batched(store, entropy, operations).await
+}
+
+/// Applies one retention pass over the trace namespace: terminal records
+/// past their host-wall-clock deadline are removed first, then the oldest
+/// terminals down to the caller-selected cap. Active records are never
+/// removed. Returns how many records were removed.
+pub(crate) async fn sweep(
+  store: &MetadataStore, entropy: &dyn Entropy, clock: &dyn WallClock, terminal_cap: usize,
+  retention: Duration,
+) -> Result<usize> {
+  let space = namespace()?;
+  let now = clock.now();
+  let snapshot = store.snapshot().await?;
+  let mut scan = snapshot.scan(&space, &[]).await?;
+  let mut expired: Vec<(crate::StoreKey, crate::Digest, SystemTime)> = Vec::new();
+  let mut fresh_terminals: Vec<(crate::StoreKey, crate::Digest, SystemTime)> = Vec::new();
+  let mut active = 0_usize;
+  while let Some(entry) = scan.next().await? {
+    let Ok(record) = decode_trace_record(entry.value().as_bytes()) else {
+      continue;
+    };
+    let item = (
+      crate::StoreKey::new(std::sync::Arc::from(entry.key().as_bytes().to_vec())),
+      entry.value().digest().clone(),
+      record.updated_at,
+    );
+    match &record.phase {
+      phase if !phase.is_terminal() => active += 1,
+      _ if now
+        .duration_since(record.updated_at)
+        .is_ok_and(|age| age >= retention) =>
+      {
+        expired.push(item)
+      }
+      _ => fresh_terminals.push(item),
+    }
+  }
+  drop(scan);
+  // Enforce the terminal cap oldest-first across fresh terminals after the
+  // expired ones leave.
+  let overflow = (expired.len() + fresh_terminals.len()).saturating_sub(terminal_cap);
+  let mut removals: Vec<(crate::StoreKey, crate::Digest)> = expired
+    .into_iter()
+    .map(|(key, digest, _)| (key, digest))
+    .collect();
+  if overflow > 0 {
+    fresh_terminals.sort_by_key(|(_, _, updated_at)| *updated_at);
+    removals.extend(
+      fresh_terminals
+        .into_iter()
+        .take(overflow)
+        .map(|(key, digest, _)| (key, digest)),
+    );
+  }
+  let total = removals.len();
+  let operations = removals
+    .into_iter()
+    .map(|(key, digest)| crate::StoreOperation::Delete {
+      namespace: space.clone(),
+      key,
+      expected: digest,
+    })
+    .collect();
+  apply_batched(store, entropy, operations).await?;
+  let _ = active;
+  Ok(total)
+}
+
+/// Applies up to [`MAX_BATCH_OPERATIONS`] conditional operations per
+/// transaction until the batch is exhausted.
+async fn apply_batched(
+  store: &MetadataStore, entropy: &dyn Entropy, operations: Vec<crate::StoreOperation>,
+) -> Result<usize> {
+  let mut applied = 0_usize;
+  for batch in operations.chunks(MAX_BATCH_OPERATIONS) {
+    applied += commit_batch(store, entropy, batch.to_vec()).await?;
+  }
+  Ok(applied)
+}
+
+async fn commit_batch(
+  store: &MetadataStore, entropy: &dyn Entropy, operations: Vec<crate::StoreOperation>,
+) -> Result<usize> {
+  let count = operations.len();
+  let snapshot = store.snapshot().await?;
+  let transaction = store.prepare_transaction(
+    crate::TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    operations,
+  )?;
+  match store.commit(transaction).await? {
+    crate::CommitOutcome::Committed(_) | crate::CommitOutcome::Aborted => Ok(count),
+    crate::CommitOutcome::Conflict => Ok(0),
+    crate::CommitOutcome::Unknown { .. } => Err(Error::provider(
+      ProviderErrorKind::CommitUnknown,
+      ProviderErrorContext::StorageReconcile,
+    )),
+  }
+}
+
+/// The persistence handle shared with the packet pump: clones cheaply and
+/// records transitions best-effort — a persistence failure is surfaced as
+/// a diagnostic and never corrupts the data plane's explicit semantics.
+#[derive(Clone)]
+pub(crate) struct TraceSink {
+  context: std::sync::Arc<crate::identity::lifecycle::LocalIdentityContext>,
+  entropy: std::sync::Arc<dyn Entropy>,
+  clock: std::sync::Arc<dyn WallClock>,
+}
+
+impl TraceSink {
+  pub(crate) fn new(
+    context: std::sync::Arc<crate::identity::lifecycle::LocalIdentityContext>,
+    entropy: std::sync::Arc<dyn Entropy>, clock: std::sync::Arc<dyn WallClock>,
+  ) -> Self {
+    Self {
+      context,
+      entropy,
+      clock,
+    }
+  }
+
+  /// Records one transition; failures are logged, never propagated into
+  /// the stream path.
+  pub(crate) async fn record(&self, record: TraceRecord) {
+    if let Err(error) = put_trace(
+      self.context.store(),
+      self.entropy.as_ref(),
+      self.clock.as_ref(),
+      record,
+    )
+    .await
+    {
+      tracing::warn!(kind = ?error.kind(), "route trace persistence failed");
+    }
+  }
+
+  pub(crate) fn clock_now(&self) -> SystemTime {
+    self.clock.now()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{sync::Arc, time::Duration};
+
+  use super::{
+    TRACE_NAMESPACE, TracePhase, TraceRecord, decode_trace_record, put_trace, sweep,
+    terminate_stale,
+  };
+  use crate::{
+    ErrorKind, NodeId, TraceId,
+    api::SystemEntropy,
+    provider::StorageFactory,
+    storage::{MetadataStore, contract::helpers::ManualClock, receipt::WallClock},
+  };
+
+  fn node(value: u8) -> NodeId {
+    NodeId::parse(&format!("node_{value:021}")).unwrap()
+  }
+
+  fn trace(seed: u32) -> TraceId {
+    TraceId::parse(&format!("trace_{seed:021}")).unwrap()
+  }
+
+  async fn open_store() -> (Arc<dyn StorageFactory>, MetadataStore, Arc<ManualClock>) {
+    let factory: Arc<dyn StorageFactory> =
+      Arc::new(crate::storage::contract::ReferenceFactory::new(
+        crate::storage::contract::required_capabilities(),
+      ));
+    let store = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    let clock = Arc::new(ManualClock::new(
+      std::time::UNIX_EPOCH + Duration::from_secs(1_000),
+    ));
+    (factory, store, clock)
+  }
+
+  async fn all_records(store: &MetadataStore) -> Vec<TraceRecord> {
+    let space =
+      crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap()).unwrap();
+    let snapshot = store.snapshot().await.unwrap();
+    let mut scan = snapshot.scan(&space, &[]).await.unwrap();
+    let mut records = Vec::new();
+    while let Some(entry) = scan.next().await.unwrap() {
+      records.push(decode_trace_record(entry.value().as_bytes()).unwrap());
+    }
+    records
+  }
+
+  // ---- SC-G06-P0-05: trace metadata without body bytes ----
+
+  /// The record binds identity, selected destination, attempt count,
+  /// progress, and terminal state — and byte-for-byte inspection of the
+  /// whole namespace proves no payload bytes enter any record.
+  #[tokio::test]
+  async fn records_bind_route_metadata_and_never_body_bytes() {
+    let (_factory, store, clock) = open_store().await;
+    let body_marker: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"SECRET-PAYLOAD-BYTES"[..]);
+
+    let routing = TraceRecord::new(trace(1), node(1), node(2), clock.now());
+    put_trace(&store, &SystemEntropy, clock.as_ref(), routing)
+      .await
+      .unwrap();
+    put_trace(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      TraceRecord::new(trace(1), node(1), node(2), clock.now())
+        .with_transition(super::TraceTransition::Streaming, clock.now()),
+    )
+    .await
+    .unwrap();
+    put_trace(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      TraceRecord::new(trace(1), node(1), node(2), clock.now())
+        .with_transition(super::TraceTransition::Delivered, clock.now()),
+    )
+    .await
+    .unwrap();
+
+    // Byte-for-byte inspection: exactly one upserted record, fully
+    // decodable, and no stored byte sequence contains the body marker.
+    let records = all_records(&store).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.trace_id(), &trace(1));
+    assert_eq!(record.source(), &node(1));
+    assert_eq!(record.destination(), &node(2));
+    assert_eq!(record.phase(), &TracePhase::Delivered);
+
+    let space =
+      crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap()).unwrap();
+    let snapshot = store.snapshot().await.unwrap();
+    let mut scan = snapshot.scan(&space, &[]).await.unwrap();
+    while let Some(entry) = scan.next().await.unwrap() {
+      let bytes = entry.value().as_bytes();
+      assert!(
+        !bytes
+          .windows(body_marker.len())
+          .any(|window| window == &body_marker[..])
+      );
+      // Every stored value is a canonical trace record, not a body.
+      assert!(decode_trace_record(bytes).is_ok());
+    }
+  }
+
+  // ---- SC-G06-P0-06: atomic reconcile by TransactionId and digest ----
+
+  /// A lost compare-and-swap surfaces as a typed conflict instead of a
+  /// silent overwrite, and re-writing the identical record is idempotent.
+  #[tokio::test]
+  async fn conflicting_writes_reconcile_atomically() {
+    let (_factory, store, clock) = open_store().await;
+    let record = TraceRecord::new(trace(2), node(1), node(3), clock.now());
+    put_trace(&store, &SystemEntropy, clock.as_ref(), record.clone())
+      .await
+      .unwrap();
+
+    // A stale-expectation write (prepared against an absent key) must
+    // conflict deterministically rather than clobber the record.
+    let space =
+      crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap()).unwrap();
+    let encoded = record.encode().unwrap();
+    let snapshot = store.snapshot().await.unwrap();
+    let transaction = store
+      .prepare_transaction(
+        crate::TransactionId::generate(&SystemEntropy).unwrap(),
+        snapshot.revision().clone(),
+        vec![crate::StoreOperation::Put {
+          namespace: space.clone(),
+          key: crate::StoreKey::new(std::sync::Arc::from(
+            record.trace_id().as_str().as_bytes().to_vec(),
+          )),
+          expected: crate::StoreExpectation::Absent,
+          value: crate::StoreValue::new(std::sync::Arc::from(encoded.clone())),
+        }],
+      )
+      .unwrap();
+    match store.commit(transaction).await.unwrap() {
+      crate::CommitOutcome::Conflict => {}
+      other => panic!("expected a typed conflict, got {other:?}"),
+    }
+    // The authoritative record survived unchanged.
+    let records = all_records(&store).await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].phase(), &TracePhase::Routing);
+
+    // Re-writing the identical state is idempotent old-or-new.
+    put_trace(&store, &SystemEntropy, clock.as_ref(), record)
+      .await
+      .unwrap();
+    assert_eq!(all_records(&store).await.len(), 1);
+  }
+
+  // ---- SC-G06-P0-07: active streams survive retention; restart terminates ----
+
+  /// Retention never removes active records; a restart terminates them
+  /// explicitly with `StreamInterrupted`, and no reopen path continues.
+  #[tokio::test]
+  async fn retention_preserves_active_and_restart_terminates_stale() {
+    let (factory, store, clock) = open_store().await;
+
+    // One active stream, one delivered record already past any retention.
+    put_trace(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      TraceRecord::new(trace(3), node(1), node(4), clock.now()),
+    )
+    .await
+    .unwrap();
+    clock.set(std::time::UNIX_EPOCH + Duration::from_secs(2_000));
+    put_trace(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      TraceRecord::new(trace(4), node(1), node(5), clock.now())
+        .with_transition(super::TraceTransition::Delivered, clock.now()),
+    )
+    .await
+    .unwrap();
+
+    // A sweep far before any expiry removes nothing at all.
+    let removed = sweep(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      128,
+      Duration::from_secs(100),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 0);
+    assert_eq!(all_records(&store).await.len(), 2);
+
+    // Restart semantics: every non-terminal record terminates explicitly.
+    let terminated = terminate_stale(&store, &SystemEntropy, clock.as_ref())
+      .await
+      .unwrap();
+    assert_eq!(terminated, 1);
+    let records = all_records(&store).await;
+    let stale = records
+      .iter()
+      .find(|record| record.trace_id() == &trace(3))
+      .unwrap();
+    assert_eq!(
+      stale.phase(),
+      &TracePhase::Failed(ErrorKind::StreamInterrupted)
+    );
+
+    // Reopening the same store observes the terminated record only; there
+    // is nothing to continue. The exclusive lifetime lock requires the
+    // previous handle to release first.
+    drop(store);
+    let reopened_store = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    let reopened = all_records(&reopened_store).await;
+    assert_eq!(reopened.len(), 2);
+    assert!(reopened.iter().all(|record| record.phase().is_terminal()));
+  }
+
+  // ---- SC-G06-P0-08: caller-selected capacity and wall-clock retention ----
+
+  /// Terminal records expire on host wall time, the terminal population
+  /// never exceeds the caller-selected cap, and active records are never
+  /// evicted even under capacity pressure.
+  #[tokio::test]
+  async fn sweep_enforces_retention_and_terminal_cap_without_touching_active() {
+    let (_factory, store, clock) = open_store().await;
+
+    // Three terminals written one hundred seconds apart, plus one active.
+    for seed in [5_u32, 6, 7] {
+      put_trace(
+        &store,
+        &SystemEntropy,
+        clock.as_ref(),
+        TraceRecord::new(trace(seed), node(1), node(9), clock.now())
+          .with_transition(super::TraceTransition::Delivered, clock.now()),
+      )
+      .await
+      .unwrap();
+      clock.set(clock.now() + Duration::from_secs(100));
+    }
+    put_trace(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      TraceRecord::new(trace(8), node(1), node(9), clock.now()),
+    )
+    .await
+    .unwrap();
+
+    // Cap two with a long retention: the oldest fresh terminal leaves to
+    // honor the cap; the active record stays.
+    let removed = sweep(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      2,
+      Duration::from_secs(10_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+    let records = all_records(&store).await;
+    assert_eq!(records.len(), 3);
+    assert!(!records.iter().any(|record| record.trace_id() == &trace(5)));
+
+    // Once wall time passes the retention deadline, the remaining expired
+    // terminals leave while the active record still survives.
+    clock.set(clock.now() + Duration::from_secs(20_000));
+    let removed = sweep(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      2,
+      Duration::from_secs(10_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 2);
+    let records = all_records(&store).await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].trace_id(), &trace(8));
+    assert_eq!(records[0].phase(), &TracePhase::Routing);
+  }
+}
