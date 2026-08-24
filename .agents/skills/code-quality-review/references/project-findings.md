@@ -24,12 +24,15 @@
 >    the catalog.
 >
 > ### P2 — nice-to-have
-> - `trusted_bindings` full scans per tick at three sites (sync.rs:384,
->   sync.rs:296, supervisor recovery tick) — early-exit count or cache.
-> - `latest_snapshot_ctx` scans every stored revision; revisions are
->   never pruned (`persist_snapshot_ctx` inserts only) — prune or index.
-> - `paged_trust_ctx` materializes/sorts/dedups all bindings per query
->   (trust.rs:550-575) — violates the no-whole-population letter.
+> - Supervisor recovery tick still scans the full binding namespace once
+>   (needs the member set; acceptable) — sync.rs sites resolved 2026-08-24
+>   (early-exit count + count short-circuit).
+> - RESOLVED 2026-08-24: snapshot revisions pruned on persist;
+>   paged_trust_ctx streamed without whole-population materialization.
+> - Page sends now fingerprint-gated (content + peer set) with a 32-tick
+>   resend backstop; steady-state anti-entropy traffic is zero.
+> - Multi-thread packet race: NOT reproducible after the wait_for harness
+>   fix (17/17 green x5 under multi_thread); closed as harness bug.
 > - Supervisor `member()`/`page_members()` hand-roll descriptor paging;
 >   expose a bounded paged read on the membership store instead.
 > - `sync_tick` two-regime god-function with duplicated peer-dispatch
