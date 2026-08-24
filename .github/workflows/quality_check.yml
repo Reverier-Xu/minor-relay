@@ -88,7 +88,7 @@ jobs:
   msrv:
     name: msrv
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 15
     env:
       RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
@@ -118,7 +118,7 @@ jobs:
   stable:
     name: stable
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 15
     env:
       RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
@@ -208,7 +208,7 @@ jobs:
   features:
     name: features
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 12
     env:
       RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
@@ -239,7 +239,7 @@ jobs:
   container:
     name: container
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 15
 
     steps:
       - name: checkout

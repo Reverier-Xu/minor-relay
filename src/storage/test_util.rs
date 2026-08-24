@@ -21,6 +21,7 @@ pub(crate) fn value(bytes: &[u8]) -> StoreValue {
   StoreValue::new(Arc::from(bytes))
 }
 
+#[cfg_attr(not(feature = "json"), allow(dead_code))]
 pub(crate) fn transaction_id(index: u64) -> TransactionId {
   TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }
