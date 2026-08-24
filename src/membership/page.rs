@@ -105,7 +105,32 @@ impl MembershipPage {
     MembershipPage::new(descriptors, cursor)
   }
 
+  pub(crate) fn fingerprint(&self) -> u64 {
+    Self::fingerprint_of(
+      self.descriptors.len(),
+      self.cursor.as_deref().map_or(0, |value| value.len()),
+      &self.descriptors,
+    )
+  }
+
+  fn fingerprint_of(count: usize, cursor_len: usize, descriptors: &[NodeDescriptorV1]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    count.hash(&mut hasher);
+    cursor_len.hash(&mut hasher);
+    for descriptor in descriptors {
+      descriptor.node.hash(&mut hasher);
+      descriptor.revision.hash(&mut hasher);
+      descriptor.removed.hash(&mut hasher);
+      for endpoint in &descriptor.endpoints {
+        endpoint.as_str().hash(&mut hasher);
+      }
+    }
+    hasher.finish()
+  }
+
   /// True when the cursor does not advance (loop protection).
+  #[cfg(test)]
   pub(crate) fn cursor_loops(&self, previous: Option<&[u8]>) -> bool {
     match (previous, self.cursor()) {
       (Some(previous), Some(next)) => previous == next,
@@ -118,7 +143,7 @@ impl MembershipPage {
 /// and applies received pages under strict validation.
 pub(crate) mod sync {
   use super::{MAX_PAGE_DESCRIPTORS, MembershipPage};
-  use crate::{Result, api::Entropy, provider::StorageFactory, storage::MetadataStore};
+  use crate::{Result, api::Entropy, storage::MetadataStore};
 
   /// Emits one bounded page over the running node's metadata store. The
   /// cursor is the last emitted node's text, so pages continue without
@@ -185,16 +210,19 @@ pub(crate) mod sync {
 
   /// Emits one bounded page of descriptors starting after `cursor` over a
   /// standalone factory handle (unit/offline path).
+  #[cfg(test)]
   pub(crate) async fn emit_page(
-    factory: &std::sync::Arc<dyn StorageFactory>, cursor: Option<&[u8]>, limit: usize,
+    factory: &std::sync::Arc<dyn crate::provider::StorageFactory>, cursor: Option<&[u8]>,
+    limit: usize,
   ) -> Result<MembershipPage> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
     emit_page_ctx(&store, cursor, limit).await
   }
 
   /// Applies one received page over a standalone factory handle.
+  #[cfg(test)]
   pub(crate) async fn apply_page(
-    factory: &std::sync::Arc<dyn StorageFactory>, page: &MembershipPage,
+    factory: &std::sync::Arc<dyn crate::provider::StorageFactory>, page: &MembershipPage,
   ) -> Result<usize> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
     apply_page_ctx(&store, &crate::api::SystemEntropy, page).await

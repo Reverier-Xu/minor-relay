@@ -174,7 +174,9 @@ impl RecoveryController {
   }
 
   /// Records one candidate as connected; when nothing remains pending the
-  /// controller transitions to `Connected` (SC-G05-P0-18).
+  /// controller transitions to `Connected` (SC-G05-P0-18). Assertion
+  /// surface for the unit suite; production observes through `state`.
+  #[cfg(test)]
   pub(crate) fn connected(&mut self, member: &NodeId) {
     self.pending.remove(member);
     if self.pending.is_empty() && self.state == RecoveryState::Recovering {
@@ -190,12 +192,6 @@ impl RecoveryController {
     }
     self.state = RecoveryState::Recovering;
     self.last_attempt_at = now.saturating_sub(1);
-  }
-
-  /// Reactivates after a membership/connectivity/readdress change
-  /// (SC-G05-P0-19): one bounded controller, never a storm.
-  pub(crate) fn reactivate(&mut self, online: &BTreeSet<NodeId>, reachable: &BTreeSet<NodeId>) {
-    self.observe(0, online, reachable);
   }
 }
 
@@ -429,10 +425,6 @@ mod scale_tests {
 
   fn node_at(index: usize) -> NodeId {
     NodeId::parse(&format!("node_{index:021}")).unwrap()
-  }
-
-  fn set(indexes: &[usize]) -> BTreeSet<NodeId> {
-    indexes.iter().map(|index| node_at(*index)).collect()
   }
 
   /// The 1,024-node recovery trend: the controller makes bounded

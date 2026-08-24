@@ -1,14 +1,11 @@
 //! Owner-marked node descriptors (G5-01, ADR-0008 session-trust boundary).
-// Unit-verified surfaces whose runtime consumers land with later wiring
-// (neighbor planning consumes RecoveryConfig::neighbors).
-#![allow(dead_code)]
 //!
 //! A [`NodeDescriptorV1`] is the node-owned revision record: it carries the
 //! owning node's `NodeId` marking, its endpoint candidates, a strictly
 //! increasing revision, and the removal flag. Entries are trusted through
 //! the authenticated session that delivered them (ADR-0008), so they carry
-//! no per-entry signatures. Core accepts an update only at the exact next
-//! revision; stale, repeated, and skipped revisions cannot replace the
+//! no per-entry signatures. Core accepts an update only at a strictly
+//! higher revision; stale and repeated revisions cannot replace the
 //! current record, and a retained removal marker defeats reordered or
 //! replayed older descriptors.
 
@@ -128,7 +125,7 @@ pub(crate) mod store {
   use super::{NODE_DESCRIPTOR_NAMESPACE, NodeDescriptorV1};
   use crate::{
     Error, NodeId, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreValue,
-    TransactionId, api::Entropy, provider::StorageFactory, storage::MetadataStore,
+    TransactionId, api::Entropy, storage::MetadataStore,
   };
 
   fn namespace() -> Result<StoreNamespace> {
@@ -205,16 +202,18 @@ pub(crate) mod store {
 
   /// Reads the current descriptor for one node over a standalone factory
   /// handle (unit/offline path; the caller owns the opened store).
+  #[cfg(test)]
   pub(crate) async fn read_descriptor(
-    factory: &Arc<dyn StorageFactory>, node: &NodeId,
+    factory: &Arc<dyn crate::provider::StorageFactory>, node: &NodeId,
   ) -> Result<Option<NodeDescriptorV1>> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
     read_descriptor_ctx(&store, node).await
   }
 
   /// Stores one descriptor over a standalone factory handle.
+  #[cfg(test)]
   pub(crate) async fn store_descriptor(
-    factory: &Arc<dyn StorageFactory>, descriptor: &NodeDescriptorV1,
+    factory: &Arc<dyn crate::provider::StorageFactory>, descriptor: &NodeDescriptorV1,
   ) -> Result<()> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
     store_descriptor_ctx(&store, &crate::api::SystemEntropy, descriptor).await

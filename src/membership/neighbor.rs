@@ -1,5 +1,10 @@
 //! Deterministic sparse neighbor planning (G5-03).
 //!
+//! The planner and maintenance limiter are unit-verified against
+//! SC-G05-P0-10..13; the runtime consumer lands when topology maintenance
+//! is wired, so the surface is intentionally dead in non-test builds.
+#![cfg_attr(not(test), allow(dead_code))]
+//!
 //! Equal membership inputs produce the same bounded neighbor plan
 //! with no self-edge or duplicate peer; reachability stays distinct from
 //! the active topology (directly reachable non-policy endpoints remain
@@ -111,18 +116,6 @@ pub(crate) struct MaintenanceLoad {
 }
 
 impl MaintenanceLoad {
-  pub(crate) const fn new(pending: usize, queued: usize) -> Self {
-    Self { pending, queued }
-  }
-
-  pub(crate) const fn pending(&self) -> usize {
-    self.pending
-  }
-
-  pub(crate) const fn queued(&self) -> usize {
-    self.queued
-  }
-
   /// Whether one more queued candidate would exceed the queue bound.
   pub(crate) fn can_queue(&self, bounds: MaintenanceBounds) -> bool {
     self.queued < bounds.max_queue

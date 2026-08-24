@@ -352,6 +352,15 @@ pub(crate) struct SyncCursor {
   /// Ticks since the last snapshot send: a lost delivery must be retried
   /// without waiting for the next grant-set change.
   pub(crate) ticks_since_snapshot_send: u32,
+  /// Fingerprint of the last page sent, so an unchanged membership set
+  /// costs no encode or per-peer delivery at all.
+  pub(crate) page_fingerprint: u64,
+  /// Fingerprint of the alive-peer set: a newly connected peer must
+  /// receive the current pages immediately, changed set or not.
+  pub(crate) peers_fingerprint: u64,
+  /// Ticks since the last page send: a lost delivery must be retried on
+  /// a slow cadence even when nothing changed.
+  pub(crate) ticks_since_page_send: u32,
   /// The last membership page cursor, so descriptor sync continues across
   /// ticks and converges beyond a single page.
   pub(crate) page: Option<Vec<u8>>,
@@ -361,6 +370,8 @@ pub(crate) struct SyncCursor {
 /// grant set is unchanged, so a dropped payload heals instead of stalling
 /// a peer forever (anti-entropy, SC-G05-P0-07).
 const SNAPSHOT_RESEND_TICKS: u32 = 8;
+/// Page deliveries are retried on this slower cadence for the same reason.
+const PAGE_RESEND_TICKS: u32 = 32;
 
 pub(crate) async fn sync_tick(
   context: &Arc<LocalIdentityContext>, entropy: &Arc<dyn Entropy>, sessions: &SessionTable,
@@ -382,25 +393,7 @@ pub(crate) async fn sync_tick(
   // whole-population map on every tick.
   let has_members = trust_store::has_more_than_bindings(store, 1).await?;
   if !has_members {
-    let page = page_sync::emit_page_ctx(
-      store,
-      cursor.page.as_deref(),
-      crate::membership::page::DEFAULT_PAGE_LIMIT,
-    )
-    .await?;
-    cursor.page = page.cursor().map(|value| value.to_vec());
-    let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
-    let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
-    let peers: Vec<NodeId> = sessions
-      .lock()
-      .map_err(|_| Error::internal("session table"))?
-      .iter()
-      .filter(|(_, entry)| entry.alive())
-      .map(|(peer, _)| peer.clone())
-      .collect();
-    for peer in peers {
-      let _ = send_payload(runtime, entropy, &peer, &protocol, &page_payload).await;
-    }
+    // No membership yet: no descriptors exist to anti-entropize.
     return Ok(());
   }
   let snapshot = match refresh_issuer_snapshot(context, entropy).await? {
@@ -410,6 +403,9 @@ pub(crate) async fn sync_tick(
     // issuer's direct sessions are not the whole mesh (SC-G05-P0-25).
     None => local_latest_snapshot(context).await?,
   };
+  let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
+  let peers = alive_peers(sessions)?;
+  let peers_fp = peers_fingerprint(&peers);
   let page = page_sync::emit_page_ctx(
     store,
     cursor.page.as_deref(),
@@ -418,6 +414,15 @@ pub(crate) async fn sync_tick(
   .await?;
   cursor.page = page.cursor().map(|value| value.to_vec());
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
+  // A page is sent when its content or the alive-peer set changed, and
+  // retried on a slow cadence otherwise (lost-delivery healing,
+  // SC-G05-P0-07); an unchanged steady state costs no sends at all.
+  let page_fp = page.fingerprint();
+  let page_due = page_fp != cursor.page_fingerprint
+    || peers_fp != cursor.peers_fingerprint
+    || cursor.ticks_since_page_send >= PAGE_RESEND_TICKS;
+  cursor.page_fingerprint = page_fp;
+  cursor.peers_fingerprint = peers_fp;
   // A snapshot is sent when its revision advanced, and retried on a slow
   // cadence even when unchanged: re-sending the same revision to every
   // session every tick floods the store with idempotent commits, but a
@@ -437,21 +442,48 @@ pub(crate) async fn sync_tick(
     }
     None => None,
   };
-  let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
-  let peers: Vec<NodeId> = sessions
-    .lock()
-    .map_err(|_| Error::internal("session table"))?
-    .iter()
-    .filter(|(_, entry)| entry.alive())
-    .map(|(peer, _)| peer.clone())
-    .collect();
-  for peer in peers {
-    if let Some(payload) = &snapshot_payload {
-      let _ = send_payload(runtime, entropy, &peer, &protocol, payload).await;
+  if page_due {
+    cursor.ticks_since_page_send = 0;
+    for peer in &peers {
+      if let Some(payload) = &snapshot_payload {
+        let _ = send_payload(runtime, entropy, peer, &protocol, payload).await;
+      }
+      let _ = send_payload(runtime, entropy, peer, &protocol, &page_payload).await;
     }
-    let _ = send_payload(runtime, entropy, &peer, &protocol, &page_payload).await;
+    return Ok(());
+  }
+  cursor.ticks_since_page_send = cursor.ticks_since_page_send.saturating_add(1);
+  if let Some(payload) = &snapshot_payload {
+    for peer in &peers {
+      let _ = send_payload(runtime, entropy, peer, &protocol, payload).await;
+    }
   }
   Ok(())
+}
+
+/// The alive-peer set of one node, in stable order.
+fn alive_peers(sessions: &SessionTable) -> Result<Vec<NodeId>> {
+  let guard = sessions
+    .lock()
+    .map_err(|_| Error::internal("session table"))?;
+  Ok(
+    guard
+      .iter()
+      .filter(|(_, entry)| entry.alive())
+      .map(|(peer, _)| peer.clone())
+      .collect(),
+  )
+}
+
+/// A stable order-independent fingerprint of the alive-peer set.
+fn peers_fingerprint(peers: &[NodeId]) -> u64 {
+  use std::hash::{Hash, Hasher};
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  peers.len().hash(&mut hasher);
+  for peer in peers {
+    peer.hash(&mut hasher);
+  }
+  hasher.finish()
 }
 
 /// Sends one sync payload to `peer` over its authenticated session with a
