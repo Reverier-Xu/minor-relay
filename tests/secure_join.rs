@@ -509,18 +509,35 @@ use minor_relay::ConnectMember;
 async fn packet_round_trip(
   sender: &NodeHandle, target: &minor_relay::NodeId, collector: &Arc<Collector>,
 ) -> minor_relay::NodeId {
-  let packet = sender
-    .create_packet(
-      PacketTarget::Exact(target.clone()),
-      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
-      policy(),
-      metadata(),
-    )
-    .unwrap();
-  let ack = packet
-    .send_sync(Box::new(VecBody::new(vec![b"a", b"b"])))
-    .await
-    .unwrap();
+  // Right after crossed-dial convergence the drained connection can
+  // still interrupt one in-flight send; an explicit interruption is a
+  // contract outcome, so the round trip retries briefly before failing.
+  let deadline = std::time::Instant::now() + Duration::from_secs(10);
+  let ack = loop {
+    let packet = sender
+      .create_packet(
+        PacketTarget::Exact(target.clone()),
+        ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+        policy(),
+        metadata(),
+      )
+      .unwrap();
+    match packet
+      .send_sync(Box::new(VecBody::new(vec![b"a", b"b"])))
+      .await
+    {
+      Ok(ack) => break ack,
+      Err(error)
+        if matches!(
+          error.kind(),
+          ErrorKind::StreamInterrupted | ErrorKind::RouteUnavailable
+        ) && std::time::Instant::now() < deadline =>
+      {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+      }
+      Err(error) => panic!("packet round trip failed persistently: {error:?}"),
+    }
+  };
   assert_eq!(ack.destination(), target);
   wait_for(
     || !collector.packets.lock().unwrap().is_empty(),
