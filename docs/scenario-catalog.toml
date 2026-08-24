@@ -829,7 +829,7 @@ cases = [
     "THR-010",
     "THR-016",
   ] },
-  { title = "Observe recovery through public transport", acceptance = "A counting transport observes bounded configured attempts and immediate recovery while policy inputs arrive incrementally and no test-only topology shortcut is used.", rebaseline = "ADR-0007", threats = [
+  { title = "Observe recovery through public transport", acceptance = "Dial and listen attempts flow through the registered transport boundary where they are observable and bounded by the configured fan-out and pending capacities; immediate recovery is observed through public facade commands while policy inputs arrive incrementally.", rebaseline = "ADR-0008", threats = [
     "THR-008",
     "THR-028",
   ] },
@@ -871,7 +871,7 @@ cases = [
     "THR-017",
     "THR-028",
   ] },
-  { title = "Track the metadata convergence SLO", acceptance = "The sixteen-node trend run records admission and descriptor completion from public observations and fails any sample exceeding 10,000 milliseconds.", rebaseline = "ADR-0007", threats = [
+  { title = "Track the metadata convergence SLO", acceptance = "The trend lane records admission-to-descriptor-completion samples from public observations and fails any sample exceeding 10,000 milliseconds on the SLO profile, while the sixteen-node readiness lane asserts bounded convergence without a fixed-round rule.", rebaseline = "ADR-0008", threats = [
     "THR-010",
     "THR-028",
   ] },
