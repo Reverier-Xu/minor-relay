@@ -647,10 +647,34 @@ async fn secure_join_rotation_keeps_members_and_reconnect_is_credential_free() {
 
 use tokio::sync::Notify;
 
+/// A race-free release gate: `open` is stored before the notification, so
+/// a body that has not reached its wait yet still observes the release.
+#[derive(Debug, Default)]
+struct ReleaseGate {
+  open: std::sync::atomic::AtomicBool,
+  notify: Notify,
+}
+
+impl ReleaseGate {
+  fn open(&self) {
+    self.open.store(true, std::sync::atomic::Ordering::SeqCst);
+    self.notify.notify_waiters();
+  }
+
+  async fn wait(&self) {
+    loop {
+      if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+      }
+      self.notify.notified().await;
+    }
+  }
+}
+
 /// A packet body that stalls on the first chunk until released, then ends.
 #[derive(Debug)]
 struct BlockingBody {
-  release: Arc<Notify>,
+  release: Arc<ReleaseGate>,
   released: bool,
 }
 
@@ -661,7 +685,7 @@ impl PacketBody for BlockingBody {
     }
     self.released = true;
     Box::pin(async move {
-      self.release.notified().await;
+      self.release.wait().await;
       Ok(Some(Arc::from(&b"held"[..])))
     })
   }
@@ -974,7 +998,7 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
   let receiver_id = receiver_view.node_id().clone();
   let _joiner_id = admission.admitted_node().clone();
 
-  let release = Arc::new(Notify::new());
+  let release = Arc::new(ReleaseGate::default());
   let protocol_tag = ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap();
   for _ in 0..4 {
     let packet = joiner_handle
@@ -1008,7 +1032,7 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
     .unwrap_err();
   assert_eq!(error.kind(), ErrorKind::Overloaded);
 
-  release.notify_waiters();
+  release.open();
   wait_for(
     || recorder.packets.lock().unwrap().len() >= 4,
     Duration::from_secs(10),
@@ -1238,7 +1262,7 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
       metadata(),
     )
     .unwrap();
-  let release = Arc::new(Notify::new());
+  let release = Arc::new(ReleaseGate::default());
   let body = BlockingBody {
     release: Arc::clone(&release),
     released: false,
@@ -1281,7 +1305,7 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
   for _ in 0..10 {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
   }
-  release.notify_one();
+  release.open();
 
   // The in-flight route must end with the explicit interruption state.
   let mut terminal: Option<RouteState> = None;
