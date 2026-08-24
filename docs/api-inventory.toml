@@ -1,7 +1,7 @@
 schema = "relay.woooo.tech/schemas/api-inventory-v1"
 status = "accepted"
 document = "docs/api-manifest.md"
-sha256 = "b3f2985e942443adbe4c3ed60e1720d87512ae96a713c7ba7f9ad71c1da17113"
+sha256 = "de2c782d411dc795714bb1e274eaf86cc88b60c4dbce11d115f3c74fa90a96e6"
 
 node_handle_signatures = [
   "pub async fn command<C: Command>(&self, command: C) -> Result<C::Output>;",
@@ -61,10 +61,7 @@ extension_traits = [
   "Storage",
   "StoreSnapshot",
   "StoreScan",
-  "Transport",
-  "TransportListener",
-  "TransportConnection",
-  "Discovery",
+        "Discovery",
   "PacketBody",
   "PacketConsumer",
   "NeighborPolicy",

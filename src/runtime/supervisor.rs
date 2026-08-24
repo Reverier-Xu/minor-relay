@@ -26,7 +26,10 @@ use crate::{
       RouteTable, SessionPacketContext, SessionTable, insert_route, run_outbound, run_session,
     },
   },
-  transport::{cert::EphemeralCertificate, connection::Connection, tls},
+  transport::{
+    registry::{Transport, TransportListener},
+    tls,
+  },
 };
 
 const CONTROL_CAPACITY: usize = 32;
@@ -69,6 +72,9 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) config: NodeConfig,
   pub(crate) entropy: Arc<dyn Entropy>,
   pub(crate) extensions: Arc<ExtensionRegistry>,
+  /// The registered transport every dial and listen flows through, so
+  /// configured attempts are observable at one boundary (SC-G05-P0-22).
+  pub(crate) transport: Arc<dyn Transport>,
   pub(crate) sessions: SessionTable,
   pub(crate) routes: RouteTable,
   pub(crate) packet_tx: Option<mpsc::Sender<crate::packet::OutboundRequest>>,
@@ -80,6 +86,14 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
   let mut runtime_seed = [0; 32];
   dependencies.entropy.fill(&mut runtime_seed)?;
   dependencies._runtime_seed = Some(runtime_seed);
+  // Every dial and listen flows through the registered transport, so a
+  // counting wrapper registered by the caller observes configured
+  // attempts (SC-G05-P0-22).
+  dependencies.transport = dependencies
+    .extensions
+    .transport(&crate::transport::registry::WssTransport::tag()?)
+    .cloned()
+    .ok_or_else(|| Error::internal("built-in transport"))?;
   let receipt_retention = dependencies.config.receipt_retention();
   let context = open_local_identity(
     &dependencies.storage_factory,
@@ -185,7 +199,7 @@ async fn supervise(
         let _ = reply.send(result);
       }
       Control::StopListener { listener, reply } => {
-        let result = supervisor.stop_listener(&listener);
+        let result = supervisor.stop_listener(&listener).await;
         let _ = reply.send(result);
       }
       Control::JoinCluster {
@@ -289,7 +303,10 @@ struct Supervisor {
   driver: SessionDriver,
   packet: Arc<SessionPacketContext>,
   route_capacity: usize,
-  listeners: BTreeMap<crate::identity::ListenerId, (Endpoint, AbortHandle)>,
+  listeners: BTreeMap<
+    crate::identity::ListenerId,
+    (Endpoint, std::sync::Arc<dyn TransportListener>, AbortHandle),
+  >,
   recovery: crate::membership::recovery::RecoveryController,
   recovery_pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
   published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>>,
@@ -467,78 +484,59 @@ impl Supervisor {
 
   async fn listen(&mut self, endpoint: Endpoint, tasks: &mut JoinSet<()>) -> Result<ListenerView> {
     self.require_unblocked()?;
-    let address = format!("{}:{}", endpoint.host(), endpoint.port());
-    let listener = tokio::net::TcpListener::bind(&address).await.map_err(|_| {
-      Error::provider(
-        crate::ProviderErrorKind::Io,
-        crate::ProviderErrorContext::TransportBind,
-      )
-    })?;
-    let bound = listener
-      .local_addr()
-      .map_err(|_| Error::internal("listener address"))?;
-    let bound = crate::transport::Endpoint::from_socket_addr(bound);
-    let certificate = EphemeralCertificate::generate(self.dependencies.entropy.as_ref())?;
-    let config = tls::server_config(&certificate)?;
-    let rules = crate::session::handshake_frame_rules()?;
+    let listener: std::sync::Arc<dyn TransportListener> =
+      std::sync::Arc::from(self.dependencies.transport.bind(endpoint.clone()).await?);
+    let bound = listener.local_endpoint();
     let driver = self.driver.clone();
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
     let connection_tasks = self.connection_tasks.clone();
+    let accept_listener = std::sync::Arc::clone(&listener);
+    let insert_listener = std::sync::Arc::clone(&listener);
     let abort = tasks.spawn(async move {
       loop {
-        let (tcp, _) = match listener.accept().await {
-          Ok(accepted) => accepted,
-          // A transient accept failure (fd exhaustion, backlog reset) must
-          // not kill the listener: back off briefly and keep accepting.
-          Err(_) => {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            continue;
-          }
+        // The join hint is computed per accepted connection so the accept
+        // path stays fast and never stalls on the credential issuer lock;
+        // a hint failure skips this connection only.
+        let mut hint = match driver.join_hint().await {
+          Ok(Some(hint)) => Some(hint),
+          _ => None,
         };
-        let config = config.clone();
+        if let Some(hint) = hint.as_mut()
+          && let Some(spki) = listener.leaf_spki()
+        {
+          *hint = hint.clone().with_leaf_spki(spki);
+        }
+        let accepted = accept_listener.accept(hint.as_ref()).await;
+        let mut connection = match accepted {
+          Ok(connection) => connection,
+          // A failed TLS/prelude upgrade must not kill the listener.
+          Err(_) => continue,
+        };
         let driver = driver.clone();
-        let sessions = sessions.clone();
         let packet = packet.clone();
+        let sessions = sessions.clone();
         let shutdown = shutdown.clone();
-        let leaf = certificate.leaf_spki().ok().map(|spki| spki.as_ref().to_vec());
         let task = tokio::spawn(async move {
-          // The join hint is computed inside the connection task so the
-          // accept loop stays fast and never stalls on the credential
-          // issuer lock; a hint failure skips this connection only.
-          let mut hint = match driver.join_hint().await {
-            Ok(Some(hint)) => Some(hint),
-            _ => None,
-          };
-          if let Some(hint) = hint.as_mut()
-            && let Some(spki) = leaf.as_ref()
-          {
-            *hint = hint.clone().with_leaf_spki(spki.clone());
-          }
-          let accepted = Connection::accept(tcp, config, rules, hint.as_ref()).await;
-          let mut connection = match accepted {
-            Ok(connection) => connection,
-            Err(_) => return,
-          };
-            match driver.respond(&mut connection).await {
-              Ok(session) => {
-                // Keep the authenticated session open: it serves packet
-                // streams until the connection closes (ADR-0007).
-                run_session(
-                  connection,
-                  session,
-                  packet,
-                  sessions,
-                  shutdown,
-                  crate::session::stream::DialDirection::Incoming,
-                )
-                .await;
-              }
-              Err(error) => {
-                tracing::warn!(kind = ?error.kind(), context = %error, "session establishment failed");
-              }
+          match driver.respond(&mut connection).await {
+            Ok(session) => {
+              // Keep the authenticated session open: it serves packet
+              // streams until the connection closes (ADR-0007).
+              run_session(
+                connection,
+                session,
+                packet,
+                sessions,
+                shutdown,
+                crate::session::stream::DialDirection::Incoming,
+              )
+              .await;
             }
+            Err(error) => {
+              tracing::warn!(kind = ?error.kind(), context = %error, "session establishment failed");
+            }
+          }
         });
         if let Ok(mut tasks) = connection_tasks.lock() {
           tasks.push(task);
@@ -546,7 +544,14 @@ impl Supervisor {
       }
     });
     let id = crate::identity::ListenerId::generate(self.dependencies.entropy.as_ref())?;
-    self.listeners.insert(id.clone(), (bound.clone(), abort));
+    self.listeners.insert(
+      id.clone(),
+      (
+        bound.clone(),
+        std::sync::Arc::clone(&insert_listener),
+        abort,
+      ),
+    );
     // Publish the bound endpoint so the next anti-entropy tick pages it in
     // the local descriptor (recovery dials peers through published
     // endpoints).
@@ -558,10 +563,13 @@ impl Supervisor {
     Ok(ListenerView::new(id, bound))
   }
 
-  fn stop_listener(&mut self, listener: &crate::identity::ListenerId) -> Result<()> {
-    let Some((endpoint, abort)) = self.listeners.remove(listener) else {
+  async fn stop_listener(&mut self, listener: &crate::identity::ListenerId) -> Result<()> {
+    let Some((endpoint, listener_handle, abort)) = self.listeners.remove(listener) else {
       return Err(Error::not_found("listener"));
     };
+    // Close releases the bound address immediately (a later rebind on the
+    // same port works); aborting the accept task alone would not.
+    let _ = listener_handle.close().await;
     abort.abort();
     if let Ok(mut endpoints) = self.published_endpoints.lock() {
       endpoints.retain(|candidate| candidate != &endpoint);
@@ -574,18 +582,11 @@ impl Supervisor {
     tasks: &mut JoinSet<()>,
   ) -> Result<AdmissionView> {
     self.require_unblocked()?;
-    let tcp = tokio::net::TcpStream::connect(receiver.authority())
-      .await
-      .map_err(|_| {
-        Error::provider(
-          crate::ProviderErrorKind::Io,
-          crate::ProviderErrorContext::TransportConnect,
-        )
-      })?;
-    let config = tls::join_client_config()?;
-    let server_name = receiver.server_name()?;
-    let rules = crate::session::handshake_frame_rules()?;
-    let mut connection = Connection::connect(tcp, config, server_name, rules).await?;
+    let mut connection = self
+      .dependencies
+      .transport
+      .connect(receiver.clone(), tls::join_client_config()?)
+      .await?;
     let hint = connection
       .join_hint()
       .cloned()
@@ -633,7 +634,16 @@ impl Supervisor {
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
-    dial_member(driver, sessions, packet, shutdown, receiver, &peer).await
+    dial_member(
+      self.dependencies.transport.clone(),
+      driver,
+      sessions,
+      packet,
+      shutdown,
+      receiver,
+      &peer,
+    )
+    .await
   }
 
   /// Routes one outbound packet over the established session to its exact
@@ -991,8 +1001,12 @@ impl Supervisor {
         let packet = self.packet.clone();
         let shutdown = self.shutdown_tx.subscribe();
         let pending = std::sync::Arc::clone(&self.recovery_pending);
+        let transport = Arc::clone(&self.dependencies.transport);
         tokio::spawn(async move {
-          let _ = dial_member(driver, sessions, packet, shutdown, receiver, &peer).await;
+          let _ = dial_member(
+            transport, driver, sessions, packet, shutdown, receiver, &peer,
+          )
+          .await;
           // Release the in-flight slot when the dial resolves, so recovery
           // stays alive across repeated partition waves (the counter bounds
           // in-flight dials, not lifetime volume).
@@ -1043,18 +1057,10 @@ impl Supervisor {
 /// Called by `connect_member` and by the recovery controller's detached
 /// dial tasks.
 async fn dial_member(
-  driver: SessionDriver, sessions: crate::session::stream::SessionTable,
-  packet: Arc<SessionPacketContext>, shutdown: watch::Receiver<()>, receiver: Endpoint,
-  peer: &NodeId,
+  transport: Arc<dyn Transport>, driver: SessionDriver,
+  sessions: crate::session::stream::SessionTable, packet: Arc<SessionPacketContext>,
+  shutdown: watch::Receiver<()>, receiver: Endpoint, peer: &NodeId,
 ) -> Result<NodeId> {
-  let tcp = tokio::net::TcpStream::connect(receiver.authority())
-    .await
-    .map_err(|_| {
-      Error::provider(
-        crate::ProviderErrorKind::Io,
-        crate::ProviderErrorContext::TransportConnect,
-      )
-    })?;
   // Member reconnects pin the peer's TLS leaf to the SPKI anchor learned
   // at join (same-listener reconnects); without an anchor this process
   // falls back to the join-mode relaxation and the application proof
@@ -1065,9 +1071,7 @@ async fn dial_member(
     }
     None => tls::join_client_config()?,
   };
-  let server_name = receiver.server_name()?;
-  let rules = crate::session::handshake_frame_rules()?;
-  let mut connection = Connection::connect(tcp, config, server_name, rules).await?;
+  let mut connection = transport.connect(receiver.clone(), config).await?;
   let session = driver.initiate_member(&mut connection, peer).await?;
   let authenticated = session.peer().clone();
   let local_packet = packet;

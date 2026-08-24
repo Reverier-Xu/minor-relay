@@ -162,11 +162,6 @@ impl Connection {
     &self.channel_binding
   }
 
-  /// The frame rules enforced on this connection.
-  pub(crate) const fn rules(&self) -> &FrameRules {
-    &self.rules
-  }
-
   /// Sends one WebSocket ping for keepalive.
   // TODO(G4-06): the pre-split connection ping; the session writer owns
   // keepalive today.

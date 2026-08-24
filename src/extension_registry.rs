@@ -12,7 +12,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use crate::{
   DiscoveryTag, Error, FeatureTag, IncomingPacket, ProtocolTag, Result, TransportTag,
   api::BoxFuture,
-  transport::{Discovery, Transport},
+  transport::registry::{Discovery, Transport},
 };
 
 /// The immutable definition of one domain-qualified packet protocol: its
@@ -72,7 +72,7 @@ impl ExtensionRegistry {
   /// duplicate tag, a malformed or reserved tag, or a registration that
   /// conflicts with an existing entry is rejected before use; the built-in
   /// WSS transport is always present.
-  pub fn register_transport(
+  pub(crate) fn register_transport(
     &mut self, tag: TransportTag, value: Arc<dyn Transport>,
   ) -> Result<&mut Self> {
     if self.transports.contains_key(&tag) {
@@ -84,7 +84,8 @@ impl ExtensionRegistry {
 
   /// Registers one discovery implementation under its canonical tag, with
   /// the same duplicate/reserved/conflict rules as transports.
-  pub fn register_discovery(
+  #[cfg(test)]
+  pub(crate) fn register_discovery(
     &mut self, tag: DiscoveryTag, value: Arc<dyn Discovery>,
   ) -> Result<&mut Self> {
     if self.discoveries.contains_key(&tag) {

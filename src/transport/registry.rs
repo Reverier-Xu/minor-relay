@@ -30,56 +30,44 @@ impl ChannelBinding {
   }
 }
 
-/// One authenticated, framed transport connection. The session driver
-/// handshakes exclusively through this interface, so a transport
-/// implementation cannot activate a session without the exact
-/// mutually-authenticated channel binding and frame rules.
-///
-/// Frames are complete prelude messages (schema/kind/flags/body encoded as
-/// one byte slice); the session layer owns message semantics.
-pub trait TransportConnection: fmt::Debug + Send + Sync + 'static {
-  /// The peer's observed endpoint.
-  fn peer_endpoint(&self) -> Endpoint;
-
-  /// The RFC 9266 exporter channel binding of the authenticated TLS
-  /// connection.
-  fn channel_binding(&self) -> ChannelBinding;
-
-  /// Sends one complete prelude frame.
-  fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFuture<'a, Result<()>>;
-
-  /// Receives the next complete prelude frame; `Ok(None)` on an orderly
-  /// close.
-  fn receive<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<std::sync::Arc<[u8]>>>>;
-
-  /// Closes the connection.
-  fn close<'a>(&'a mut self) -> BoxFuture<'a, Result<()>>;
-}
-
-/// One bound listener produced by a [`Transport`].
-pub trait TransportListener: fmt::Debug + Send + Sync + 'static {
+/// A framed session stream produced by a registered [`Transport`]. The
+/// boundary is intentionally concrete: exactly one built-in wire format
+/// exists today and the session handshake drives this type directly; a
+/// second format generalizes behind this same trait.
+pub(crate) trait TransportListener: fmt::Debug + Send + Sync + 'static {
   /// The real bound endpoint (port zero resolves to the OS-assigned port).
   fn local_endpoint(&self) -> Endpoint;
 
-  /// Accepts the next connection.
-  fn accept<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>>;
+  /// The listener certificate's leaf SPKI, served in the join hint so
+  /// member reconnects can pin the peer's TLS leaf.
+  fn leaf_spki(&self) -> Option<Vec<u8>> {
+    None
+  }
+
+  /// Accepts the next inbound session stream, completing the TLS and
+  /// prelude upgrade. `hint` is the listener-side credential-generation
+  /// evidence served to joining peers.
+  fn accept<'a>(
+    &'a self, hint: Option<&'a JoinHint>,
+  ) -> BoxFuture<'a, Result<super::connection::Connection>>;
 
   /// Closes the listener and releases its bound address.
   fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
 }
 
 /// An open transport implementation registered under a canonical
-/// [`TransportTag`].
-pub trait Transport: fmt::Debug + Send + Sync + 'static {
+/// [`TransportTag`]. Implementations own wire establishment up to the
+/// crate's framed [`Connection`]; every dial and bind flows through this
+/// boundary, so configured attempts are observable and bounded here.
+pub(crate) trait Transport: fmt::Debug + Send + Sync + 'static {
   /// Binds one listener at `endpoint`.
-  fn bind<'a>(
-    &'a self, endpoint: &'a Endpoint,
-  ) -> BoxFuture<'a, Result<Box<dyn TransportListener>>>;
+  fn bind(&self, endpoint: Endpoint) -> BoxFuture<'static, Result<Box<dyn TransportListener>>>;
 
-  /// Connects to `endpoint`.
-  fn connect<'a>(
-    &'a self, endpoint: &'a Endpoint,
-  ) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>>;
+  /// Connects to `endpoint` with the caller-selected client TLS config
+  /// (the join-mode default, or member-mode SPKI pinning).
+  fn connect(
+    &self, endpoint: Endpoint, client: std::sync::Arc<rustls::ClientConfig>,
+  ) -> BoxFuture<'static, Result<super::connection::Connection>>;
 }
 
 /// One candidate endpoint observation for a node, with a caller-selected
@@ -171,123 +159,11 @@ pub trait Discovery: fmt::Debug + Send + Sync + 'static {
     &'a self, cursor: Option<&'a PageCursor>, limit: usize,
   ) -> BoxFuture<'a, Result<DiscoveryPage>>;
 }
-
-/// A [`TransportConnection`] wrapper around the crate's concrete
-/// [`Connection`], produced by the built-in WSS transport.
-#[derive(Debug)]
-pub(crate) struct WssConnection {
-  inner: super::connection::Connection,
-  peer: Endpoint,
-}
-
-impl WssConnection {
-  // TODO(G4-06): consumed when the supervisor drives sessions through the
-  // registered transport.
-  #[allow(dead_code)]
-  pub(crate) fn new(inner: super::connection::Connection, peer: Endpoint) -> Self {
-    Self { inner, peer }
-  }
-
-  /// The listener's non-secret join hint captured during the upgrade,
-  /// when the peer published one (client side).
-  // TODO(G4-06): consumed when the supervisor drives sessions through the
-  // registered transport.
-  #[allow(dead_code)]
-  pub(crate) fn join_hint(&self) -> Option<JoinHint> {
-    self.inner.join_hint().cloned()
-  }
-
-  /// The wrapped concrete connection (built-in only; session driver and
-  /// regressions drive the handshake on it).
-  // TODO(G4-06): consumed when the supervisor drives sessions through the
-  // registered transport.
-  #[allow(dead_code)]
-  pub(crate) fn inner(&self) -> &super::connection::Connection {
-    &self.inner
-  }
-
-  /// Splits into the concrete framed writer/reader halves; the session
-  /// data plane runs on these after the handshake completes.
-  #[allow(dead_code)]
-  pub(crate) fn into_split(
-    self,
-  ) -> (
-    super::connection::ConnectionWriter,
-    super::connection::ConnectionReader,
-  ) {
-    self.inner.into_split()
-  }
-}
-
-impl TransportConnection for WssConnection {
-  fn peer_endpoint(&self) -> Endpoint {
-    self.peer.clone()
-  }
-
-  fn channel_binding(&self) -> ChannelBinding {
-    ChannelBinding::from_tls_exporter(*self.inner.channel_binding())
-  }
-
-  fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFuture<'a, Result<()>> {
-    let rules = self.inner.rules();
-    let decoded = crate::protocol::split_message(
-      frame,
-      rules.allowed_flags,
-      rules.message_limit,
-      rules.receive_limit,
-      rules.is_declared,
-    );
-    Box::pin(async move {
-      let (prelude, body) = decoded?;
-      self
-        .inner
-        .send(
-          prelude.schema_id(),
-          prelude.kind_id(),
-          prelude.flags(),
-          body,
-        )
-        .await
-    })
-  }
-
-  fn receive<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<std::sync::Arc<[u8]>>>> {
-    Box::pin(async move {
-      let Some(message) = self.inner.receive().await? else {
-        return Ok(None);
-      };
-      let mut frame = Vec::with_capacity(crate::protocol::PRELUDE_LEN + message.body.len());
-      frame.extend_from_slice(
-        &crate::protocol::Prelude::new(
-          message.schema_id,
-          message.kind_id,
-          message.flags,
-          u32::try_from(message.body.len())
-            .map_err(|_| Error::invalid_input("wire body length"))?,
-        )
-        .encode(),
-      );
-      frame.extend_from_slice(&message.body);
-      Ok(Some(std::sync::Arc::from(frame)))
-    })
-  }
-
-  fn close<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
-    Box::pin(async move { self.inner.close().await })
-  }
-}
-
 /// The built-in WSS transport: TLS 1.3 WebSocket over TCP, carrying the
 /// crate's prelude frames. Registered by default under
 /// `relay.woooo.tech/transports/wss`; the session driver and the G4
 /// regressions use it through the registry.
-pub(crate) struct WssTransport {
-  /// The listener-side join hint source (cluster and credential
-  /// generation). A plain `WssTransport::new()` has no hint source and
-  /// can only dial; the supervisor wires `with_hint` so the registered
-  /// built-in transport serves complete joins.
-  hint: Option<Arc<dyn Fn() -> Option<JoinHint> + Send + Sync>>,
-}
+pub(crate) struct WssTransport;
 
 impl fmt::Debug for WssTransport {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -299,16 +175,7 @@ impl fmt::Debug for WssTransport {
 
 impl WssTransport {
   pub(crate) fn new() -> Self {
-    Self { hint: None }
-  }
-
-  /// Wires the listener-side join hint source; used by the supervisor when
-  /// it serves the built-in transport through the registry.
-  // TODO(G4-06): consumed when the supervisor serves joins through the
-  // registered transport.
-  #[allow(dead_code)]
-  pub(crate) fn with_hint(hint: Arc<dyn Fn() -> Option<JoinHint> + Send + Sync>) -> Self {
-    Self { hint: Some(hint) }
+    Self
   }
 
   /// The canonical tag of the built-in transport.
@@ -321,10 +188,7 @@ impl WssTransport {
 }
 
 impl Transport for WssTransport {
-  fn bind<'a>(
-    &'a self, endpoint: &'a Endpoint,
-  ) -> BoxFuture<'a, Result<Box<dyn TransportListener>>> {
-    let hint = self.hint.clone();
+  fn bind(&self, endpoint: Endpoint) -> BoxFuture<'static, Result<Box<dyn TransportListener>>> {
     Box::pin(async move {
       let tcp = tokio::net::TcpListener::bind((endpoint.host(), endpoint.port()))
         .await
@@ -341,18 +205,21 @@ impl Transport for WssTransport {
       let config = super::tls::server_config(&certificate)?;
       let rules = crate::session::handshake_frame_rules()?;
       Ok(Box::new(WssListener {
-        listener: tcp,
+        listener: tokio::sync::Mutex::new(Some(tcp)),
         config,
         rules,
-        hint,
+        leaf: certificate
+          .leaf_spki()
+          .ok()
+          .map(|spki| spki.as_ref().to_vec()),
         bound: Endpoint::from_socket_addr(bound),
       }) as Box<dyn TransportListener>)
     })
   }
 
-  fn connect<'a>(
-    &'a self, endpoint: &'a Endpoint,
-  ) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>> {
+  fn connect(
+    &self, endpoint: Endpoint, client: std::sync::Arc<rustls::ClientConfig>,
+  ) -> BoxFuture<'static, Result<super::connection::Connection>> {
     Box::pin(async move {
       let tcp = tokio::net::TcpStream::connect(endpoint.authority())
         .await
@@ -362,25 +229,19 @@ impl Transport for WssTransport {
             crate::ProviderErrorContext::TransportConnect,
           )
         })?;
-      let config = super::tls::join_client_config()?;
       let server_name = endpoint.server_name()?;
       let rules = crate::session::handshake_frame_rules()?;
-      let connection =
-        super::connection::Connection::connect(tcp, config, server_name, rules).await?;
-      Ok(Box::new(WssConnection {
-        inner: connection,
-        peer: endpoint.clone(),
-      }) as Box<dyn TransportConnection>)
+      super::connection::Connection::connect(tcp, client, server_name, rules).await
     })
   }
 }
 
 /// A [`TransportListener`] for the built-in WSS transport.
 pub(crate) struct WssListener {
-  listener: tokio::net::TcpListener,
+  listener: tokio::sync::Mutex<Option<tokio::net::TcpListener>>,
   config: std::sync::Arc<rustls::ServerConfig>,
   rules: super::connection::FrameRules,
-  hint: Option<Arc<dyn Fn() -> Option<JoinHint> + Send + Sync>>,
+  leaf: Option<Vec<u8>>,
   bound: Endpoint,
 }
 
@@ -398,32 +259,40 @@ impl TransportListener for WssListener {
     self.bound.clone()
   }
 
-  fn accept<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>> {
+  fn leaf_spki(&self) -> Option<Vec<u8>> {
+    self.leaf.clone()
+  }
+
+  fn accept<'a>(
+    &'a self, hint: Option<&'a JoinHint>,
+  ) -> BoxFuture<'a, Result<super::connection::Connection>> {
     let config = std::sync::Arc::clone(&self.config);
     let rules = self.rules;
-    let hint = self.hint.as_ref().and_then(|source| source());
     Box::pin(async move {
-      let (tcp, _) = self.listener.accept().await.map_err(|_| {
+      // Borrow the inner listener for accept; close takes the option so a
+      // later accept observes shutdown instead of binding forever. The
+      // async mutex is held across the accept await by design.
+      let accepted = match self.listener.lock().await.as_ref() {
+        Some(listener) => listener.accept().await,
+        None => return Err(Error::shutting_down("transport listener")),
+      };
+      let (tcp, _) = accepted.map_err(|_| {
         Error::provider(
           crate::ProviderErrorKind::Io,
           crate::ProviderErrorContext::TransportAccept,
         )
       })?;
-      let peer = tcp
-        .peer_addr()
-        .map(Endpoint::from_socket_addr)
-        .map_err(|_| Error::internal("peer address"))?;
-      let connection =
-        super::connection::Connection::accept(tcp, config, rules, hint.as_ref()).await?;
-      Ok(Box::new(WssConnection {
-        inner: connection,
-        peer,
-      }) as Box<dyn TransportConnection>)
+      super::connection::Connection::accept(tcp, config, rules, hint).await
     })
   }
 
   fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
-    Box::pin(async move { Ok(()) })
+    Box::pin(async move {
+      // Dropping the TCP listener releases the bound address immediately:
+      // close-then-rebind works (the previous no-op did not).
+      self.listener.lock().await.take();
+      Ok(())
+    })
   }
 }
 
@@ -431,11 +300,11 @@ impl TransportListener for WssListener {
 mod tests {
   use std::sync::Arc;
 
-  use super::WssTransport;
+  use super::{Discovery, Transport, WssTransport};
   use crate::{
     DiscoveryTag, ErrorKind, ExtensionRegistry, Result, TransportTag,
     api::BoxFuture,
-    transport::{Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor, Transport},
+    transport::{DiscoveryPage, Endpoint, EndpointCandidate, PageCursor},
   };
 
   fn transport_tag(value: &str) -> TransportTag {
@@ -539,14 +408,18 @@ mod tests {
   async fn wss_transport_connection_carries_a_real_tls_exporter_binding() {
     let transport = WssTransport::new();
     let listener = transport
-      .bind(&Endpoint::parse("wss://127.0.0.1:0").unwrap())
+      .bind(Endpoint::parse("wss://127.0.0.1:0").unwrap())
       .await
       .unwrap();
     let bound = listener.local_endpoint();
 
     // The TLS handshake needs both sides concurrently, so drive connect
-    // and accept together.
-    let (client, accepted) = tokio::join!(transport.connect(&bound), listener.accept(),);
+    // and accept together. The listener serves the join hint the dialer
+    // does not need (the client config carries no pinning here).
+    let (client, accepted) = tokio::join!(
+      transport.connect(bound, super::super::tls::join_client_config().unwrap()),
+      listener.accept(None),
+    );
     let client = client.unwrap();
     let accepted = accepted.unwrap();
 
@@ -555,8 +428,7 @@ mod tests {
     // cannot produce this value.
     let client_binding = client.channel_binding();
     let server_binding = accepted.channel_binding();
-    assert_eq!(client_binding.as_bytes(), server_binding.as_bytes());
-    assert_ne!(client_binding.as_bytes(), &[0_u8; 32]);
+    assert_eq!(client_binding, server_binding);
   }
 
   // ---- SC-G04-P0-04: the built-in WSS transport is registered and the

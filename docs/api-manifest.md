@@ -249,8 +249,6 @@ impl RecoveryConfig {
 pub struct ExtensionRegistry { /* private */ }
 impl ExtensionRegistry {
     pub fn new() -> Self;
-    pub fn register_transport(&mut self, tag: TransportTag, value: std::sync::Arc<dyn Transport>) -> Result<&mut Self>;
-    pub fn register_discovery(&mut self, tag: DiscoveryTag, value: std::sync::Arc<dyn Discovery>) -> Result<&mut Self>;
     pub fn register_feature(&mut self, value: FeatureDefinition) -> Result<&mut Self>;
     pub fn register_protocol(&mut self, value: ProtocolDefinition, consumer: std::sync::Arc<dyn PacketConsumer>) -> Result<&mut Self>;
     pub fn register_neighbor_policy(&mut self, tag: QualifiedTag, value: std::sync::Arc<dyn NeighborPolicy>) -> Result<&mut Self>;
@@ -984,23 +982,6 @@ pub struct ChannelBinding { /* private [u8; 32] */ }
 impl ChannelBinding {
     pub const fn from_tls_exporter(value: [u8; 32]) -> Self;
     pub const fn as_bytes(&self) -> &[u8; 32];
-}
-
-pub trait Transport: std::fmt::Debug + Send + Sync + 'static {
-    fn bind<'a>(&'a self, endpoint: &'a Endpoint) -> BoxFuture<'a, Result<Box<dyn TransportListener>>>;
-    fn connect<'a>(&'a self, endpoint: &'a Endpoint) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>>;
-}
-pub trait TransportListener: std::fmt::Debug + Send + Sync + 'static {
-    fn local_endpoint(&self) -> Endpoint;
-    fn accept<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn TransportConnection>>>;
-    fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
-}
-pub trait TransportConnection: std::fmt::Debug + Send + Sync + 'static {
-    fn peer_endpoint(&self) -> Endpoint;
-    fn channel_binding(&self) -> ChannelBinding;
-    fn send<'a>(&'a self, frame: &'a [u8]) -> BoxFuture<'a, Result<()>>;
-    fn receive<'a>(&'a self) -> BoxFuture<'a, Result<Option<std::sync::Arc<[u8]>>>>;
-    fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
 }
 
 pub struct EndpointCandidate { /* private */ }

@@ -57,10 +57,10 @@ verify_frozen_document docs/adr/0008-session-trust-membership-sync.md 3ab4573643
 verify_frozen_document docs/roadmap.md 159a070efca404dace1a7140ef04fe94bc2338a644bc3e7311318af934bde99f
 verify_frozen_document docs/development-gates.md 4faa7918fa79697d10e29be6b14fe3cc833436db2d2981c48d23075d86d455e4
 verify_frozen_document docs/implementation-plan.md b86d2116166de002e0fc8ae1b7f8cfca1edfcf214ba685bbbdb3127c755b27ac
-verify_frozen_document docs/api-manifest.md b3f2985e942443adbe4c3ed60e1720d87512ae96a713c7ba7f9ad71c1da17113
-verify_frozen_document docs/api-inventory.toml 504f582204a314c71d97026671414b2241b970813a025e7205b327fd60da36e7
+verify_frozen_document docs/api-manifest.md de2c782d411dc795714bb1e274eaf86cc88b60c4dbce11d115f3c74fa90a96e6
+verify_frozen_document docs/api-inventory.toml 7e89e7fb773866b1b6b2be9bde5e79fbdc09bb690f91538f891989cc865c9d10
 verify_frozen_document docs/decision-register.toml 19058685bbcc5df01c7cd5f2a8556ceda2597aaf800fe9b36db978c7d1be3a5d
-verify_frozen_document docs/scenario-catalog.toml b09452171d9ef0b14dbc4ef51e772a53778e2235da3d2d1ffd62f7a80fd91aa3
+verify_frozen_document docs/scenario-catalog.toml fef2af7aeeb8fa5393aeaa925ee522377fdf91c01bfdcfcb884ecfc6cfe18707
 verify_frozen_document docs/threat-model.md 6f933d2abac26ce94542db5defc5cf83ae317c888e3afa2c6e5daab8e2be9f0d
 verify_frozen_document docs/threat-model.toml 945e1a1c8fde32c47c5fa38bbe6f6ac763c4ce829f6e7d4ff42ced8b65a93ad4
 verify_frozen_document docs/task-verification.toml 654d921eb7abd46cfa28b609ad07302e1d71e4f09f74abf2145795f173d27fb2
@@ -369,9 +369,6 @@ check_api_inventory() {
       "Storage",
       "StoreSnapshot",
       "StoreScan",
-      "Transport",
-      "TransportListener",
-      "TransportConnection",
       "Discovery",
       "PacketBody",
       "PacketConsumer",

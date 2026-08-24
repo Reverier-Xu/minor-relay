@@ -75,8 +75,7 @@ pub use provider::{
   StoreTransaction, StoreValue,
 };
 pub use transport::{
-  ChannelBinding, Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor, Transport,
-  TransportConnection, TransportListener,
+  ChannelBinding, Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor,
 };
 pub use view::{
   AdmissionView, ClusterView, ConnectivityStatus, ListenerView, LocalNodeView, MemberPage,
