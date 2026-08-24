@@ -444,3 +444,73 @@ mod tests {
     assert!(registry.transport(&WssTransport::tag().unwrap()).is_some());
   }
 }
+
+/// A transport wrapper that counts dial attempts at the registry boundary:
+/// the observation seam SC-G05-P0-22 requires (bounded configured attempts
+/// are visible to a caller without touching the session layer).
+#[derive(Debug)]
+pub(crate) struct CountingTransport {
+  inner: Arc<dyn Transport>,
+  connects: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingTransport {
+  pub(crate) fn new(inner: Arc<dyn Transport>) -> Self {
+    Self {
+      inner,
+      connects: std::sync::atomic::AtomicUsize::new(0),
+    }
+  }
+
+  pub(crate) fn connects(&self) -> usize {
+    self.connects.load(std::sync::atomic::Ordering::Relaxed)
+  }
+}
+
+impl Transport for CountingTransport {
+  fn bind<'a>(
+    &'a self, endpoint: Endpoint,
+  ) -> BoxFuture<'static, Result<Box<dyn TransportListener>>> {
+    self.inner.bind(endpoint)
+  }
+
+  fn connect(
+    &self, endpoint: Endpoint, client: std::sync::Arc<rustls::ClientConfig>,
+  ) -> BoxFuture<'static, Result<super::connection::Connection>> {
+    self.connects.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    self.inner.connect(endpoint, client)
+  }
+}
+
+#[cfg(test)]
+mod counting_tests {
+  use std::sync::Arc;
+
+  use super::{CountingTransport, Transport, WssTransport};
+  use crate::Endpoint;
+
+  /// The counting wrapper observes every connect attempt made through the
+  /// registered boundary and delegates the establishment unchanged.
+  #[tokio::test]
+  async fn counting_transport_observes_each_connect_attempt() {
+    let counting = Arc::new(CountingTransport::new(Arc::new(WssTransport::new())));
+    assert_eq!(counting.connects(), 0);
+
+    // A loopback listener plus one dial produces exactly one observed
+    // attempt and one established framed connection on both sides.
+    let listener = counting
+      .bind(Endpoint::parse("wss://127.0.0.1:0").unwrap())
+      .await
+      .unwrap();
+    let bound = listener.local_endpoint();
+
+    let dial_side = Arc::clone(&counting);
+    let (client, accepted) = tokio::join!(
+      dial_side.connect(bound.clone(), super::super::tls::join_client_config().unwrap()),
+      listener.accept(None),
+    );
+    assert!(client.is_ok());
+    assert!(accepted.is_ok());
+    assert_eq!(counting.connects(), 1);
+  }
+}
