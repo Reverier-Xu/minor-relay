@@ -458,7 +458,9 @@ impl ResourceRecordV1 {
 
 pub(crate) mod store;
 
-#[cfg(all(test, feature = "json"))]
+// The crash matrix drives the JSON adapter's commit-path hooks, which are
+// only sound where the platform provides directory barriers.
+#[cfg(all(test, feature = "json", unix))]
 mod crash;
 
 #[cfg(test)]

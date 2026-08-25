@@ -34,8 +34,9 @@ fn record_key(name: &ResourceName) -> StoreKey {
 #[derive(Debug)]
 pub(crate) enum ResourceCommitOutcome {
   /// The record is now the register's stored winner; the receipt proves
-  /// the durable commit.
-  Installed(CommitReceipt),
+  /// the durable commit. The receipt becomes caller-visible once the
+  /// runtime wires this outcome into its recovery surface.
+  Installed(#[allow(dead_code)] CommitReceipt),
   /// A greater tuple already occupies the register: the write is accepted
   /// but stores nothing and wins nothing (accepted writes may lose tuple
   /// order; losers stay harmless).

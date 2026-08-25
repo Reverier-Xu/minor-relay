@@ -33,9 +33,12 @@ cargo test --locked --lib resource::store
 
 # Crash-matrix lane (SC-G07-P0-07): every JSON commit boundary reopens the
 # register to exactly the old or the new whole signed record, with the
-# pending identity reconciling consistently.
-cargo test --locked --lib 'resource::crash::resource_crash_boundaries' -- --list > "$TMP/crash.list"
-require_nonempty_tests resource_crash_matrix "$TMP/crash.list"
-cargo test --locked --lib resource::crash::resource_crash_boundaries
+# pending identity reconciling consistently. The JSON adapter's directory
+# barriers are only sound on unix platforms, matching the module's cfg.
+if [[ $(uname -s) == Linux || $(uname -s) == Darwin ]]; then
+  cargo test --locked --lib 'resource::crash::resource_crash_boundaries' -- --list > "$TMP/crash.list"
+  require_nonempty_tests resource_crash_matrix "$TMP/crash.list"
+  cargo test --locked --lib resource::crash::resource_crash_boundaries
+fi
 
 printf 'VERIFY-G07-03 PASS\n'
