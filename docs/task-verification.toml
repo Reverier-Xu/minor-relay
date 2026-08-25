@@ -619,14 +619,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G07-06"
 verification_id = "VERIFY-G07-06"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G07-06"
 owner_task = "T-G07-06"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g07-06-merge-scale-slo.sh"]
 timeout_seconds = 1800
 
 [[task]]

@@ -460,6 +460,9 @@ pub(crate) mod page;
 pub(crate) mod retention;
 pub(crate) mod store;
 
+#[cfg(test)]
+pub(crate) mod e2e;
+
 // The crash matrix drives the JSON adapter's commit-path hooks, which are
 // only sound where the platform provides directory barriers.
 #[cfg(all(test, feature = "json", unix))]
