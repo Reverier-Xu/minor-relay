@@ -63,6 +63,12 @@ use crate::{
 /// admission commit and grant adoption).
 pub(crate) const AUTHENTICATION_DEADLINE: Duration = Duration::from_secs(10);
 
+/// The bounded grace for draining an in-flight initiator hello before a
+/// rejection close (see `respond`); long enough to cover loopback and
+/// lossy-metropolitan RTTs, short enough to keep hostile-connection
+/// turnover fast.
+pub(crate) const CLOSE_DRAIN_GRACE: Duration = Duration::from_millis(250);
+
 /// One authenticated session at the end of the bootstrap exchange: the
 /// peer's session-authenticated node ID and the exact negotiated feature
 /// intersection (ADR-0002), which gates packet-protocol admission.
@@ -207,7 +213,16 @@ impl SessionDriver {
       .map_err(|_| Error::authentication_failed("authentication deadline"))?;
     if result.is_err() {
       // A clean close lets the initiator observe a typed authentication
-      // failure instead of an undifferentiated transport error.
+      // failure instead of an undifferentiated transport error. Early
+      // rejections (rate window, frozen store, cluster mismatch) can race
+      // the initiator's in-flight hello; draining one pending message
+      // under a bounded grace keeps the close free of unread inbound bytes
+      // (whose reset would mask the typed rejection on some platforms).
+      let _ = timeout(
+        CLOSE_DRAIN_GRACE,
+        receive_kind(connection, HandshakeKind::InitiatorHello),
+      )
+      .await;
       let _ = connection.close().await;
     }
     result
