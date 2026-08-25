@@ -786,13 +786,18 @@ impl Supervisor {
     };
     let local = self.packet.local().clone();
     let routes = self.dependencies.routes.clone();
-    let trace = self.trace_sink.clone();
-    self
-      .trace_records
-      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    eprintln!("SUPERVISOR spawn force={force_routed} dest={}", destination);
+    // Core-internal control traffic stays out of the durable trace store:
+    // its volume is a runtime implementation detail, not caller evidence.
+    let trace = if request.internal {
+      None
+    } else {
+      self
+        .trace_records
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      Some(self.trace_sink.clone())
+    };
     tasks.spawn(async move {
-      run_outbound(entry, local, request, routes, force_routed, Some(trace)).await;
+      run_outbound(entry, local, request, routes, force_routed, trace).await;
     });
     Ok(())
   }

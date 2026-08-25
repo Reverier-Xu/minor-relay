@@ -504,6 +504,7 @@ async fn send_payload(
     protocol: protocol.clone(),
     metadata: crate::packet::PacketMetadata::new(),
     body,
+    internal: true,
     ack_notify,
   };
   // Fire-and-forget: the admission ack (or its absence) is retried by the

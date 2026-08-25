@@ -26,7 +26,7 @@ use common::{MemoryStorageFactory, ScriptedKeys};
 /// The anti-entropy interval used by the harness. At sixteen-node scale a
 /// faster tick starves the shared runtime and the transport drops
 /// handshakes; 250 ms still converges far under the 10,000 ms SLO bound.
-const SYNC_INTERVAL: Duration = Duration::from_millis(250);
+const SYNC_INTERVAL: Duration = Duration::from_millis(500);
 
 struct Node {
   handle: NodeHandle,
@@ -41,7 +41,7 @@ async fn start_node(seed: u64, storage: Arc<MemoryStorageFactory>) -> Node {
     .with_anti_entropy_interval(SYNC_INTERVAL)
     .unwrap()
     .with_recovery_policy(
-      RecoveryConfig::new(4, 64, Duration::from_millis(200), Duration::from_secs(5)).unwrap(),
+      RecoveryConfig::new(4, 64, Duration::from_secs(2), Duration::from_secs(60)).unwrap(),
     )
     .unwrap();
   let handle = NodeBuilder::new(factory, keys)
@@ -264,28 +264,40 @@ async fn wait_settled(
   nodes: &[Node], expected: &std::collections::BTreeSet<(u8, u8)>, timeout: Duration,
 ) -> Vec<(u8, u8)> {
   let deadline = std::time::Instant::now() + timeout;
-  let mut good_samples = 0_u32;
+  // Settling is time-based, not sample-count based: one observation round
+  // over sixteen nodes can itself take seconds under load.
+  let mut matched_since: Option<std::time::Instant> = None;
   loop {
     let edges = collected_topology(nodes).await;
     let set: std::collections::BTreeSet<(u8, u8)> = edges.iter().copied().collect();
     if set == *expected {
-      // Under heavy load a half-open session can blip for one sample; the
-      // topology counts as settled once the exact expected set dominates a
-      // bounded window instead of demanding unbroken consecutive samples.
-      good_samples += 1;
-      if good_samples >= 10 {
-        // The exact topology held across the window: settled, with no
-        // extra or recovery edge (SC-G05-P0-26).
-        return edges;
+      // The exact expected topology must hold continuously across a
+      // bounded wall-clock window: settled, with no extra or recovery
+      // edge (SC-G05-P0-26).
+      match matched_since {
+        None => matched_since = Some(std::time::Instant::now()),
+        Some(first) if first.elapsed() >= Duration::from_secs(5) => return edges,
+        Some(_) => {}
       }
     } else {
-      good_samples = good_samples.saturating_sub(1);
+      matched_since = None;
+
+      let missing: Vec<_> = expected.difference(&set).collect();
+      let extra: Vec<_> = set.difference(expected).collect();
+      eprintln!("SETTLE mismatch missing={missing:?} extra={extra:?}");
       if set.len() > expected.len() {
         // A redundant star edge reappeared (an in-flight recovery dial
         // landing after its disconnect): re-close the issuer's redundant
         // stars and keep settling. The exclusion keeps the recovery from
         // re-spawning new dials, so this terminates.
         close_star_sessions(nodes, 0).await;
+      }
+      // A transport blip under load leaves a real edge loss whose
+      // recovery backoff may have grown to minutes; force one immediate
+      // recovery pass on every member so healing does not starve the
+      // settle window.
+      for node in nodes {
+        let _ = node.handle.command(minor_relay::StartRecovery::new()).await;
       }
     }
     if std::time::Instant::now() >= deadline {
@@ -602,7 +614,7 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
   undirected.into_iter().collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-23).

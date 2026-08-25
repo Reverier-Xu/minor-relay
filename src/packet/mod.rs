@@ -260,6 +260,7 @@ impl OutboundPacket {
       protocol: self.protocol,
       metadata: self.metadata,
       body,
+      internal: false,
       ack_notify: notify,
     };
     (
@@ -512,6 +513,9 @@ pub(crate) struct OutboundRequest {
   pub(crate) protocol: ProtocolTag,
   pub(crate) metadata: PacketMetadata,
   pub(crate) body: Box<dyn PacketBody>,
+  /// Core-internal control traffic (membership sync): routed like any
+  /// packet but excluded from durable trace persistence.
+  pub(crate) internal: bool,
   pub(crate) ack_notify: oneshot::Sender<RoutedAckOutcome>,
 }
 
