@@ -104,6 +104,7 @@ fn spawn_sync_driver(
     let mut timer = tokio::time::interval(interval);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sync_cursor = crate::membership::sync::SyncCursor::default();
+    let mut resource_cursor = crate::resource::sync::ResourceSyncCursor::default();
     loop {
       tokio::select! {
         changed = driver_shutdown.changed() => {
@@ -122,6 +123,14 @@ fn spawn_sync_driver(
             &driver_runtime,
             &endpoints,
             &mut sync_cursor,
+          )
+          .await;
+          let _ = crate::resource::sync::resource_sync_tick(
+            &driver_context,
+            &driver_entropy,
+            &driver_sessions,
+            &driver_runtime,
+            &mut resource_cursor,
           )
           .await;
         }
@@ -160,12 +169,22 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
       .ok_or_else(|| Error::internal("runtime context"))?,
   );
   let sync_consumer = Arc::new(crate::membership::sync::MembershipSyncConsumer::new(
-    runtime_context,
+    Arc::clone(&runtime_context),
     dependencies.entropy.clone(),
   ));
   dependencies
     .extensions
     .register_core_protocol(sync_definition, sync_consumer)?;
+  // The core resource sync protocol rides the same authenticated sessions
+  // and anti-entropy driver as membership sync (T-G07-04).
+  let resource_definition = crate::resource::sync::resource_sync_protocol_definition()?;
+  let resource_consumer = Arc::new(crate::resource::sync::ResourceSyncConsumer::new(
+    runtime_context,
+    dependencies.entropy.clone(),
+  ));
+  dependencies
+    .extensions
+    .register_core_protocol(resource_definition, resource_consumer)?;
   let routes = dependencies.routes.clone();
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (packet_tx, packet_rx) = mpsc::channel(CONTROL_CAPACITY);
