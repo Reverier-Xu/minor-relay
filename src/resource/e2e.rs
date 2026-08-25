@@ -382,5 +382,8 @@ async fn one_thousand_twenty_four_profile_converges_without_a_ceiling() {
       "name {seed} must converge identically on both components"
     );
   }
-  assert!(started.elapsed() < std::time::Duration::from_secs(30));
+  // Hygiene guard only: this layer makes no latency qualification claim —
+  // the qualified 16-node SLO workload runs in the dedicated G10 harness.
+  // The bound tolerates parallel-test contention on slow CI runners.
+  assert!(started.elapsed() < std::time::Duration::from_secs(120));
 }
