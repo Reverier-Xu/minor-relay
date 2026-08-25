@@ -248,7 +248,9 @@ impl OutboundPacket {
     Ok(handle)
   }
 
-  fn into_request(self, body: Box<dyn PacketBody>) -> (SendRequest, oneshot::Receiver<AckOutcome>) {
+  fn into_request(
+    self, body: Box<dyn PacketBody>,
+  ) -> (SendRequest, oneshot::Receiver<RoutedAckOutcome>) {
     let (notify, outcome) = oneshot::channel();
     let inner = OutboundRequest {
       trace_id: self.trace_id,
@@ -487,16 +489,19 @@ impl RouteStatusView {
   }
 }
 
-/// The destination's current-process admission outcome delivered to a
-/// synchronous sender: the admitting node and its admission wall-clock
-/// time, or the typed rejection kind.
-pub(crate) struct Admission {
+/// The per-session internal admission fact: the admitting session's
+/// wall-clock time or the typed rejection kind. The pump binds the selected
+/// destination when forwarding to the synchronous waiter.
+pub(crate) type AckOutcome = Result<SystemTime, ErrorKind>;
+
+/// The admission outcome delivered to a synchronous sender: the selected
+/// destination plus its admission wall-clock time.
+pub(crate) struct RoutedAck {
   pub(crate) by: NodeId,
   pub(crate) admitted_at: SystemTime,
 }
 
-/// The admission outcome delivered to a synchronous sender.
-pub(crate) type AckOutcome = Result<Admission, ErrorKind>;
+pub(crate) type RoutedAckOutcome = Result<RoutedAck, ErrorKind>;
 
 /// One outbound send request flowing from the facade to the supervisor.
 pub(crate) struct OutboundRequest {
@@ -507,7 +512,7 @@ pub(crate) struct OutboundRequest {
   pub(crate) protocol: ProtocolTag,
   pub(crate) metadata: PacketMetadata,
   pub(crate) body: Box<dyn PacketBody>,
-  pub(crate) ack_notify: oneshot::Sender<AckOutcome>,
+  pub(crate) ack_notify: oneshot::Sender<RoutedAckOutcome>,
 }
 
 impl OutboundRequest {

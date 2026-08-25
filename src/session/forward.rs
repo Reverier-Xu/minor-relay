@@ -67,6 +67,18 @@ pub(crate) async fn open(
     open.destination.clone(),
     open.route.clone(),
   );
+  eprintln!(
+    "DEBUG forward::open local={local} peer={peer} dest={} route={}",
+    open.destination,
+    open.route.is_some()
+  );
+  eprintln!(
+    "DEBUG forward::open dest={} route={}",
+    open.destination,
+    open.route.is_some()
+  );
+  eprintln!("DEBUG fwd::open at {local:?}");
+  eprintln!("DEBUG fwd::open enter");
   let peers = live_peers(sessions);
   let mut chosen = if open.destination != *local {
     Some(select_next_hop(registry, route_policy, &open.destination, local, &peers).await)
@@ -85,7 +97,8 @@ pub(crate) async fn open(
       .await;
       true
     }
-    _ => {
+    other => {
+      eprintln!("DEBUG forward validation at {local:?}: {other:?}");
       // Arrival is impossible here (the caller filtered on destination),
       // and every validation failure fails closed before any forwarding.
       reject_open(upstream, &open.trace_id);
@@ -181,6 +194,7 @@ async fn relay_open(
     Err(_) => None,
   };
   let Some((downstream_frames, downstream_acks)) = downstream else {
+    eprintln!("DEBUG relay_open: no live downstream {}", next_hop);
     return fail_upstream(upstream, &open.trace_id).await;
   };
   if contains(forwarding, &open.trace_id) {

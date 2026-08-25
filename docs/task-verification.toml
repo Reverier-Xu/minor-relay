@@ -541,14 +541,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G06-05"
 verification_id = "VERIFY-G06-05"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G06-05"
 owner_task = "T-G06-05"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g06-05-route-completion.sh"]
 timeout_seconds = 1800
 
 [[task]]

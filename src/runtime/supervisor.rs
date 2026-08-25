@@ -166,6 +166,18 @@ async fn supervise(
   }
 
   let mut supervisor = Supervisor::new(dependencies);
+  // Any trace records still non-terminal from a previous incarnation
+  // terminate explicitly at startup: a restart never continues a body.
+  if let Some(context) = supervisor.dependencies.context.as_ref()
+    && let Err(error) = crate::routing::trace::terminate_stale(
+      context.store(),
+      supervisor.dependencies.entropy.as_ref(),
+      &crate::storage::receipt::HostWallClock,
+    )
+    .await
+  {
+    tracing::warn!(kind = ?error.kind(), "stale trace termination failed");
+  }
   let mut recovery_timer = tokio::time::interval(std::time::Duration::from_secs(2));
   recovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
   loop {
@@ -268,6 +280,7 @@ async fn supervise(
       }
       _ = recovery_timer.tick() => {
         let _ = supervisor.recovery_tick(&mut tasks).await;
+        supervisor.trace_retention_sweep().await;
       }
     }
   }
@@ -333,6 +346,8 @@ struct Supervisor {
   // storage handle is released promptly (a restarted node reopening the
   // same factory must not race a lingering driver).
   sync_driver: Option<tokio::task::JoinHandle<()>>,
+  trace_sink: crate::routing::trace::TraceSink,
+  trace_records: std::sync::atomic::AtomicUsize,
 }
 
 impl Supervisor {
@@ -364,8 +379,9 @@ impl Supervisor {
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let sync_context = Arc::clone(&context);
+    let driver_context = Arc::clone(&context);
     let driver = SessionDriver::new(
-      context,
+      driver_context,
       dependencies.keys.clone(),
       dependencies.entropy.clone(),
       Arc::new(std::sync::Mutex::new(JoinCredentialIssuer::new())),
@@ -423,6 +439,13 @@ impl Supervisor {
       })
     };
     let sync_driver = Some(sync_driver);
+    // The durable trace-metadata sink shares the runtime identity context
+    // and injected entropy; persistence failures never touch the data plane.
+    let trace_sink = crate::routing::trace::TraceSink::new(
+      Arc::clone(&context),
+      dependencies.entropy.clone(),
+      std::sync::Arc::new(crate::storage::receipt::HostWallClock),
+    );
     let recovery = crate::membership::recovery::RecoveryController::new(
       crate::membership::recovery::RecoveryPolicy::new(
         dependencies.config.recovery().neighbors(),
@@ -445,6 +468,8 @@ impl Supervisor {
       recovery_history: std::collections::BTreeSet::new(),
       recovery_excluded: std::collections::BTreeSet::new(),
       sync_driver,
+      trace_sink,
+      trace_records: std::sync::atomic::AtomicUsize::new(0),
     }
   }
 
@@ -743,6 +768,11 @@ impl Supervisor {
     // next-hop policy may route through a connected peer (T-G06-03). The
     // pump then emits the route envelope so every intermediate hop
     // re-validates the chain.
+    eprintln!(
+      "DEBUG route dest={destination} has_entry={} entry_alive={:?}",
+      entry.is_some(),
+      entry.as_ref().map(|e| e.alive())
+    );
     let direct = entry.filter(|entry| entry.alive());
     let (entry, force_routed) = match direct {
       Some(entry) => (entry, false),
@@ -756,10 +786,45 @@ impl Supervisor {
     };
     let local = self.packet.local().clone();
     let routes = self.dependencies.routes.clone();
+    let trace = self.trace_sink.clone();
+    self
+      .trace_records
+      .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("SUPERVISOR spawn force={force_routed} dest={}", destination);
     tasks.spawn(async move {
-      run_outbound(entry, local, request, routes, force_routed).await;
+      run_outbound(entry, local, request, routes, force_routed, Some(trace)).await;
     });
     Ok(())
+  }
+
+  /// One host-wall-clock retention pass over the durable route-trace
+  /// records: terminal records expire at their configured deadline and the
+  /// terminal population stays within the caller-selected cap; active
+  /// records are never removed. Skipped entirely while no durable trace
+  /// record exists.
+  async fn trace_retention_sweep(&mut self) {
+    if self
+      .trace_records
+      .load(std::sync::atomic::Ordering::Relaxed)
+      == 0
+    {
+      return;
+    }
+    let limits = self.dependencies.config.trace_metadata_limits();
+    let Ok(context) = self.context() else {
+      return;
+    };
+    if let Err(error) = crate::routing::trace::sweep(
+      context.store(),
+      self.dependencies.entropy.as_ref(),
+      &crate::storage::receipt::HostWallClock,
+      limits.terminal(),
+      limits.retention(),
+    )
+    .await
+    {
+      tracing::warn!(kind = ?error.kind(), "trace retention sweep failed");
+    }
   }
 
   /// Resolves one live downstream session for a routed first hop through
@@ -767,9 +832,11 @@ impl Supervisor {
   /// no eligible hop exists and the caller fails the route explicitly.
   async fn select_forward_entry(&self, destination: &NodeId) -> Result<Option<SessionEntry>> {
     let Some(tag) = self.dependencies.config.route_policy() else {
+      eprintln!("DEBUG select: no route policy configured");
       return Ok(None);
     };
     let Some(policy) = self.dependencies.extensions.next_hop_policy(tag) else {
+      tracing::warn!(tag = %tag, "configured route policy is not registered");
       return Ok(None);
     };
     let local = self.packet.local().clone();
@@ -796,6 +863,7 @@ impl Supervisor {
       .get(&hop)
       .filter(|entry| entry.alive())
       .cloned();
+    eprintln!("DEBUG fwd hop={hop} have_entry={}", entry.is_some());
     Ok(entry)
   }
 

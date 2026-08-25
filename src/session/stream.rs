@@ -802,7 +802,16 @@ async fn read_loop(
         }
       },
       PacketKind::Ack => match wire::decode_ack(&message.body) {
-        Ok(ack) => resolve_ack(ack, pending_acks, session.peer()),
+        Ok(ack) => {
+          resolve_ack(ack.clone(), pending_acks);
+          // A late failure for an admitted stream (a downstream hop died
+          // mid-flight) still terminates the origin's route observation.
+          if ack.status == crate::packet::wire::AckStatus::Failed {
+            update_route(&context.routes, &ack.trace_id, |record| {
+              record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
+            });
+          }
+        }
         Err(_) => {
           warn!("malformed packet ack frame");
           break;
@@ -990,7 +999,7 @@ async fn forward_chunk(chunk: ChunkFrame, incoming: &mut HashMap<TraceId, Admitt
 /// Resolves one pending outbound admission. The admitting node is this
 /// session's authenticated peer, so the acknowledgement can name it for
 /// the synchronous sender's `DeliveryAck`.
-fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks, peer: &NodeId) {
+fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks) {
   let entry = pending_acks
     .lock()
     .map(|mut pending| pending.remove(&ack.trace_id))
@@ -1002,10 +1011,7 @@ fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks, peer: &NodeId) {
   match entry {
     PendingAck::Wait(notify) => {
       let outcome = match ack.status {
-        AckStatus::Admitted => Ok(crate::packet::Admission {
-          by: peer.clone(),
-          admitted_at: UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis),
-        }),
+        AckStatus::Admitted => Ok(UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis)),
         AckStatus::Unsupported => Err(ErrorKind::Unsupported),
         AckStatus::Overloaded => Err(ErrorKind::Overloaded),
         AckStatus::Failed => Err(ErrorKind::StreamInterrupted),
@@ -1038,7 +1044,7 @@ fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks, peer: &NodeId) {
 ))]
 pub(crate) async fn run_outbound(
   entry: SessionEntry, local: NodeId, request: OutboundRequest, routes: RouteTable,
-  force_routed: bool,
+  force_routed: bool, trace: Option<crate::routing::trace::TraceSink>,
 ) {
   // The supervisor resolves selector targets before spawning the pump; a
   // matching-node request that reaches this point is an internal error.
@@ -1050,13 +1056,37 @@ pub(crate) async fn run_outbound(
     }
   };
   let trace_id = request.trace_id.clone();
+  let source = local.clone();
+  // Fire-and-forget persistence of one durable terminal fact per packet;
+  // the data plane never waits on metadata storage and intermediate
+  // progress stays an in-memory observation.
+  macro_rules! terminal {
+    ($kind:expr) => {{
+      update_route(&routes, &trace_id, |record| {
+        record.update(RouteState::Failed($kind));
+      });
+      if let Some(trace) = &trace {
+        let updated = crate::routing::trace::TraceRecord::new(
+          trace_id.clone(),
+          source.clone(),
+          destination.clone(),
+          trace.clock_now(),
+        )
+        .with_transition(
+          crate::routing::trace::TraceTransition::Failed($kind),
+          trace.clock_now(),
+        );
+        let trace = trace.clone();
+        tokio::spawn(async move { trace.record(updated).await });
+      }
+    }};
+  }
+  eprintln!("PUMP force={force_routed}");
   let (ack_tx, ack_rx) = oneshot::channel();
   if !entry.alive() {
     debug!("packet rejected: session not alive");
     request.reject(ErrorKind::StreamInterrupted);
-    update_route(&routes, &trace_id, |record| {
-      record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
-    });
+    terminal!(ErrorKind::StreamInterrupted);
     return;
   }
   {
@@ -1066,9 +1096,7 @@ pub(crate) async fn run_outbound(
       .map(|mut pending| pending.insert(trace_id.clone(), PendingAck::Wait(ack_tx)));
     if registered.is_err() {
       request.reject(ErrorKind::Internal);
-      update_route(&routes, &trace_id, |record| {
-        record.update(RouteState::Failed(ErrorKind::Internal));
-      });
+      terminal!(ErrorKind::Internal);
       return;
     }
   }
@@ -1102,9 +1130,7 @@ pub(crate) async fn run_outbound(
     Err(error) => {
       withdraw_pending(&entry, &trace_id);
       request.reject(error.kind());
-      update_route(&routes, &trace_id, |record| {
-        record.update(RouteState::Failed(error.kind()));
-      });
+      terminal!(error.kind());
       return;
     }
   };
@@ -1119,26 +1145,27 @@ pub(crate) async fn run_outbound(
   {
     withdraw_pending(&entry, &trace_id);
     request.reject(ErrorKind::StreamInterrupted);
-    update_route(&routes, &trace_id, |record| {
-      record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
-    });
+    terminal!(ErrorKind::StreamInterrupted);
     return;
   }
   trace!("packet open queued");
 
   // Wait for the destination's current-process admission before streaming
   // body chunks; a dead session resolves the wait with StreamInterrupted.
-  let outcome = ack_rx.await.unwrap_or(Err(ErrorKind::StreamInterrupted));
+  let outcome: AckOutcome = ack_rx.await.unwrap_or(Err(ErrorKind::StreamInterrupted));
   let failure = outcome.as_ref().err().copied();
-  let _ = request.ack_notify.send(outcome);
+  let routed_ack: crate::packet::RoutedAckOutcome =
+    outcome.map(|admitted_at| crate::packet::RoutedAck {
+      by: destination.clone(),
+      admitted_at,
+    });
+  let _ = request.ack_notify.send(routed_ack);
   debug!(
     admitted = failure.is_none(),
     "packet admission acknowledged"
   );
   if let Some(kind) = failure {
-    update_route(&routes, &trace_id, |record| {
-      record.update(RouteState::Failed(kind));
-    });
+    terminal!(kind);
     return;
   }
   update_route(&routes, &trace_id, |record| {
@@ -1151,9 +1178,7 @@ pub(crate) async fn run_outbound(
     match body.next_chunk().await {
       Ok(Some(bytes)) => {
         if bytes.len() > MAX_CHUNK_BYTES {
-          update_route(&routes, &trace_id, |record| {
-            record.update(RouteState::Failed(ErrorKind::InvalidInput));
-          });
+          terminal!(ErrorKind::InvalidInput);
           return;
         }
         let forwarded = bytes.len() as u64;
@@ -1166,9 +1191,7 @@ pub(crate) async fn run_outbound(
         let encoded = match wire::encode_chunk(&chunk) {
           Ok(encoded) => encoded,
           Err(error) => {
-            update_route(&routes, &trace_id, |record| {
-              record.update(RouteState::Failed(error.kind()));
-            });
+            terminal!(error.kind());
             return;
           }
         };
@@ -1181,9 +1204,7 @@ pub(crate) async fn run_outbound(
           .await
           .is_err()
         {
-          update_route(&routes, &trace_id, |record| {
-            record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
-          });
+          terminal!(ErrorKind::StreamInterrupted);
           return;
         }
         trace!(sequence, bytes = forwarded, "packet chunk queued");
@@ -1193,9 +1214,7 @@ pub(crate) async fn run_outbound(
       }
       Ok(None) => break,
       Err(error) => {
-        update_route(&routes, &trace_id, |record| {
-          record.update(RouteState::Failed(error.kind()));
-        });
+        terminal!(error.kind());
         return;
       }
     }
@@ -1206,9 +1225,7 @@ pub(crate) async fn run_outbound(
   }) {
     Ok(end) => end,
     Err(error) => {
-      update_route(&routes, &trace_id, |record| {
-        record.update(RouteState::Failed(error.kind()));
-      });
+      terminal!(error.kind());
       return;
     }
   };
@@ -1220,13 +1237,27 @@ pub(crate) async fn run_outbound(
     })
     .await
     .is_err();
-  update_route(&routes, &trace_id, |record| {
-    if interrupted {
-      record.update(RouteState::Failed(ErrorKind::StreamInterrupted));
-    } else {
+  if interrupted {
+    terminal!(ErrorKind::StreamInterrupted);
+  } else {
+    update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Delivered);
+    });
+    if let Some(trace) = &trace {
+      let updated = crate::routing::trace::TraceRecord::new(
+        trace_id.clone(),
+        source.clone(),
+        destination.clone(),
+        trace.clock_now(),
+      )
+      .with_transition(
+        crate::routing::trace::TraceTransition::Delivered,
+        trace.clock_now(),
+      );
+      let trace = trace.clone();
+      tokio::spawn(async move { trace.record(updated).await });
     }
-  });
+  }
   debug!(interrupted, "packet stream finished");
 }
 
@@ -1272,8 +1303,12 @@ pub(crate) fn insert_route(
 
 /// Applies one update to a route record, when present.
 fn update_route(routes: &RouteTable, trace_id: &TraceId, update: impl FnOnce(&mut RouteRecord)) {
+  // A failed route is final: an interruption discovered after the local
+  // enqueue completed still terminates the observation as failed, while no
+  // later success can overwrite a recorded failure.
   if let Ok(mut table) = routes.lock()
     && let Some(record) = table.get_mut(trace_id)
+    && !matches!(record.state, RouteState::Failed(_))
   {
     update(record);
   }

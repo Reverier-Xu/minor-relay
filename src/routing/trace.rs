@@ -194,6 +194,7 @@ impl TraceRecord {
     self.phase = match transition {
       TraceTransition::Streaming => TracePhase::Streaming,
       TraceTransition::Delivered => TracePhase::Delivered,
+      TraceTransition::Failed(kind) => TracePhase::Failed(kind),
     };
     self
   }
@@ -204,12 +205,11 @@ impl TraceRecord {
 }
 
 /// One persisted route transition beyond the initial routing record.
-/// The runtime pump persists only the delivered terminal fact (T-G06-05
-/// wires the full retention path).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TraceTransition {
   Streaming,
   Delivered,
+  Failed(ErrorKind),
 }
 
 #[derive(Encode, Decode)]
@@ -771,5 +771,48 @@ mod tests {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].trace_id(), &trace(8));
     assert_eq!(records[0].phase(), &TracePhase::Routing);
+  }
+}
+
+/// The persistence handle shared with the packet pump: clones cheaply and
+/// records terminal transitions best-effort — a persistence failure is
+/// surfaced as a diagnostic and never corrupts the data plane's explicit
+/// semantics.
+#[derive(Clone)]
+pub(crate) struct TraceSink {
+  context: std::sync::Arc<crate::identity::lifecycle::LocalIdentityContext>,
+  entropy: std::sync::Arc<dyn Entropy>,
+  clock: std::sync::Arc<dyn WallClock>,
+}
+
+impl TraceSink {
+  pub(crate) fn new(
+    context: std::sync::Arc<crate::identity::lifecycle::LocalIdentityContext>,
+    entropy: std::sync::Arc<dyn Entropy>, clock: std::sync::Arc<dyn WallClock>,
+  ) -> Self {
+    Self {
+      context,
+      entropy,
+      clock,
+    }
+  }
+
+  /// Records one transition; failures are logged, never propagated into
+  /// the stream path.
+  pub(crate) async fn record(&self, record: TraceRecord) {
+    if let Err(error) = put_trace(
+      self.context.store(),
+      self.entropy.as_ref(),
+      self.clock.as_ref(),
+      record,
+    )
+    .await
+    {
+      tracing::warn!(kind = ?error.kind(), "route trace persistence failed");
+    }
+  }
+
+  pub(crate) fn clock_now(&self) -> SystemTime {
+    self.clock.now()
   }
 }
