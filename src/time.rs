@@ -36,3 +36,36 @@ pub(crate) fn to_millis(time: SystemTime) -> u64 {
 pub(crate) fn from_millis(millis: u64) -> SystemTime {
   UNIX_EPOCH + std::time::Duration::from_millis(millis)
 }
+
+#[cfg(test)]
+mod tests {
+  use std::time::{Duration, UNIX_EPOCH};
+
+  use super::{from_millis, to_millis, to_seconds};
+
+  // SC-G07-P0-01: host `SystemTime` is the only ordering authority and
+  // conversions are total — a wall-clock rollback below the epoch
+  // saturates at zero instead of failing bounded work.
+  #[test]
+  fn conversions_are_total_and_saturate_at_the_epoch() {
+    assert_eq!(to_seconds(UNIX_EPOCH), 0);
+    assert_eq!(to_seconds(UNIX_EPOCH - Duration::from_secs(1)), 0);
+    assert_eq!(to_millis(UNIX_EPOCH - Duration::from_secs(1)), 0);
+    assert_eq!(to_millis(UNIX_EPOCH - Duration::from_millis(1)), 0);
+    let later = UNIX_EPOCH + Duration::from_millis(1_500);
+    assert_eq!(to_seconds(later), 1);
+    assert_eq!(to_millis(later), 1_500);
+  }
+
+  // SC-G07-P0-01: stored millisecond timestamps round-trip exactly, so a
+  // clock freeze re-reads the same instant and a rollback restores an
+  // earlier recorded value without drift.
+  #[test]
+  fn millis_round_trip_preserves_frozen_and_rolled_back_readings() {
+    let frozen = UNIX_EPOCH + Duration::from_millis(123_456_789);
+    assert_eq!(from_millis(to_millis(frozen)), frozen);
+    let rolled_back = frozen - Duration::from_secs(10_000);
+    assert_eq!(from_millis(to_millis(rolled_back)), rolled_back);
+    assert!(rolled_back < from_millis(to_millis(frozen)));
+  }
+}

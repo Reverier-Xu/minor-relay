@@ -484,7 +484,10 @@ async fn commit_batch(
 
 #[cfg(test)]
 mod tests {
-  use std::{sync::Arc, time::Duration};
+  use std::{
+    sync::Arc,
+    time::{Duration, UNIX_EPOCH},
+  };
 
   use super::{
     TRACE_NAMESPACE, TracePhase, TraceRecord, decode_trace_record, put_trace, sweep,
@@ -807,6 +810,68 @@ mod tests {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].trace_id(), &trace(8));
     assert_eq!(records[0].phase(), &TracePhase::Routing);
+  }
+
+  // SC-G07-P0-01/02 (and the SC-G06-P0-18 gap): retention sweeps re-read
+  // the wall clock on every pass, so rollback or freeze delays expiry and
+  // a forward jump expires immediately — no monotonic-clock assumption.
+  #[tokio::test]
+  async fn sweep_rereads_wall_time_across_discontinuities() {
+    let (_factory, store, clock) = open_store().await;
+    let written_at = UNIX_EPOCH + Duration::from_secs(10_000);
+    clock.set(written_at);
+    put_trace(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      TraceRecord::new(trace(9), node(1), node(9), clock.now())
+        .with_transition(super::TraceTransition::Delivered, clock.now()),
+    )
+    .await
+    .unwrap();
+
+    // Rollback below the write instant: the record's age is not negative;
+    // nothing expires and nothing panics.
+    clock.set(written_at - Duration::from_secs(5_000));
+    let removed = sweep(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      128,
+      Duration::from_secs(100),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 0);
+    assert_eq!(all_records(&store).await.len(), 1);
+
+    // Freeze at the write instant: still inside any positive retention.
+    clock.set(written_at);
+    let removed = sweep(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      128,
+      Duration::from_secs(100),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 0);
+
+    // A forward jump past the retention deadline expires the terminal on
+    // the very next sweep, without any restart in between.
+    clock.set(written_at + Duration::from_secs(101));
+    let removed = sweep(
+      &store,
+      &SystemEntropy,
+      clock.as_ref(),
+      128,
+      Duration::from_secs(100),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+    assert!(all_records(&store).await.is_empty());
   }
 }
 

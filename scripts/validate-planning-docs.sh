@@ -63,8 +63,8 @@ verify_frozen_document docs/decision-register.toml 19058685bbcc5df01c7cd5f2a8556
 verify_frozen_document docs/scenario-catalog.toml 022200bbeff389f8a8b76d8189055f0eee75b29523263f9456dd89bc212d002a
 verify_frozen_document docs/threat-model.md 6f933d2abac26ce94542db5defc5cf83ae317c888e3afa2c6e5daab8e2be9f0d
 verify_frozen_document docs/threat-model.toml 945e1a1c8fde32c47c5fa38bbe6f6ac763c4ce829f6e7d4ff42ced8b65a93ad4
-verify_frozen_document docs/task-verification.toml 04d6c7a4f438d921f1468953c6fef3bdc24b5020c301caec9981fbd4323b01ed
-verify_frozen_document docs/evidence-impact.toml 87d82c30f4537ba7e5219cb7d21722899e5e06f736813edb1cb8000887c334a7
+verify_frozen_document docs/task-verification.toml 980bd22e5d56925dc5c688fe75b0eda7547a69b5fd998b8f0dbeadb720c0c11e
+verify_frozen_document docs/evidence-impact.toml ffcd7af20049c62e95d0426d374be1e0bbb504fd9d436c6c110b40597b98d9d0
 
 for file in "${TOML_FILES[@]}"; do
   name=$(basename "$file" .toml)

@@ -331,6 +331,22 @@ threat_ids = [
 ]
 
 [[path_rule]]
+id = "IMPACT-TIME"
+globs = ["src/time.rs"]
+precedence = 200
+owner_task = "T-G07-01"
+verification_ids = [
+  "VERIFY-G07-01",
+]
+threat_ids = [
+  "THR-002",
+  "THR-011",
+  "THR-012",
+  "THR-020",
+  "THR-021",
+]
+
+[[path_rule]]
 id = "IMPACT-METADATA-LEGACY-PATH"
 globs = ["src/state/**"]
 precedence = 200
