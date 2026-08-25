@@ -94,6 +94,23 @@ where
   Ok(value)
 }
 
+/// Decodes canonical CBOR and additionally rejects non-canonical
+/// encodings: the decoded value must re-encode to byte-identical input.
+/// Every persisted record and every authenticated-session payload decodes
+/// through this helper so "canonical form" means exactly one thing
+/// crate-wide.
+pub(crate) fn decode_canonical_strict<'bytes, T>(
+  bytes: &'bytes [u8], limits: CborLimits, canonical_context: &'static str,
+) -> Result<T>
+where
+  T: Decode<'bytes, ()> + Encode<()>, {
+  let value: T = decode_canonical(bytes, limits)?;
+  if encode_canonical(&value, limits)?.as_slice() != bytes {
+    return Err(Error::invalid_input(canonical_context));
+  }
+  Ok(value)
+}
+
 pub(crate) fn validate_canonical(bytes: &[u8], limits: CborLimits) -> Result<()> {
   if limits.max_depth == 0
     || limits.max_collection_items == 0

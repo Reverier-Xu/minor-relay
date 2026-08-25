@@ -9,7 +9,7 @@ use crate::{
   QualifiedTag, Result, Signature, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
   StoreRevision, StoreValue, TransactionId,
   api::Entropy,
-  protocol::{CborLimits, decode_canonical, encode_canonical},
+  protocol::{CborLimits, decode_canonical_strict, encode_canonical},
   storage::receipt::{ReceiptIdentity, ReceiptReferenceToken, recover_self_referenced_transaction},
 };
 
@@ -94,11 +94,7 @@ fn record_digest(bytes: &[u8]) -> Digest {
 fn decode_wire<'bytes, T>(bytes: &'bytes [u8]) -> Result<T>
 where
   T: Decode<'bytes, ()> + Encode<()>, {
-  let wire: T = decode_canonical(bytes, RECORD_LIMITS)?;
-  if encode_canonical(&wire, RECORD_LIMITS)? != bytes {
-    return Err(Error::invalid_input("identity record canonical form"));
-  }
-  Ok(wire)
+  decode_canonical_strict(bytes, RECORD_LIMITS, "identity record canonical form")
 }
 
 fn expect_schema(actual: &str, expected: &str) -> Result<()> {

@@ -24,7 +24,7 @@ use crate::{
     trust::{TrustBinding, TrustSnapshotV1, store as trust_store},
   },
   membership::page::{MembershipPage, sync as page_sync},
-  protocol::{decode_canonical, encode_canonical},
+  protocol::{decode_canonical_strict, encode_canonical},
   runtime::RuntimeClient,
   session::stream::SessionTable,
 };
@@ -84,11 +84,14 @@ impl SyncPayload {
     )
   }
 
-  /// Decodes one payload, rejecting unknown schemas and kinds (fail
-  /// closed).
+  /// Decodes one payload, rejecting unknown schemas and kinds and any
+  /// non-canonical encoding (fail closed).
   pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
-    let wire: SyncPayloadWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-      .map_err(|_| Error::invalid_input("membership sync payload"))?;
+    let wire: SyncPayloadWire = decode_canonical_strict(
+      bytes,
+      crate::protocol::offer::OFFER_CBOR_LIMITS,
+      "membership sync payload canonical form",
+    )?;
     if wire.schema != SYNC_PAYLOAD_SCHEMA {
       return Err(Error::invalid_input("membership sync payload schema"));
     }

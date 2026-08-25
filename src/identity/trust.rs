@@ -469,12 +469,7 @@ pub(crate) mod store {
       .scan(&namespace, snapshot.issuer().as_str().as_bytes())
       .await?;
     while let Some(entry) = scan.next().await? {
-      let text = String::from_utf8_lossy(entry.key().as_bytes()).to_string();
-      let revision: u64 = text
-        .rsplit('/')
-        .next()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+      let revision = revision_from_key(entry.key())?;
       if revision < snapshot.revision() {
         operations.push(StoreOperation::Delete {
           namespace: namespace.clone(),
@@ -509,12 +504,7 @@ pub(crate) mod store {
     while let Some(entry) = scan.next().await? {
       let bytes = entry.value().as_bytes().to_vec();
       let key = entry.key();
-      let text = String::from_utf8_lossy(key.as_bytes()).to_string();
-      let revision: u64 = text
-        .rsplit('/')
-        .next()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+      let revision = revision_from_key(key)?;
       if latest
         .as_ref()
         .is_none_or(|(current, _)| revision > *current)
@@ -526,6 +516,34 @@ pub(crate) mod store {
       return Ok(None);
     };
     Ok(Some(TrustSnapshotV1::decode(&bytes)?))
+  }
+
+  /// The stored trust-binding format: one version byte followed by the
+  /// 32-byte public key. Version and length are checked strictly so a
+  /// corrupted or future-format value fails closed instead of being skipped.
+  const TRUST_BINDING_VERSION: u8 = 1;
+
+  fn decode_binding_value(bytes: &[u8]) -> Result<PublicKey> {
+    if bytes.len() != 33 || bytes[0] != TRUST_BINDING_VERSION {
+      return Err(crate::Error::invalid_input("trust binding format"));
+    }
+    let key: [u8; 32] = bytes[1..33]
+      .try_into()
+      .map_err(|_| crate::Error::invalid_input("trust binding key"))?;
+    Ok(PublicKey::from_bytes(key))
+  }
+
+  /// The revision parsed out of a snapshot key (`{issuer}/{revision:020}`).
+  /// A malformed suffix is schema corruption, never revision zero.
+  fn revision_from_key(key: &StoreKey) -> Result<u64> {
+    let text = std::str::from_utf8(key.as_bytes())
+      .map_err(|_| crate::Error::invalid_input("trust snapshot key"))?;
+    text
+      .rsplit('/')
+      .next()
+      .ok_or_else(|| crate::Error::invalid_input("trust snapshot key"))?
+      .parse::<u64>()
+      .map_err(|_| crate::Error::invalid_input("trust snapshot revision"))
   }
 
   /// Persists one verified nonconflicting binding over the running node's
@@ -541,16 +559,13 @@ pub(crate) mod store {
     if let Some(existing) = snapshot.get(&namespace, &store_key).await? {
       // A re-keyed binding must not silently diverge: a known node with a
       // different key is conflicting evidence and fails closed.
-      if existing.as_bytes().len() >= 33
-        && existing.as_bytes()[0] == 1
-        && existing.as_bytes()[1..33] != *key.as_bytes()
-      {
+      if decode_binding_value(existing.as_bytes())?.as_bytes() != key.as_bytes() {
         return Err(crate::Error::not_trusted("trust binding key substitution"));
       }
       return Ok(());
     }
     let mut bytes = Vec::with_capacity(33);
-    bytes.push(1);
+    bytes.push(TRUST_BINDING_VERSION);
     bytes.extend_from_slice(key.as_bytes());
     let transaction = store.prepare_transaction(
       TransactionId::generate(entropy)?,
@@ -581,10 +596,8 @@ pub(crate) mod store {
     let mut page: Vec<TrustBinding> = Vec::with_capacity(limit);
     let mut more_after_page = false;
     while let Some(entry) = scan.next().await? {
-      let bytes = entry.value().as_bytes();
-      if bytes.len() < 33 || bytes[0] != 1 {
-        continue;
-      }
+      let node = NodeId::parse(&String::from_utf8_lossy(entry.key().as_bytes()))?;
+      let key = decode_binding_value(entry.value().as_bytes())?;
       if skipped < offset {
         skipped += 1;
         continue;
@@ -595,11 +608,6 @@ pub(crate) mod store {
         more_after_page = true;
         break;
       }
-      let node = NodeId::parse(&String::from_utf8_lossy(entry.key().as_bytes()))?;
-      let key = PublicKey::from_bytes(
-        <[u8; 32]>::try_from(&bytes[1..33])
-          .map_err(|_| crate::Error::invalid_input("trust binding key"))?,
-      );
       page.push(TrustBinding::new(node, key));
     }
     // The next cursor is exact only when the page filled and a further

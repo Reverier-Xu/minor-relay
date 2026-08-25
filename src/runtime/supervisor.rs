@@ -5,6 +5,7 @@ use tokio::{
   sync::{mpsc, oneshot, watch},
   task::{AbortHandle, JoinSet},
 };
+use tracing::debug;
 
 use crate::{
   AdmissionView, ClusterView, Endpoint, Error, ErrorKind, IssuedJoinCredential, ListenerView,
@@ -83,19 +84,62 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) _runtime_seed: Option<[u8; 32]>,
 }
 
+/// Spawns the anti-entropy membership-sync driver: it pages descriptors
+/// and the issuer trust snapshot over every authenticated session on the
+/// configured interval and stops on the shutdown signal (SC-G05-P0-22:
+/// streams metadata pages; bounded work per tick).
+fn spawn_sync_driver(
+  context: &Arc<LocalIdentityContext>, entropy: Arc<dyn crate::api::Entropy>,
+  sessions: crate::session::stream::SessionTable, runtime: crate::runtime::RuntimeClient,
+  published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>>, interval: std::time::Duration,
+  shutdown: tokio::sync::watch::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+  let driver_context = Arc::clone(context);
+  let driver_entropy = entropy;
+  let driver_sessions = sessions;
+  let driver_runtime = runtime;
+  let driver_endpoints = published_endpoints;
+  let mut driver_shutdown = shutdown;
+  tokio::spawn(async move {
+    let mut timer = tokio::time::interval(interval);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sync_cursor = crate::membership::sync::SyncCursor::default();
+    loop {
+      tokio::select! {
+        changed = driver_shutdown.changed() => {
+          let _ = changed;
+          break;
+        }
+        _ = timer.tick() => {
+          let endpoints: Vec<Endpoint> = driver_endpoints
+            .lock()
+            .map(|endpoints| endpoints.clone())
+            .unwrap_or_default();
+          let _ = crate::membership::sync::sync_tick(
+            &driver_context,
+            &driver_entropy,
+            &driver_sessions,
+            &driver_runtime,
+            &endpoints,
+            &mut sync_cursor,
+          )
+          .await;
+        }
+      }
+    }
+  })
+}
+
 pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Result<RuntimeClient> {
   let runtime = Handle::try_current().map_err(|_| Error::not_ready("Tokio runtime"))?;
   let mut runtime_seed = [0; 32];
   dependencies.entropy.fill(&mut runtime_seed)?;
   dependencies._runtime_seed = Some(runtime_seed);
-  // Every dial and listen flows through the registered transport, so a
-  // counting wrapper registered by the caller observes configured
-  // attempts (SC-G05-P0-22).
-  dependencies.transport = dependencies
-    .extensions
-    .transport(&crate::transport::registry::WssTransport::tag()?)
-    .cloned()
-    .ok_or_else(|| Error::internal("built-in transport"))?;
+  // `dependencies.transport` is resolved once in the builder from the
+  // extension registry, so every dial and listen flows through the
+  // registered transport (a counting wrapper registered under the WSS tag
+  // observes configured attempts, SC-G05-P0-22). It is not re-resolved or
+  // overridden here.
   let receipt_retention = dependencies.config.receipt_retention();
   let context = open_local_identity(
     &dependencies.storage_factory,
@@ -391,54 +435,21 @@ impl Supervisor {
     // before the runtime was marked ready.
     let (shutdown_tx, _) = watch::channel(());
     let published_endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>> = Arc::default();
-    // The anti-entropy driver pages descriptors and the issuer trust
-    // snapshot over every authenticated session on the configured interval
-    // and stops on the shutdown signal (SC-G05-P0-22: streams metadata
-    // pages; bounded work per tick).
-    let sync_driver = {
-      let driver_context = Arc::clone(&sync_context);
-      let driver_entropy = dependencies.entropy.clone();
-      let driver_sessions = dependencies.sessions.clone();
-      let driver_runtime = crate::runtime::RuntimeClient::routing_only(
+    let sync_driver = Some(spawn_sync_driver(
+      &sync_context,
+      dependencies.entropy.clone(),
+      dependencies.sessions.clone(),
+      crate::runtime::RuntimeClient::routing_only(
         dependencies
           .packet_tx
           .clone()
           .unwrap_or_else(|| unreachable!("packet channel is provisioned at startup")),
         dependencies.routes.clone(),
-      );
-      let driver_endpoints = Arc::clone(&published_endpoints);
-      let driver_interval = dependencies.config.anti_entropy_interval();
-      let mut driver_shutdown = shutdown_tx.subscribe();
-      tokio::spawn(async move {
-        let mut timer = tokio::time::interval(driver_interval);
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut sync_cursor = crate::membership::sync::SyncCursor::default();
-        loop {
-          tokio::select! {
-            changed = driver_shutdown.changed() => {
-              let _ = changed;
-              break;
-            }
-            _ = timer.tick() => {
-              let endpoints: Vec<Endpoint> = driver_endpoints
-                .lock()
-                .map(|endpoints| endpoints.clone())
-                .unwrap_or_default();
-              let _ = crate::membership::sync::sync_tick(
-                &driver_context,
-                &driver_entropy,
-                &driver_sessions,
-                &driver_runtime,
-                &endpoints,
-                &mut sync_cursor,
-              )
-              .await;
-            }
-          }
-        }
-      })
-    };
-    let sync_driver = Some(sync_driver);
+      ),
+      Arc::clone(&published_endpoints),
+      dependencies.config.anti_entropy_interval(),
+      shutdown_tx.subscribe(),
+    ));
     // The durable trace-metadata sink shares the runtime identity context
     // and injected entropy; persistence failures never touch the data plane.
     let trace_sink = crate::routing::trace::TraceSink::new(
@@ -696,6 +707,22 @@ impl Supervisor {
     .await
   }
 
+  /// Records one bounded terminal route failure for an outbound trace so
+  /// asynchronous senders can observe it through `GetRoute`: identity and
+  /// typed failure only, never a body or a fabricated selected node.
+  fn record_route_failure(&self, trace_id: &TraceId, kind: ErrorKind) {
+    let _ = insert_route(
+      &self.dependencies.routes,
+      self.route_capacity,
+      RouteRecord::failing(trace_id.clone()),
+    );
+    if let Ok(mut routes) = self.dependencies.routes.lock()
+      && let Some(record) = routes.get_mut(trace_id)
+    {
+      record.update(RouteState::Failed(kind));
+    }
+  }
+
   /// Routes one outbound packet. Matching-node targets resolve through the
   /// registered load-balancing policy over the descriptor store before the
   /// pump starts; the selected node is validated against the authoritative
@@ -727,16 +754,7 @@ impl Supervisor {
         // A failed selection records bounded terminal trace metadata
         // only: identity and typed failure, never a body or a fabricated
         // selected node.
-        let _ = insert_route(
-          &self.dependencies.routes,
-          self.route_capacity,
-          RouteRecord::failing(trace_id.clone()),
-        );
-        if let Ok(mut routes) = self.dependencies.routes.lock()
-          && let Some(record) = routes.get_mut(&trace_id)
-        {
-          record.update(RouteState::Failed(error.kind()));
-        }
+        self.record_route_failure(&trace_id, error.kind());
         request.reject(error.kind());
         return Ok(());
       }
@@ -750,11 +768,7 @@ impl Supervisor {
       return Err(error);
     }
     let fail = |request: OutboundRequest, kind: ErrorKind| {
-      if let Ok(mut routes) = self.dependencies.routes.lock()
-        && let Some(record) = routes.get_mut(&trace_id)
-      {
-        record.update(RouteState::Failed(kind));
-      }
+      self.record_route_failure(&trace_id, kind);
       request.reject(kind);
     };
     let entry = self
@@ -768,12 +782,12 @@ impl Supervisor {
     // next-hop policy may route through a connected peer (T-G06-03). The
     // pump then emits the route envelope so every intermediate hop
     // re-validates the chain.
-    eprintln!(
-      "DEBUG route dest={destination} has_entry={} entry_alive={:?}",
-      entry.is_some(),
-      entry.as_ref().map(|e| e.alive())
-    );
     let direct = entry.filter(|entry| entry.alive());
+    debug!(
+      destination = %destination,
+      direct = direct.is_some(),
+      "routing packet toward destination"
+    );
     let (entry, force_routed) = match direct {
       Some(entry) => (entry, false),
       None => match self.select_forward_entry(&destination).await? {
@@ -837,7 +851,7 @@ impl Supervisor {
   /// no eligible hop exists and the caller fails the route explicitly.
   async fn select_forward_entry(&self, destination: &NodeId) -> Result<Option<SessionEntry>> {
     let Some(tag) = self.dependencies.config.route_policy() else {
-      eprintln!("DEBUG select: no route policy configured");
+      debug!(destination = %destination, "no route policy configured; forward unavailable");
       return Ok(None);
     };
     let Some(policy) = self.dependencies.extensions.next_hop_policy(tag) else {
@@ -868,7 +882,7 @@ impl Supervisor {
       .get(&hop)
       .filter(|entry| entry.alive())
       .cloned();
-    eprintln!("DEBUG fwd hop={hop} have_entry={}", entry.is_some());
+    debug!(hop = %hop, selected = entry.is_some(), "forward candidate resolved");
     Ok(entry)
   }
 
@@ -942,19 +956,10 @@ impl Supervisor {
       return Ok(None);
     };
     let descriptor = crate::membership::page::decode_descriptor(value.as_bytes())?;
-    Ok(Some(crate::MemberView::new(
-      descriptor.node().clone(),
-      descriptor.public_key().clone(),
-      descriptor.revision(),
-      crate::membership::node_descriptor_digest(&descriptor)?,
-      if connected {
-        crate::ConnectivityStatus::Connected
-      } else {
-        crate::ConnectivityStatus::Reachable
-      },
-      descriptor.endpoints().to_vec(),
-      descriptor.labels().clone(),
-    )))
+    Ok(Some(crate::membership::member_view(
+      &descriptor,
+      connected,
+    )?))
   }
 
   /// Pages the signed descriptors, annotating connectivity from the
@@ -989,20 +994,8 @@ impl Supervisor {
         continue;
       }
       let descriptor = crate::membership::page::decode_descriptor(entry.value().as_bytes())?;
-      let node = descriptor.node().clone();
-      items.push(crate::MemberView::new(
-        node.clone(),
-        descriptor.public_key().clone(),
-        descriptor.revision(),
-        crate::membership::node_descriptor_digest(&descriptor)?,
-        if connected.contains(&node) {
-          crate::ConnectivityStatus::Connected
-        } else {
-          crate::ConnectivityStatus::Reachable
-        },
-        descriptor.endpoints().to_vec(),
-        descriptor.labels().clone(),
-      ));
+      let connected = connected.contains(descriptor.node());
+      items.push(crate::membership::member_view(&descriptor, connected)?);
       last_key = Some(key.to_vec());
       if items.len() >= limit {
         break;
@@ -1099,7 +1092,7 @@ impl Supervisor {
   /// Forces one bounded immediate recovery cycle (SC-G05-P0-19) and
   /// returns the public recovery view.
   fn start_recovery(&mut self) -> Result<crate::RecoveryView> {
-    self.recovery.immediate(now_seconds());
+    self.recovery.immediate(crate::time::now_seconds());
     Ok(self.recovery_view())
   }
 
@@ -1190,7 +1183,7 @@ impl Supervisor {
   /// has an authenticated path, how many members remain unreachable, and
   /// the next scheduled attempt.
   fn recovery_view(&self) -> crate::RecoveryView {
-    let now = now_seconds();
+    let now = crate::time::now_seconds();
     crate::RecoveryView::new(
       self.recovery.state() == crate::membership::recovery::RecoveryState::Connected,
       self.recovery.pending_count(),
@@ -1223,8 +1216,8 @@ impl Supervisor {
       self.recovery_history.insert(peer.clone());
     }
     let online = self.recovery_history.clone();
-    let now = now_seconds();
-    self.recovery.observe(now, &online, &direct);
+    let now = crate::time::now_seconds();
+    self.recovery.observe(&online, &direct);
     if self.recovery.state() != crate::membership::recovery::RecoveryState::Recovering
       || !self.recovery.due(now)
       || {
@@ -1376,13 +1369,4 @@ async fn dial_member(
     return Err(Error::internal("session registration"));
   }
   Ok(authenticated)
-}
-
-/// Host wall-clock seconds (the recovery controller's tick unit; re-read
-/// after every wake so rollback, freeze, and forward jumps are observed).
-fn now_seconds() -> u64 {
-  std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .map(|duration| duration.as_secs())
-    .unwrap_or(0)
 }

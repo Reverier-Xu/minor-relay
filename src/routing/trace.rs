@@ -27,6 +27,7 @@ use minicbor::{Decode, Encode};
 use crate::{
   Error, ErrorKind, NodeId, ProviderErrorContext, ProviderErrorKind, Result, TraceId,
   api::Entropy,
+  protocol::decode_canonical_strict,
   storage::{MetadataStore, receipt::WallClock},
 };
 
@@ -71,7 +72,7 @@ impl TracePhase {
       (Self::STREAMING, None) => Ok(Self::Streaming),
       (Self::DELIVERED, None) => Ok(Self::Delivered),
       (Self::FAILED, Some(failure)) if failure != NO_FAILURE => {
-        Ok(Self::Failed(kind_from_code(failure)))
+        Ok(Self::Failed(kind_from_code(failure)?))
       }
       _ => Err(Error::invalid_input("route trace phase")),
     }
@@ -84,7 +85,7 @@ impl TracePhase {
 
 /// The closed wire-code mapping for [`ErrorKind`] failures. Codes are
 /// internal to this record schema; unknown codes fail closed.
-fn kind_code(kind: ErrorKind) -> Option<u8> {
+const fn kind_code(kind: ErrorKind) -> Option<u8> {
   let code = match kind {
     ErrorKind::InvalidInput => 1,
     ErrorKind::Conflict => 2,
@@ -112,8 +113,11 @@ fn kind_code(kind: ErrorKind) -> Option<u8> {
   Some(code)
 }
 
-fn kind_from_code(code: u8) -> ErrorKind {
-  match code {
+/// The inverse of [`kind_code`]: a stored failure byte outside the known
+/// set is schema corruption and fails closed instead of masquerading as
+/// `Internal`.
+const fn kind_from_code(code: u8) -> Result<ErrorKind> {
+  let kind = match code {
     1 => ErrorKind::InvalidInput,
     2 => ErrorKind::Conflict,
     3 => ErrorKind::NotFound,
@@ -135,8 +139,10 @@ fn kind_from_code(code: u8) -> ErrorKind {
     19 => ErrorKind::CommitUnknown,
     20 => ErrorKind::Cancelled,
     21 => ErrorKind::ShuttingDown,
-    _ => ErrorKind::Internal,
-  }
+    22 => ErrorKind::Internal,
+    _ => return Err(Error::invalid_input("route trace failure code")),
+  };
+  Ok(kind)
 }
 
 /// One durable route-trace record: bounded metadata only, never payload
@@ -236,15 +242,11 @@ struct TraceWire {
 }
 
 fn millis(time: SystemTime) -> u64 {
-  time
-    .duration_since(std::time::UNIX_EPOCH)
-    .ok()
-    .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
-    .unwrap_or(0)
+  crate::time::to_millis(time)
 }
 
 fn from_millis(value: u64) -> SystemTime {
-  std::time::UNIX_EPOCH + Duration::from_millis(value)
+  crate::time::from_millis(value)
 }
 
 fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
@@ -278,14 +280,11 @@ fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
 /// The single canonical trace-record decoder: canonical encoding, schema,
 /// version, and field validation fail closed.
 pub(crate) fn decode_trace_record(bytes: &[u8]) -> Result<TraceRecord> {
-  let wire: TraceWire =
-    crate::protocol::decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-      .map_err(|_| Error::invalid_input("route trace decode"))?;
-  if crate::protocol::encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
-    .is_ok_and(|encoded| encoded != bytes)
-  {
-    return Err(Error::invalid_input("route trace canonical"));
-  }
+  let wire: TraceWire = decode_canonical_strict(
+    bytes,
+    crate::protocol::offer::OFFER_CBOR_LIMITS,
+    "route trace canonical",
+  )?;
   if wire.schema != TRACE_SCHEMA || wire.record_version != 1 {
     return Err(Error::invalid_input("route trace schema"));
   }
@@ -399,25 +398,26 @@ pub(crate) async fn sweep(
   let mut scan = snapshot.scan(&space, &[]).await?;
   let mut expired: Vec<(crate::StoreKey, crate::Digest, SystemTime)> = Vec::new();
   let mut fresh_terminals: Vec<(crate::StoreKey, crate::Digest, SystemTime)> = Vec::new();
-  let mut active = 0_usize;
   while let Some(entry) = scan.next().await? {
     let Ok(record) = decode_trace_record(entry.value().as_bytes()) else {
       continue;
     };
+    if !record.phase.is_terminal() {
+      // Active streams never enter the removal sets at all.
+      continue;
+    }
     let item = (
       crate::StoreKey::new(std::sync::Arc::from(entry.key().as_bytes().to_vec())),
       entry.value().digest().clone(),
       record.updated_at,
     );
-    match &record.phase {
-      phase if !phase.is_terminal() => active += 1,
-      _ if now
-        .duration_since(record.updated_at)
-        .is_ok_and(|age| age >= retention) =>
-      {
-        expired.push(item)
-      }
-      _ => fresh_terminals.push(item),
+    if now
+      .duration_since(record.updated_at)
+      .is_ok_and(|age| age >= retention)
+    {
+      expired.push(item);
+    } else {
+      fresh_terminals.push(item);
     }
   }
   drop(scan);
@@ -447,7 +447,6 @@ pub(crate) async fn sweep(
     })
     .collect();
   apply_batched(store, entropy, operations).await?;
-  let _ = active;
   Ok(total)
 }
 
@@ -533,6 +532,43 @@ mod tests {
   }
 
   // ---- SC-G06-P0-05: trace metadata without body bytes ----
+
+  /// Every `ErrorKind` survives the closed failure-code mapping, and an
+  /// unknown stored byte fails closed instead of decoding as a valid kind.
+  #[test]
+  fn failure_codes_round_trip_and_reject_unknown() {
+    let kinds = [
+      ErrorKind::InvalidInput,
+      ErrorKind::Conflict,
+      ErrorKind::NotFound,
+      ErrorKind::NotReady,
+      ErrorKind::NotTrusted,
+      ErrorKind::Revoked,
+      ErrorKind::Unsupported,
+      ErrorKind::UnsupportedSchema,
+      ErrorKind::UnsupportedCapability,
+      ErrorKind::AuthenticationFailed,
+      ErrorKind::RouteUnavailable,
+      ErrorKind::StreamInterrupted,
+      ErrorKind::Overloaded,
+      ErrorKind::ResourceExhausted,
+      ErrorKind::StorageLocked,
+      ErrorKind::StorageCorrupt,
+      ErrorKind::PermissionDenied,
+      ErrorKind::Io,
+      ErrorKind::CommitUnknown,
+      ErrorKind::Cancelled,
+      ErrorKind::ShuttingDown,
+      ErrorKind::Internal,
+    ];
+    for kind in kinds {
+      let code = super::kind_code(kind).unwrap();
+      assert_eq!(super::kind_from_code(code).unwrap(), kind);
+    }
+    for code in [0_u8, 23, u8::MAX] {
+      assert!(super::kind_from_code(code).is_err());
+    }
+  }
 
   /// The record binds identity, selected destination, attempt count,
   /// progress, and terminal state — and byte-for-byte inspection of the

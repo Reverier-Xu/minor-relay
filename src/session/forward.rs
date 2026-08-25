@@ -8,9 +8,9 @@
 //! reported upstream with an explicit typed acknowledgement instead of a
 //! replay or continuation.
 
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::stream::{BoundedSender, PendingAck, PendingAcks, SessionFrame, SessionTable};
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
   protocol::wire::PacketKind,
 };
 
+#[derive(Clone)]
 pub(crate) struct ForwardingHop {
   /// Frames toward the upstream holder: acknowledgement relays.
   pub(crate) upstream: BoundedSender,
@@ -28,6 +29,13 @@ pub(crate) struct ForwardingHop {
   /// The authenticated peer this hop came from; the session that owns the
   /// upstream sender above cleans its hops up when it ends.
   pub(crate) upstream_peer: NodeId,
+  /// Serializes an in-flight chunk relay against [`close_for_peer`]: the
+  /// relay holds this lock across its unbounded backpressure await so a
+  /// closing session either queues its end after the queued chunk (strict
+  /// chunk-then-end order) or observes the entry already gone. The entry
+  /// stays in the table throughout, so cancellation or session death can
+  /// never orphan a downstream leg without an explicit end.
+  relay_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// The node-local table of in-flight forwarded routes.
@@ -67,18 +75,6 @@ pub(crate) async fn open(
     open.destination.clone(),
     open.route.clone(),
   );
-  eprintln!(
-    "DEBUG forward::open local={local} peer={peer} dest={} route={}",
-    open.destination,
-    open.route.is_some()
-  );
-  eprintln!(
-    "DEBUG forward::open dest={} route={}",
-    open.destination,
-    open.route.is_some()
-  );
-  eprintln!("DEBUG fwd::open at {local:?}");
-  eprintln!("DEBUG fwd::open enter");
   let peers = live_peers(sessions);
   let mut chosen = if open.destination != *local {
     Some(select_next_hop(registry, route_policy, &open.destination, local, &peers).await)
@@ -98,7 +94,7 @@ pub(crate) async fn open(
       true
     }
     other => {
-      eprintln!("DEBUG forward validation at {local:?}: {other:?}");
+      debug!(local = %local, validation = ?other, "routed open failed envelope validation");
       // Arrival is impossible here (the caller filtered on destination),
       // and every validation failure fails closed before any forwarding.
       reject_open(upstream, &open.trace_id);
@@ -111,12 +107,20 @@ pub(crate) async fn open(
 /// no such hop exists (unknown or already terminated), which the caller
 /// treats as a silent drop rather than a session violation.
 pub(crate) async fn relay_chunk(table: &ForwardingTable, frame: ChunkFrame) -> bool {
-  let Some(hop) = take(table, &frame.trace_id) else {
+  let Some(hop) = snapshot(table, &frame.trace_id) else {
     return false;
   };
+  // Hold the relay lock across the unbounded backpressure await: the entry
+  // stays visible to close_for_peer, and a concurrent close either queues
+  // its end after this chunk or removes the entry before this relay starts.
+  let relay = hop.relay_lock.lock().await;
+  if !contains(table, &frame.trace_id) {
+    return true;
+  }
+  drop(relay);
   let body = match wire::encode_chunk(&frame) {
     Ok(body) => body,
-    Err(error) => return fail_hop(&hop, &frame.trace_id, error.kind()).await,
+    Err(error) => return fail_hop(table, &frame.trace_id, error.kind()).await,
   };
   if hop
     .downstream
@@ -124,22 +128,29 @@ pub(crate) async fn relay_chunk(table: &ForwardingTable, frame: ChunkFrame) -> b
     .await
     .is_err()
   {
-    return fail_hop(&hop, &frame.trace_id, ErrorKind::StreamInterrupted).await;
+    return fail_hop(table, &frame.trace_id, ErrorKind::StreamInterrupted).await;
   }
-  restore(table, frame.trace_id, hop);
   true
 }
 
 /// Relays the end frame downstream and closes the hop: the terminal
 /// direction completed either way. Returns `false` when no hop existed.
 pub(crate) async fn relay_end(table: &ForwardingTable, frame: EndFrame) -> bool {
-  let Some(hop) = take(table, &frame.trace_id) else {
+  let Some(hop) = snapshot(table, &frame.trace_id) else {
     return false;
   };
+  let relay = hop.relay_lock.lock().await;
+  // Removal under the relay lock makes this terminal relay exclusive with
+  // close_for_peer: whichever acquires the lock first sends the one end.
+  let Some(hop) = take(table, &frame.trace_id) else {
+    return true;
+  };
+  drop(relay);
   let body = match wire::encode_end(&frame) {
     Ok(body) => body,
     Err(error) => {
-      fail_hop(&hop, &frame.trace_id, error.kind()).await;
+      warn!(kind = ?error.kind(), trace_id = %frame.trace_id, "end frame encode failed");
+      fail_upstream(&hop.upstream, &frame.trace_id).await;
       return true;
     }
   };
@@ -149,7 +160,7 @@ pub(crate) async fn relay_end(table: &ForwardingTable, frame: EndFrame) -> bool 
     .await
     .is_err()
   {
-    fail_hop(&hop, &frame.trace_id, ErrorKind::StreamInterrupted).await;
+    fail_upstream(&hop.upstream, &frame.trace_id).await;
   }
   true
 }
@@ -158,19 +169,23 @@ pub(crate) async fn relay_end(table: &ForwardingTable, frame: EndFrame) -> bool 
 /// downstream legs receive an explicit end so no destination consumer waits
 /// forever, and no reopen path ever continues a body.
 pub(crate) async fn close_for_peer(table: &ForwardingTable, upstream_peer: &NodeId) {
-  let affected: Vec<(TraceId, ForwardingHop)> = {
-    let mut guard = locked(table);
-    let keys: Vec<TraceId> = guard
-      .iter()
-      .filter(|(_, hop)| hop.upstream_peer == *upstream_peer)
-      .map(|(trace, _)| trace.clone())
-      .collect();
-    keys
-      .into_iter()
-      .filter_map(|trace| guard.remove(&trace).map(|hop| (trace, hop)))
-      .collect()
-  };
-  for (trace_id, hop) in affected {
+  let candidates: Vec<TraceId> = locked(table)
+    .iter()
+    .filter(|(_, hop)| hop.upstream_peer == *upstream_peer)
+    .map(|(trace, _)| trace.clone())
+    .collect();
+  for trace_id in candidates {
+    let Some(hop) = snapshot(table, &trace_id) else {
+      continue;
+    };
+    // Wait out any in-flight chunk relay so the end queues strictly after
+    // the last chunk; a cancelled reader leaves its entry in place, so the
+    // end is sent exactly once by whoever holds the lock next.
+    let relay = hop.relay_lock.lock().await;
+    let Some(hop) = take_existing(table, &trace_id) else {
+      continue;
+    };
+    drop(relay);
     if let Ok(body) = wire::encode_end(&EndFrame { trace_id }) {
       let _ = hop
         .downstream
@@ -194,7 +209,7 @@ async fn relay_open(
     Err(_) => None,
   };
   let Some((downstream_frames, downstream_acks)) = downstream else {
-    eprintln!("DEBUG relay_open: no live downstream {}", next_hop);
+    debug!(next_hop = %next_hop, "routed open has no live downstream session");
     return fail_upstream(upstream, &open.trace_id).await;
   };
   if contains(forwarding, &open.trace_id) {
@@ -247,6 +262,7 @@ async fn relay_open(
       upstream: upstream.clone(),
       downstream: downstream_frames,
       upstream_peer: peer.clone(),
+      relay_lock: Arc::new(tokio::sync::Mutex::new(())),
     },
   )
   .is_err()
@@ -297,8 +313,17 @@ fn take(table: &ForwardingTable, trace_id: &TraceId) -> Option<ForwardingHop> {
   locked(table).remove(trace_id)
 }
 
-fn restore(table: &ForwardingTable, trace_id: TraceId, hop: ForwardingHop) {
-  locked(table).insert(trace_id, hop);
+/// Removes the entry only when it is still present (the caller already
+/// holds the hop's relay lock, so no relay can be mid-flight).
+fn take_existing(table: &ForwardingTable, trace_id: &TraceId) -> Option<ForwardingHop> {
+  take(table, trace_id)
+}
+
+/// Clones the current hop without removing it: relays hold the clone while
+/// awaiting downstream capacity so the entry stays visible to a closing
+/// session.
+fn snapshot(table: &ForwardingTable, trace_id: &TraceId) -> Option<ForwardingHop> {
+  locked(table).get(trace_id).cloned()
 }
 
 fn register(
@@ -326,21 +351,17 @@ async fn fail_upstream(upstream: &BoundedSender, trace_id: &TraceId) {
   send_status(upstream, trace_id, AckStatus::Failed);
 }
 
-fn fail_hop(
-  hop: &ForwardingHop, trace_id: &TraceId, kind: ErrorKind,
-) -> impl Future<Output = bool> {
+async fn fail_hop(table: &ForwardingTable, trace_id: &TraceId, kind: ErrorKind) -> bool {
   warn!(kind = ?kind, trace_id = %trace_id, "forwarded route interrupted");
-  let status = match kind {
-    ErrorKind::Unsupported => AckStatus::Unsupported,
-    ErrorKind::Overloaded => AckStatus::Overloaded,
-    _ => AckStatus::Failed,
+  // The single ErrorKind→status mapping lives on the wire type.
+  let status = AckStatus::from_kind(kind);
+  let Some(hop) = take(table, trace_id) else {
+    // A concurrent closer already terminated and removed this hop; its end
+    // reached the downstream leg, so only the upstream status remains.
+    return true;
   };
-  let upstream = hop.upstream.clone();
-  let trace_id = trace_id.clone();
-  async move {
-    send_status(&upstream, &trace_id, status);
-    true
-  }
+  send_status(&hop.upstream, trace_id, status);
+  true
 }
 
 fn send_status(upstream: &BoundedSender, trace_id: &TraceId, status: AckStatus) {
@@ -398,6 +419,7 @@ mod tests {
         upstream: upstream_tx,
         downstream: downstream_tx,
         upstream_peer: node(9),
+        relay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
       },
     )
     .unwrap();
@@ -458,6 +480,7 @@ mod tests {
         upstream: upstream_tx,
         downstream: downstream_tx,
         upstream_peer: node(9),
+        relay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
       },
     )
     .unwrap();
@@ -499,6 +522,7 @@ mod tests {
         upstream: upstream_tx,
         downstream: downstream_tx,
         upstream_peer: node(9),
+        relay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
       },
     )
     .unwrap();
@@ -538,6 +562,7 @@ mod tests {
           upstream: upstream_tx,
           downstream: downstream_tx,
           upstream_peer: feeder.clone(),
+          relay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         },
       )
       .unwrap();
@@ -556,6 +581,7 @@ mod tests {
         upstream: upstream_tx,
         downstream: downstream_tx,
         upstream_peer: node(8),
+        relay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
       },
     )
     .unwrap();

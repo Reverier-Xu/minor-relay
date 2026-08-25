@@ -33,7 +33,7 @@ use crate::{
   CommitOutcome, CommitReceipt, Digest, Error, ProviderErrorContext, ProviderErrorKind,
   QualifiedTag, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
   StoreRequirements, StoreRevision, StoreValue, TransactionId,
-  protocol::{CborLimits, decode_canonical, encode_canonical},
+  protocol::{CborLimits, decode_canonical_strict, encode_canonical},
   provider::{StorageFactory, StoreSnapshot},
 };
 
@@ -375,10 +375,8 @@ impl PendingTransactionV1 {
   }
 
   pub(super) fn decode(bytes: &[u8]) -> Result<Self> {
-    let wire: PendingTransactionWire = decode_canonical(bytes, PENDING_LIMITS)?;
-    if encode_canonical(&wire, PENDING_LIMITS)? != bytes {
-      return Err(Error::invalid_input("pending transaction canonical form"));
-    }
+    let wire: PendingTransactionWire =
+      decode_canonical_strict(bytes, PENDING_LIMITS, "pending transaction canonical form")?;
     if wire.schema != PENDING_SCHEMA {
       return Err(Error::invalid_input("pending transaction schema"));
     }

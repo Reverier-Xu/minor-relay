@@ -1,6 +1,58 @@
 # minor-relay Verified Findings (G3-era review, 2026-08)
 
-> **Fresh re-review 2026-08-24 (main @ post-ADR-0008, four fresh agents +
+> **G6 re-review 2026-08-25 (main @ b9cd349, five fresh reviewer lanes +
+> orchestrator):** G6 verdict **PASS-WITH-GAPS**; Q suite and all five
+> verify-g06-\* lanes green; planning validator green (69/226/10/29).
+> All P0/P1 findings below spot-checked against source. Hotspots:
+>
+> ### P0 — leftover debug output in the G6 hot path
+> - `eprintln!("DEBUG …")` ×10: session/forward.rs:70-81,101,197;
+>   runtime/supervisor.rs:771,840,871; session/stream.rs:1084.
+>   Prints NodeIds/routes to stderr on every routed open/pump. Delete or
+>   convert to `tracing::trace!` before gate closure evidence freeze.
+>
+> ### P1 — should-fix (all verified)
+> 1. membership/page.rs:74 `descriptor.encode().unwrap_or_default()` —
+>     swallowed encode failure ships an empty descriptor that fails remote
+>     decode; propagate the error.
+> 2. identity/trust.rs:585 silent `continue` on malformed binding rows +
+>     magic binary format (`len<33 || bytes[0]!=1`) + stringly snapshot key
+>     parsed back with `rsplit('/')…unwrap_or(0)` (trust.rs:472,512) —
+>     violates fail-closed rule 8; use a schema-tagged CBOR record and a
+>     binary composite key.
+> 3. Canonical decode re-encode check inconsistently applied: present in
+>     identity/records.rs:98, protocol/handshake.rs:841, routing/trace.rs:285,
+>     protocol/offer.rs:134, storage/pending.rs:379; ABSENT in
+>     membership/sync.rs:89 and page.rs:86. Security-adjacent divergence —
+>     add one `decode_canonical_strict` in protocol/cbor.rs.
+> 4. transport/connection.rs receive loop duplicated verbatim between
+>     Connection::receive (:223) and ConnectionReader::receive (:366), send
+>     likewise (:197 vs :329); already drifted (trace logging only in one).
+> 5. Forwarding-table take/across-await/restore race: session/forward.rs
+>     relay_chunk (:113-130) removes the hop during unbounded backpressure
+>     await; close_for_peer (:160-180) misses it and restore can resurrect a
+>     terminated route (leak; downstream never gets end).
+> 6. runtime/supervisor.rs member()/page_members() hand-roll descriptor→
+>     MemberView mapping twice (carried over from 2026-08-24 backlog — still
+>     unfixed at G6).
+>
+> ### Evidence gaps for the gate record
+> - SC-G06-P0-18: trace retention tested with monotonic forward clock only;
+>     no rollback/freeze case in routing/trace.rs (candidates.rs/recovery.rs
+>     have the pattern to copy).
+> - SC-G06-P0-13/14: no wire-level duplicate-open consumer-twice test; ACK
+>     "admission-only" semantics asserted only implicitly via E2E ordering.
+>
+> ### Recurring cross-gate patterns (fix once, everywhere)
+> - epoch-millis conversions duplicated ≥4 sites; CommitOutcome four-arm
+>     mapping ×3-4; AckStatus↔ErrorKind mapping ×3 with catch-all
+>     StreamInterrupted in packet/mod.rs:573; trace kind_from_code silently
+>     maps unknown codes → Internal (trace.rs:136) contradicting its own
+>     fail-closed doc; host-clock `now_millis` bypasses injected WallClock
+>     (stream.rs:1363); god-functions run_outbound (~200 ln), sync_tick,
+>     Supervisor::new, send_packet.
+
+> **Re-review 2026-08-24 (main @ post-ADR-0008, four fresh agents +
 > orchestrator):** G5 verdict PASS-WITH-GAPS; Q suite and all twelve
 > g04/g05 lanes green. Session-trust migration (ADR-0008) verified
 > consistent code-to-doc. New backlog below supersedes the remediation

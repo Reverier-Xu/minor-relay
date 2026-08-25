@@ -116,22 +116,12 @@ impl ExtensionRegistry {
   pub fn register_load_balancer(
     &mut self, tag: crate::QualifiedTag, value: Arc<dyn crate::LoadBalancingPolicy>,
   ) -> Result<&mut Self> {
-    let conflict = {
+    {
       let mut balancers = self
         .load_balancers
         .lock()
         .map_err(|_| Error::internal("extension registry"))?;
-      use std::collections::btree_map::Entry;
-      match balancers.entry(tag) {
-        Entry::Occupied(_) => true,
-        Entry::Vacant(slot) => {
-          slot.insert(value);
-          false
-        }
-      }
-    };
-    if conflict {
-      return Err(Error::conflict("load balancer registration"));
+      insert_once(&mut balancers, tag, value, "load balancer registration")?;
     }
     Ok(self)
   }
@@ -149,7 +139,11 @@ impl ExtensionRegistry {
 
   /// Whether the load-balancer tag is registered locally.
   pub(crate) fn has_load_balancer(&self, tag: &crate::QualifiedTag) -> bool {
-    self.load_balancer(tag).is_some()
+    self
+      .load_balancers
+      .lock()
+      .map(|balancers| balancers.contains_key(tag))
+      .unwrap_or(false)
   }
 
   /// Registers one next-hop routing policy under a canonical tag
@@ -159,22 +153,12 @@ impl ExtensionRegistry {
   pub fn register_next_hop(
     &mut self, tag: crate::QualifiedTag, value: Arc<dyn crate::RouteNextHop>,
   ) -> Result<&mut Self> {
-    let conflict = {
+    {
       let mut policies = self
         .next_hops
         .lock()
         .map_err(|_| Error::internal("extension registry"))?;
-      use std::collections::btree_map::Entry;
-      match policies.entry(tag) {
-        Entry::Occupied(_) => true,
-        Entry::Vacant(slot) => {
-          slot.insert(value);
-          false
-        }
-      }
-    };
-    if conflict {
-      return Err(Error::conflict("next-hop registration"));
+      insert_once(&mut policies, tag, value, "next-hop registration")?;
     }
     Ok(self)
   }
@@ -261,6 +245,22 @@ impl fmt::Debug for ExtensionRegistry {
       .field("transports", &self.transports.len())
       .field("discoveries", &self.discoveries.len())
       .finish()
+  }
+}
+
+/// Inserts `value` only when `tag` is absent; a duplicate is a typed
+/// conflict. The single insertion-once rule for every registry map.
+fn insert_once<V>(
+  map: &mut std::collections::BTreeMap<crate::QualifiedTag, V>, tag: crate::QualifiedTag, value: V,
+  context: &'static str,
+) -> Result<()> {
+  use std::collections::btree_map::Entry;
+  match map.entry(tag) {
+    Entry::Occupied(_) => Err(Error::conflict(context)),
+    Entry::Vacant(slot) => {
+      slot.insert(value);
+      Ok(())
+    }
   }
 }
 

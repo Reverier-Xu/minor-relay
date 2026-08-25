@@ -15,8 +15,11 @@ use minicbor::{Decode, Encode, bytes::ByteVec};
 
 use super::{MAX_CHUNK_BYTES, PacketMetadata};
 use crate::{
-  Error, NodeId, ProtocolTag, Result, TraceId,
-  protocol::{CborLimits, decode_canonical, encode_canonical, offer::OFFER_CBOR_LIMITS},
+  Error, ErrorKind, NodeId, ProtocolTag, Result, TraceId,
+  protocol::{
+    CborLimits, decode_canonical, decode_canonical_strict, encode_canonical,
+    offer::OFFER_CBOR_LIMITS,
+  },
   routing::HopState,
 };
 
@@ -40,6 +43,29 @@ pub(crate) enum AckStatus {
 }
 
 impl AckStatus {
+  /// The single source of truth for `ErrorKind` → wire status: a relayed
+  /// rejection keeps its precise kind while any other failure collapses to
+  /// the additive generic-failure code (mixed-binary compat is T-G10-02).
+  pub(crate) fn from_kind(kind: ErrorKind) -> Self {
+    match kind {
+      ErrorKind::Unsupported => Self::Unsupported,
+      ErrorKind::Overloaded => Self::Overloaded,
+      _ => Self::Failed,
+    }
+  }
+
+  /// The inverse of [`AckStatus::from_kind`]: the typed failure the origin
+  /// observes for a rejected or interrupted open. `Admitted` is success and
+  /// carries no kind.
+  pub(crate) fn to_kind(self) -> Option<ErrorKind> {
+    match self {
+      Self::Admitted => None,
+      Self::Unsupported => Some(ErrorKind::Unsupported),
+      Self::Overloaded => Some(ErrorKind::Overloaded),
+      Self::Failed => Some(ErrorKind::StreamInterrupted),
+    }
+  }
+
   const fn code(self) -> u8 {
     match self {
       Self::Admitted => 0,
@@ -343,11 +369,7 @@ pub(crate) fn decode_ack(body: &[u8]) -> Result<AckFrame> {
 fn decode_checked<'a, T>(body: &'a [u8]) -> Result<T>
 where
   T: Decode<'a, ()> + Encode<()>, {
-  let wire: T = decode_canonical(body, PACKET_CBOR_LIMITS)?;
-  if encode_canonical(&wire, PACKET_CBOR_LIMITS)? != body {
-    return Err(Error::invalid_input("packet frame canonical"));
-  }
-  Ok(wire)
+  decode_canonical_strict(body, PACKET_CBOR_LIMITS, "packet frame canonical")
 }
 
 #[cfg(test)]

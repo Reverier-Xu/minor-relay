@@ -32,7 +32,7 @@ use minicbor::{Decode, Encode};
 use super::{NodeDescriptorV1, store};
 use crate::{
   Error, LabelKey, LabelSet, LabelValue, NodeId, Result,
-  protocol::{decode_canonical, encode_canonical},
+  protocol::{decode_canonical, decode_canonical_strict, encode_canonical},
 };
 
 /// One bounded page of node descriptors plus a continuation cursor.
@@ -65,14 +65,16 @@ impl MembershipPage {
   }
 
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+    // A descriptor that cannot encode must fail the page: shipping empty
+    // bytes would produce an entry every remote peer rejects.
+    let mut descriptors = Vec::with_capacity(self.descriptors.len());
+    for descriptor in &self.descriptors {
+      descriptors.push(minicbor::bytes::ByteVec::from(descriptor.encode()?));
+    }
     encode_canonical(
       &PageWire {
         schema: MEMBERSHIP_PAGE_SCHEMA.to_owned(),
-        descriptors: self
-          .descriptors
-          .iter()
-          .map(|descriptor| minicbor::bytes::ByteVec::from(descriptor.encode().unwrap_or_default()))
-          .collect(),
+        descriptors,
         cursor: self.cursor.clone().map(minicbor::bytes::ByteVec::from),
       },
       crate::protocol::offer::OFFER_CBOR_LIMITS,
@@ -83,8 +85,11 @@ impl MembershipPage {
   /// session that delivered them (ADR-0008): decoding checks only the
   /// canonical wire rules and page capacity.
   pub(crate) fn decode(bytes: &[u8]) -> Result<MembershipPage> {
-    let wire: PageWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-      .map_err(|_| Error::invalid_input("membership page decode"))?;
+    let wire: PageWire = decode_canonical_strict(
+      bytes,
+      crate::protocol::offer::OFFER_CBOR_LIMITS,
+      "membership page canonical form",
+    )?;
     if wire.schema != MEMBERSHIP_PAGE_SCHEMA {
       return Err(Error::invalid_input("membership page schema"));
     }

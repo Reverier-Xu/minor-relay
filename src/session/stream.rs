@@ -19,7 +19,7 @@ use std::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
   },
-  time::{Duration, SystemTime, UNIX_EPOCH},
+  time::Duration,
 };
 
 use minicbor::bytes::ByteVec;
@@ -205,10 +205,18 @@ struct QueueState {
   count: AtomicUsize,
   bytes: AtomicUsize,
   admit: std::sync::Mutex<()>,
+  /// Signalled by [`BoundedReceiver::recv`] after every reservation
+  /// release, so waiting relays wake on progress instead of spinning.
+  released: tokio::sync::Notify,
 }
 
 /// The admission overhead of one queued frame beyond its body bytes.
 const FRAME_OVERHEAD: usize = 16;
+
+/// Upper bound on one wait for a queue release when the receiver is gone
+/// or silent; each wake re-checks capacity and closure, so this bounds
+/// staleness without busy-spinning.
+const WAIT_BACKSTOP: Duration = Duration::from_millis(50);
 
 /// A bounded outbound frame sender. `send` atomically checks message count
 /// and summed encoded bytes against the caller-selected limits and returns
@@ -231,78 +239,81 @@ impl BoundedSender {
     };
     if self.inner.try_send(frame).is_err() {
       // The queue closed after admission; release the reservation.
-      self.state.count.fetch_sub(1, Ordering::Relaxed);
-      self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+      self.release(bytes);
     }
   }
 
-  fn try_reserve(&self, bytes: usize) -> Option<usize> {
+  /// The admission check and reservation are one atomic critical section:
+  /// concurrent senders cannot both pass the count/byte check and exceed
+  /// the budget (the check-then-act is synchronous, no await inside).
+  /// `Ok(None)` means saturated; an error means poisoned state.
+  fn reserve(&self, bytes: usize) -> Result<Option<usize>> {
     match self.state.admit.lock() {
       Ok(_guard) => {
         let count = self.state.count.load(Ordering::Relaxed);
         let queued_bytes = self.state.bytes.load(Ordering::Relaxed);
         if count >= self.max_count || queued_bytes.saturating_add(bytes) > self.max_bytes {
-          None
+          Ok(None)
         } else {
           self.state.count.fetch_add(1, Ordering::Relaxed);
           self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
-          Some(bytes)
+          Ok(Some(bytes))
         }
       }
-      Err(_) => None,
+      Err(_) => Err(Error::internal("session queue")),
     }
+  }
+
+  fn try_reserve(&self, bytes: usize) -> Option<usize> {
+    self.reserve(bytes).ok().flatten()
+  }
+
+  fn release(&self, bytes: usize) {
+    self.state.count.fetch_sub(1, Ordering::Relaxed);
+    self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
   }
 
   /// The forwarding variant: waits for downstream capacity instead of
   /// rejecting, so a slow destination stops the relay's reads until it
   /// progresses (SC-G06-P0-10). Order is preserved by the FIFO queue.
+  /// Wakeups come from [`BoundedReceiver::recv`] releases; the bounded
+  /// backstop covers a closed queue that will never release again.
   pub(crate) async fn send_waiting(&self, frame: SessionFrame) -> Result<()> {
     let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
     loop {
-      if self.try_reserve(bytes).is_none() {
-        tokio::time::sleep(Duration::from_millis(2)).await;
-        continue;
+      match self.reserve(bytes)? {
+        Some(reserved) => {
+          if self.inner.send(frame).await.is_err() {
+            // The queue closed after admission; release the reservation.
+            self.release(reserved);
+            return Err(Error::shutting_down("session queue"));
+          }
+          return Ok(());
+        }
+        None => {
+          if self.inner.is_closed() {
+            return Err(Error::shutting_down("session queue"));
+          }
+          tokio::select! {
+            _ = self.state.released.notified() => {}
+            _ = tokio::time::sleep(WAIT_BACKSTOP) => {}
+          }
+        }
       }
-      if self.inner.send(frame).await.is_err() {
-        // The queue closed after admission; release the reservation.
-        self.state.count.fetch_sub(1, Ordering::Relaxed);
-        self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
-        return Err(Error::shutting_down("session queue"));
-      }
-      return Ok(());
     }
   }
 
   /// The blocking admission path used by payload frames.
   pub(crate) fn send(&self, frame: SessionFrame) -> BoxFuture<'_, Result<()>> {
     let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
-    // The admission check and reservation are one atomic critical section:
-    // concurrent senders cannot both pass the count/byte check and exceed
-    // the budget (the check-then-act is synchronous, no await inside).
-    let reserved = match self.state.admit.lock() {
-      Ok(_guard) => {
-        let count = self.state.count.load(Ordering::Relaxed);
-        let queued_bytes = self.state.bytes.load(Ordering::Relaxed);
-        if count >= self.max_count || queued_bytes.saturating_add(bytes) > self.max_bytes {
-          None
-        } else {
-          self.state.count.fetch_add(1, Ordering::Relaxed);
-          self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
-          Some(bytes)
-        }
-      }
-      Err(_) => return Box::pin(async move { Err(Error::internal("session queue")) }),
-    };
-    let Some(bytes) = reserved else {
-      return Box::pin(async move { Err(Error::overloaded("session queue")) });
-    };
     let inner = self.inner.clone();
-    let state = Arc::clone(&self.state);
     Box::pin(async move {
+      let Some(reserved) = self.reserve(bytes)? else {
+        return Err(Error::overloaded("session queue"));
+      };
       if inner.send(frame).await.is_err() {
         // The queue closed after admission; release the reservation.
-        state.count.fetch_sub(1, Ordering::Relaxed);
-        state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+        self.release(reserved);
         return Err(Error::shutting_down("session queue"));
       }
       Ok(())
@@ -322,6 +333,8 @@ impl BoundedReceiver {
     let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
     self.state.count.fetch_sub(1, Ordering::Relaxed);
     self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+    // One release frees exactly one waiting relay's slot.
+    self.state.released.notify_one();
     Some(frame)
   }
 }
@@ -539,11 +552,13 @@ async fn retire_observer(mut signal: watch::Receiver<()>) {
 
 /// UNIX-seconds from the injected wall clock.
 fn clock_seconds(clock: &dyn crate::storage::receipt::WallClock) -> u64 {
-  clock
-    .now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .map(|duration| duration.as_secs())
-    .unwrap_or(0)
+  crate::time::to_seconds(clock.now())
+}
+
+/// UNIX-milliseconds from the injected wall clock, used for the admission
+/// timestamps reported in acknowledgements so simulation controls them too.
+fn clock_millis(clock: &dyn crate::storage::receipt::WallClock) -> u64 {
+  crate::time::to_millis(clock.now())
 }
 
 /// Enforces the session liveness policy on host wall time (SC-G04-P0-13/14):
@@ -903,7 +918,7 @@ async fn admit_open(
         if incoming.len() >= context.policy.queue_messages {
           break 'status AckStatus::Overloaded;
         }
-        let admitted_at = now_millis();
+        let admitted_at = clock_millis(context.clock.as_ref());
         let (stream, body) = mpsc::channel(INCOMING_STREAM_CHUNKS);
         incoming.insert(
           open.trace_id.clone(),
@@ -948,7 +963,7 @@ async fn admit_open(
   let ack = AckFrame {
     trace_id: trace_id.clone(),
     status,
-    admitted_at_millis: reack_admitted_at.unwrap_or_else(now_millis),
+    admitted_at_millis: reack_admitted_at.unwrap_or_else(|| clock_millis(context.clock.as_ref())),
   };
   debug!(
     trace_id = %ack.trace_id,
@@ -1010,11 +1025,11 @@ fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks) {
   };
   match entry {
     PendingAck::Wait(notify) => {
-      let outcome = match ack.status {
-        AckStatus::Admitted => Ok(UNIX_EPOCH + Duration::from_millis(ack.admitted_at_millis)),
-        AckStatus::Unsupported => Err(ErrorKind::Unsupported),
-        AckStatus::Overloaded => Err(ErrorKind::Overloaded),
-        AckStatus::Failed => Err(ErrorKind::StreamInterrupted),
+      // The single AckStatus→kind mapping lives on the wire type; `Admitted`
+      // carries the admission time and every rejection its typed kind.
+      let outcome = match ack.status.to_kind() {
+        None => Ok(crate::time::from_millis(ack.admitted_at_millis)),
+        Some(kind) => Err(kind),
       };
       trace!(trace_id = %ack.trace_id, ?ack.status, "admission ack resolved");
       let _ = notify.send(outcome);
@@ -1065,23 +1080,16 @@ pub(crate) async fn run_outbound(
       update_route(&routes, &trace_id, |record| {
         record.update(RouteState::Failed($kind));
       });
-      if let Some(trace) = &trace {
-        let updated = crate::routing::trace::TraceRecord::new(
-          trace_id.clone(),
-          source.clone(),
-          destination.clone(),
-          trace.clock_now(),
-        )
-        .with_transition(
-          crate::routing::trace::TraceTransition::Failed($kind),
-          trace.clock_now(),
-        );
-        let trace = trace.clone();
-        tokio::spawn(async move { trace.record(updated).await });
-      }
+      record_terminal_trace(
+        &trace,
+        &trace_id,
+        &source,
+        &destination,
+        crate::routing::trace::TraceTransition::Failed($kind),
+      );
     }};
   }
-  eprintln!("PUMP force={force_routed}");
+  trace!(force_routed, "pumping outbound packet");
   let (ack_tx, ack_rx) = oneshot::channel();
   if !entry.alive() {
     debug!("packet rejected: session not alive");
@@ -1243,22 +1251,35 @@ pub(crate) async fn run_outbound(
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Delivered);
     });
-    if let Some(trace) = &trace {
-      let updated = crate::routing::trace::TraceRecord::new(
-        trace_id.clone(),
-        source.clone(),
-        destination.clone(),
-        trace.clock_now(),
-      )
-      .with_transition(
-        crate::routing::trace::TraceTransition::Delivered,
-        trace.clock_now(),
-      );
-      let trace = trace.clone();
-      tokio::spawn(async move { trace.record(updated).await });
-    }
+    record_terminal_trace(
+      &trace,
+      &trace_id,
+      &source,
+      &destination,
+      crate::routing::trace::TraceTransition::Delivered,
+    );
   }
   debug!(interrupted, "packet stream finished");
+}
+
+/// Fire-and-forget persistence of one durable terminal fact per packet:
+/// the data plane never waits on metadata storage and intermediate
+/// progress stays an in-memory observation.
+fn record_terminal_trace(
+  trace: &Option<crate::routing::trace::TraceSink>, trace_id: &TraceId, source: &NodeId,
+  destination: &NodeId, transition: crate::routing::trace::TraceTransition,
+) {
+  if let Some(trace) = trace {
+    let updated = crate::routing::trace::TraceRecord::new(
+      trace_id.clone(),
+      source.clone(),
+      destination.clone(),
+      trace.clock_now(),
+    )
+    .with_transition(transition, trace.clock_now());
+    let trace = trace.clone();
+    tokio::spawn(async move { trace.record(updated).await });
+  }
 }
 
 #[cfg(test)]
@@ -1356,16 +1377,6 @@ fn record_rejection(routes: &RouteTable, trace_id: &TraceId, kind: ErrorKind) {
   let mut record = RouteRecord::failing(trace_id.clone());
   record.update(RouteState::Failed(kind));
   let _ = insert_route(routes, usize::MAX, record);
-}
-
-/// The current wall-clock time as milliseconds since the Unix epoch,
-/// saturating at zero for pre-epoch clocks.
-fn now_millis() -> u64 {
-  SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .ok()
-    .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
-    .unwrap_or(0)
 }
 
 #[cfg(test)]

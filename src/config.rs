@@ -50,6 +50,9 @@ impl NodeConfig {
     Ok(self)
   }
 
+  /// Sets the parser limits (G1's "checked caller-selected finite
+  /// limits"). Validated eagerly; the frame consumer lands with the
+  /// bounded-parser work.
   pub fn with_parser_limits(mut self, value: ParserLimits) -> Result<Self> {
     self.parser_limits = value;
     Ok(self)
@@ -178,7 +181,7 @@ impl ParserLimits {
 impl Default for ParserLimits {
   fn default() -> Self {
     Self {
-      frame_bytes: 65_536,
+      frame_bytes: crate::protocol::offer::ADR0002_BODY_BYTES,
       depth: 16,
       collection_items: 1_024,
     }

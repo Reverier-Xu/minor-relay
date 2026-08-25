@@ -320,7 +320,7 @@ impl Handshake {
 
   /// Position 1 (initiator): the mode/generation/cluster/identity hello.
   pub(crate) fn initiator_hello(&mut self) -> Result<Vec<u8>, HandshakeError> {
-    self.begin_send(KIND_INITIATOR_HELLO, Role::Initiator)?;
+    self.begin_send(HandshakeKind::InitiatorHello, Role::Initiator)?;
     let wire = InitiatorHelloWire {
       kind: KIND_INITIATOR_HELLO,
       mode: self.config.mode.as_str().to_owned(),
@@ -339,7 +339,7 @@ impl Handshake {
 
   /// Position 2 (responder): the identity hello answering position 1.
   pub(crate) fn responder_hello(&mut self) -> Result<Vec<u8>, HandshakeError> {
-    self.begin_send(KIND_RESPONDER_HELLO, Role::Responder)?;
+    self.begin_send(HandshakeKind::ResponderHello, Role::Responder)?;
     let wire = ResponderHelloWire {
       kind: KIND_RESPONDER_HELLO,
       cluster: self.config.cluster.as_str().to_owned(),
@@ -355,7 +355,7 @@ impl Handshake {
   pub(crate) fn responder_proof(
     &mut self, signature: Signature,
   ) -> Result<Vec<u8>, HandshakeError> {
-    self.begin_send(KIND_RESPONDER_PROOF, Role::Responder)?;
+    self.begin_send(HandshakeKind::ResponderProof, Role::Responder)?;
     let proof = self.derive_local_proof(ProofRole::Responder)?;
     let wire = ProofWire {
       kind: KIND_RESPONDER_PROOF,
@@ -370,7 +370,7 @@ impl Handshake {
   pub(crate) fn initiator_proof(
     &mut self, signature: Signature,
   ) -> Result<Vec<u8>, HandshakeError> {
-    self.begin_send(KIND_INITIATOR_PROOF, Role::Initiator)?;
+    self.begin_send(HandshakeKind::InitiatorProof, Role::Initiator)?;
     let proof = self.derive_local_proof(ProofRole::Initiator)?;
     let wire = ProofWire {
       kind: KIND_INITIATOR_PROOF,
@@ -406,7 +406,7 @@ impl Handshake {
 
   /// Position 5 (responder): the exact local selection bytes.
   pub(crate) fn selection_confirmation(&mut self) -> Result<Vec<u8>, HandshakeError> {
-    self.begin_send(KIND_SELECTION_CONFIRMATION, Role::Responder)?;
+    self.begin_send(HandshakeKind::SelectionConfirmation, Role::Responder)?;
     let selection = self
       .selection
       .as_ref()
@@ -486,7 +486,7 @@ impl Handshake {
   pub(crate) fn receive(&mut self, bytes: &[u8]) -> Result<(), HandshakeError> {
     validate_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
     let (arity, kind) = probe(bytes)?;
-    if arity != u64::from(position_arity(kind)) {
+    if arity != u64::from(kind.arity()) {
       return Err(HandshakeError::UnknownField);
     }
     if position_sender(kind) == self.config.role {
@@ -521,13 +521,15 @@ impl Handshake {
     Ok(())
   }
 
-  fn begin_send(&self, kind: u64, sender: Role) -> Result<(), HandshakeError> {
+  fn begin_send(&self, kind: HandshakeKind, sender: Role) -> Result<(), HandshakeError> {
     if self.config.role != sender {
       return Err(HandshakeError::State {
         context: "handshake send role",
       });
     }
-    if u64::from(self.completed) + 1 != kind {
+    // Compare against the lockstep position, not the raw wire kind id: the
+    // two coincide today only by definition of the kind registry.
+    if u64::from(self.completed) + 1 != u64::from(kind.position()) {
       return Err(HandshakeError::State {
         context: "handshake send order",
       });
@@ -821,10 +823,6 @@ const fn position_sender(kind: HandshakeKind) -> Role {
     HandshakeKind::InitiatorHello | HandshakeKind::InitiatorProof => Role::Initiator,
     _ => Role::Responder,
   }
-}
-
-const fn position_arity(kind: HandshakeKind) -> u8 {
-  kind.arity()
 }
 
 fn decode_wire<T>(bytes: &[u8]) -> Result<T, HandshakeError>

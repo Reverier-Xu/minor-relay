@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use minicbor::{Decode, Encode};
 
 use super::{
-  CborLimits, FeatureTag, QualifiedTag, decode_canonical, encode_canonical,
+  CborLimits, FeatureTag, QualifiedTag, decode_canonical_strict, encode_canonical,
   feature::{FeatureRegistry, LimitDefinition, required_session_features},
 };
 use crate::{Digest, Error, Result};
@@ -21,7 +21,12 @@ use crate::{Digest, Error, Result};
 pub(crate) const MAX_SUPPORTED_LABELS: usize = 128;
 pub(crate) const MAX_REQUIRED_LABELS: usize = 128;
 pub(crate) const MAX_NEGOTIATED_LIMITS: usize = 128;
-pub(crate) const OFFER_CBOR_LIMITS: CborLimits = CborLimits::new(16, 1_024, 65_536);
+pub(crate) const OFFER_CBOR_LIMITS: CborLimits = CborLimits::new(16, 1_024, ADR0002_BODY_BYTES);
+
+/// ADR-0002's handshake/control body ceiling: one wire body never exceeds
+/// it, and every derived limit (parser defaults, aggregate WebSocket
+/// messages) derives from this constant instead of restating the number.
+pub(crate) const ADR0002_BODY_BYTES: usize = 65_536;
 
 /// The fixed authentication role of one handshake endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,10 +135,8 @@ impl FeatureOffer {
   /// Decodes canonical offer bytes and validates them against the local
   /// registry, including the exact mandatory limit set and legal ranges.
   pub(crate) fn decode(bytes: &[u8], registry: &FeatureRegistry) -> Result<Self> {
-    let wire: FeatureOfferWire = decode_canonical(bytes, OFFER_CBOR_LIMITS)?;
-    if encode_canonical(&wire, OFFER_CBOR_LIMITS)? != bytes {
-      return Err(Error::invalid_input("feature offer canonical form"));
-    }
+    let wire: FeatureOfferWire =
+      decode_canonical_strict(bytes, OFFER_CBOR_LIMITS, "feature offer canonical form")?;
     let offer = Self::from_wire(wire)?;
     offer.validate_limits(registry)?;
     Ok(offer)

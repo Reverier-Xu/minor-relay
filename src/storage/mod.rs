@@ -385,17 +385,6 @@ impl MetadataStore {
       .map_err(|_| Error::internal("metadata storage commit state"))
   }
 }
-
-/// UNIX-seconds from the host wall clock, used for protocol-visible
-/// liveness and expiry boundaries (roadmap: host `SystemTime` is the only
-/// time authority).
-pub(crate) fn wall_clock_seconds() -> u64 {
-  std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .map(|duration| duration.as_secs())
-    .unwrap_or(0)
-}
-
 #[cfg(test)]
 pub(crate) mod test_util;
 

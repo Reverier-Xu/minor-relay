@@ -133,7 +133,7 @@ fn validate_tag(value: &str) -> Result<(usize, usize)> {
     .next()
     .ok_or_else(|| Error::invalid_input("qualified tag"))?;
   if parts.next().is_some()
-    || !valid_domain(domain)
+    || !valid_dns_hostname(domain)
     || !valid_name_component(category)
     || !valid_name_component(name)
     || (domain == "relay.woooo.tech" && category == "crypto")
@@ -153,10 +153,6 @@ fn validate_tag(value: &str) -> Result<(usize, usize)> {
 /// domains and transport endpoints so the two cannot diverge.
 pub(crate) fn valid_dns_hostname(host: &str) -> bool {
   !host.is_empty() && host.parse::<domain::base::name::Name<Vec<u8>>>().is_ok()
-}
-
-fn valid_domain(domain: &str) -> bool {
-  valid_dns_hostname(domain)
 }
 
 fn valid_name_component(component: &str) -> bool {

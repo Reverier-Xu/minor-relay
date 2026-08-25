@@ -162,53 +162,13 @@ impl Connection {
     &self.channel_binding
   }
 
-  /// Sends one WebSocket ping for keepalive.
-  // TODO(G4-06): the pre-split connection ping; the session writer owns
-  // keepalive today.
-  #[allow(dead_code)]
-  pub(crate) async fn ping(&mut self) -> Result<()> {
-    self
-      .stream
-      .send(WsMessage::Ping(WsBytes::new()))
-      .await
-      .map_err(|_| Error::provider(ProviderErrorKind::Io, ProviderErrorContext::TransportSend))
-  }
-
-  /// UNIX-seconds of the last peer pong.
-  #[allow(dead_code)]
-  pub(crate) fn pong_last_seen(&self) -> u64 {
-    self
-      .pong_last_seen
-      .load(std::sync::atomic::Ordering::Relaxed)
-  }
-
-  /// The canonical admission source of the accepted connection; the
-  /// initiator side carries none (its own node rate-limits inbound
-  /// attempts).
-  pub(crate) const fn peer_source(
-    &self,
-  ) -> Option<crate::identity::admission_rate::AdmissionSource> {
-    self.source
-  }
-
   /// Sends one wire message. The message is checked against the local rules
   /// before encoding so a local bug fails fast instead of emitting bytes
   /// the peer must reject.
   pub(crate) async fn send(
     &mut self, schema_id: u16, kind_id: u16, flags: u16, body: &[u8],
   ) -> Result<()> {
-    let body_len =
-      u32::try_from(body.len()).map_err(|_| Error::invalid_input("wire body length"))?;
-    if !(self.rules.is_declared)(schema_id, kind_id)
-      || flags & !self.rules.allowed_flags != 0
-      || body_len > self.rules.message_limit
-    {
-      return Err(Error::invalid_input("wire limits"));
-    }
-
-    let mut frame = Vec::with_capacity(PRELUDE_LEN + body.len());
-    frame.extend_from_slice(&Prelude::new(schema_id, kind_id, flags, body_len).encode());
-    frame.extend_from_slice(body);
+    let frame = encode_frame(self.rules, schema_id, kind_id, flags, body)?;
     self
       .stream
       .send(WsMessage::binary(frame))
@@ -221,44 +181,16 @@ impl Connection {
   /// prelude/limit violation fail closed. Ping and pong messages are
   /// answered by tungstenite and skipped.
   pub(crate) async fn receive(&mut self) -> Result<Option<Message>> {
-    loop {
-      let Some(item) = self.stream.next().await else {
-        return Ok(None);
-      };
-      let message = item.map_err(receive_error)?;
-      match message {
-        WsMessage::Binary(bytes) => {
-          let rules = self.rules;
-          let (prelude, body) = split_message(
-            &bytes,
-            rules.allowed_flags,
-            rules.message_limit,
-            rules.receive_limit,
-            rules.is_declared,
-          )?;
-          return Ok(Some(Message {
-            schema_id: prelude.schema_id(),
-            kind_id: prelude.kind_id(),
-            flags: prelude.flags(),
-            body: body.to_vec(),
-          }));
-        }
-        WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
-        WsMessage::Ping(_) => continue,
-        WsMessage::Pong(_) => {
-          // The peer answered a keepalive ping; record the liveness time
-          // (tungstenite answers pings itself, so this observes the
-          // peer's own pong responses).
-          let seconds = crate::storage::wall_clock_seconds();
-          self
-            .pong_last_seen
-            .store(seconds, std::sync::atomic::Ordering::Relaxed);
-          continue;
-        }
-        WsMessage::Close(_) => return Ok(None),
-        WsMessage::Frame(_) => return Err(Error::invalid_input("websocket raw frame")),
-      }
-    }
+    next_message(&mut self.stream, self.rules, &self.pong_last_seen).await
+  }
+
+  /// The canonical admission source of the accepted connection; the
+  /// initiator side carries none (its own node rate-limits inbound
+  /// attempts).
+  pub(crate) const fn peer_source(
+    &self,
+  ) -> Option<crate::identity::admission_rate::AdmissionSource> {
+    self.source
   }
 
   /// Sends a WebSocket close frame and flushes the stream.
@@ -306,9 +238,6 @@ pub(crate) struct ConnectionWriter {
 
 impl ConnectionWriter {
   /// Sends one WebSocket ping for keepalive.
-  // TODO(G4-06): the pre-split connection ping; the session writer owns
-  // keepalive today.
-  #[allow(dead_code)]
   pub(crate) async fn ping(&mut self) -> Result<()> {
     self
       .sink
@@ -327,15 +256,8 @@ impl ConnectionWriter {
 
   /// Sends one base-schema wire message of `kind_id` with no flags.
   pub(crate) async fn send(&mut self, kind_id: u16, body: &[u8]) -> Result<()> {
-    let body_len =
-      u32::try_from(body.len()).map_err(|_| Error::invalid_input("wire body length"))?;
-    if !(self.rules.is_declared)(BASE_SCHEMA_ID, kind_id) || body_len > self.rules.message_limit {
-      return Err(Error::invalid_input("wire limits"));
-    }
-    let mut frame = Vec::with_capacity(PRELUDE_LEN + body.len());
-    frame.extend_from_slice(&Prelude::new(BASE_SCHEMA_ID, kind_id, 0, body_len).encode());
-    frame.extend_from_slice(body);
-    tracing::trace!(kind_id, body_len, "wire message sent");
+    let frame = encode_frame(self.rules, BASE_SCHEMA_ID, kind_id, 0, body)?;
+    tracing::trace!(kind_id, body_len = body.len(), "wire message sent");
     self
       .sink
       .send(WsMessage::binary(frame))
@@ -362,54 +284,87 @@ impl ConnectionReader {
   }
 
   /// Receives the next wire message. Returns `Ok(None)` on an orderly
-  /// close; every limit or framing violation fails closed.
+  /// close; every limit or framing violation fails closed. The semantics
+  /// are exactly [`Connection::receive`] over the split stream half.
   pub(crate) async fn receive(&mut self) -> Result<Option<Message>> {
-    loop {
-      let Some(item) = self.stream.next().await else {
-        return Ok(None);
-      };
-      let message = item.map_err(receive_error)?;
-      match message {
-        WsMessage::Binary(bytes) => {
-          let rules = self.rules;
-          let (prelude, body) = split_message(
-            &bytes,
-            rules.allowed_flags,
-            rules.message_limit,
-            rules.receive_limit,
-            rules.is_declared,
-          )?;
-          tracing::trace!(
-            schema_id = prelude.schema_id(),
-            kind_id = prelude.kind_id(),
-            flags = prelude.flags(),
-            body_len = body.len(),
-            "wire message received"
-          );
-          return Ok(Some(Message {
-            schema_id: prelude.schema_id(),
-            kind_id: prelude.kind_id(),
-            flags: prelude.flags(),
-            body: body.to_vec(),
-          }));
-        }
-        WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
-        WsMessage::Ping(_) => continue,
-        WsMessage::Pong(_) => {
-          // The peer answered a keepalive ping; record the liveness time
-          // (tungstenite answers pings itself, so this observes the
-          // peer's own pong responses).
-          let seconds = crate::storage::wall_clock_seconds();
-          self
-            .pong_last_seen
-            .store(seconds, std::sync::atomic::Ordering::Relaxed);
-          continue;
-        }
-        WsMessage::Close(_) => return Ok(None),
-        WsMessage::Frame(_) => return Err(Error::invalid_input("websocket raw frame")),
+    next_message(&mut self.stream, self.rules, &self.pong_last_seen).await
+  }
+}
+
+type WsResult = std::result::Result<WsMessage, tokio_tungstenite::tungstenite::Error>;
+
+/// The single receive loop shared by [`Connection::receive`] and
+/// [`ConnectionReader::receive`]: binary messages are split and limit-
+/// checked, pongs refresh the shared liveness stamp, and every other
+/// control shape fails closed or is skipped exactly as documented.
+async fn next_message<S>(
+  stream: &mut S, rules: FrameRules, pong_last_seen: &std::sync::atomic::AtomicU64,
+) -> Result<Option<Message>>
+where
+  S: futures_util::Stream<Item = WsResult> + Unpin, {
+  loop {
+    let Some(item) = stream.next().await else {
+      return Ok(None);
+    };
+    let message = item.map_err(receive_error)?;
+    match message {
+      WsMessage::Binary(bytes) => {
+        let (prelude, body) = split_message(
+          &bytes,
+          rules.allowed_flags,
+          rules.message_limit,
+          rules.receive_limit,
+          rules.is_declared,
+        )?;
+        tracing::trace!(
+          schema_id = prelude.schema_id(),
+          kind_id = prelude.kind_id(),
+          flags = prelude.flags(),
+          body_len = body.len(),
+          "wire message received"
+        );
+        return Ok(Some(Message {
+          schema_id: prelude.schema_id(),
+          kind_id: prelude.kind_id(),
+          flags: prelude.flags(),
+          body: body.to_vec(),
+        }));
       }
+      WsMessage::Text(_) => return Err(Error::invalid_input("websocket text message")),
+      WsMessage::Ping(_) => continue,
+      WsMessage::Pong(_) => {
+        // The peer answered a keepalive ping; record the liveness time
+        // (tungstenite answers pings itself, so this observes the peer's
+        // own pong responses).
+        pong_last_seen.store(
+          crate::time::now_seconds(),
+          std::sync::atomic::Ordering::Relaxed,
+        );
+        continue;
+      }
+      WsMessage::Close(_) => return Ok(None),
+      WsMessage::Frame(_) => return Err(Error::invalid_input("websocket raw frame")),
     }
   }
+}
+
+/// Encodes one wire message after checking it against the local frame
+/// rules, so a local bug fails fast instead of emitting bytes the peer
+/// must reject. The single frame builder for both connection halves.
+fn encode_frame(
+  rules: FrameRules, schema_id: u16, kind_id: u16, flags: u16, body: &[u8],
+) -> Result<Vec<u8>> {
+  let body_len = u32::try_from(body.len()).map_err(|_| Error::invalid_input("wire body length"))?;
+  if !(rules.is_declared)(schema_id, kind_id)
+    || flags & !rules.allowed_flags != 0
+    || body_len > rules.message_limit
+  {
+    return Err(Error::invalid_input("wire limits"));
+  }
+  let mut frame = Vec::with_capacity(PRELUDE_LEN + body.len());
+  frame.extend_from_slice(&Prelude::new(schema_id, kind_id, flags, body_len).encode());
+  frame.extend_from_slice(body);
+  Ok(frame)
 }
 
 /// Disables the kernel Nagle algorithm so ack-driven small-message bursts

@@ -104,9 +104,7 @@ impl RecoveryController {
   /// known online. Recovery activates when known online members remain
   /// unreachable (SC-G05-P0-14); it quiesces when all are connected
   /// through some authenticated path (SC-G05-P0-18).
-  pub(crate) fn observe(
-    &mut self, now: u64, online: &BTreeSet<NodeId>, reachable: &BTreeSet<NodeId>,
-  ) {
+  pub(crate) fn observe(&mut self, online: &BTreeSet<NodeId>, reachable: &BTreeSet<NodeId>) {
     let unreachable: BTreeSet<NodeId> = online.difference(reachable).cloned().collect();
     if unreachable.is_empty() {
       if self.state != RecoveryState::Idle {
@@ -122,7 +120,6 @@ impl RecoveryController {
     }
     // Reactivation: any change while recovering re-arms the controller
     // without a storm (single controller, bounded attempts).
-    let _ = now;
   }
 
   /// Computes the next recovery step: a bounded set of targets expanded
@@ -223,12 +220,12 @@ mod tests {
 
     let online = set(&[1, 2, 3]);
     let reachable = set(&[1]);
-    controller.observe(0, &online, &reachable);
+    controller.observe(&online, &reachable);
     assert_eq!(controller.state(), RecoveryState::Recovering);
 
     // A later connectivity change keeps recovery active.
     let reachable = set(&[1, 2]);
-    controller.observe(1, &online, &reachable);
+    controller.observe(&online, &reachable);
     assert_eq!(controller.state(), RecoveryState::Recovering);
   }
 
@@ -238,7 +235,7 @@ mod tests {
   fn recovery_quiesces_at_connected_path() {
     let mut controller = RecoveryController::new(policy());
     let online = set(&[1, 2, 3]);
-    controller.observe(0, &online, &set(&[1]));
+    controller.observe(&online, &set(&[1]));
     assert_eq!(controller.state(), RecoveryState::Recovering);
 
     controller.connected(&node(2));
@@ -247,7 +244,7 @@ mod tests {
     assert_eq!(controller.state(), RecoveryState::Connected);
 
     // A later partition re-activates one bounded controller.
-    controller.observe(10, &online, &set(&[1]));
+    controller.observe(&online, &set(&[1]));
     assert_eq!(controller.state(), RecoveryState::Recovering);
   }
 
@@ -258,7 +255,7 @@ mod tests {
   fn recovery_backoff_follows_wall_clock() {
     let mut controller = RecoveryController::new(policy());
     let online = set(&[1, 2]);
-    controller.observe(100, &online, &set(&[1]));
+    controller.observe(&online, &set(&[1]));
     let _ = controller.next_step(100, &set(&[2]));
 
     // Not due yet: 101 < 100 + 2 (initial backoff 1, doubled after attempt).
@@ -281,7 +278,7 @@ mod tests {
   fn recovery_expands_through_bounded_fan_out() {
     let mut controller = RecoveryController::new(RecoveryPolicy::new(4, 2, 1, 60));
     let online = set(&[1, 2, 3, 4]);
-    controller.observe(0, &online, &set(&[1]));
+    controller.observe(&online, &set(&[1]));
     let step = controller.next_step(0, &set(&[2, 3, 4, 5, 6]));
     assert_eq!(step.targets.len(), 2, "fan-out bounds each cycle");
   }
@@ -292,7 +289,7 @@ mod tests {
   fn recovery_immediate_forces_one_cycle() {
     let mut controller = RecoveryController::new(policy());
     let online = set(&[1, 2]);
-    controller.observe(0, &online, &set(&[1]));
+    controller.observe(&online, &set(&[1]));
     controller.immediate(50);
     assert!(controller.due(50));
     // One step consumes the immediate trigger.
@@ -340,7 +337,7 @@ pub(crate) mod simulation {
             .unwrap_or_else(|_| unreachable!("scenario node text"))
         })
         .collect();
-      controller.observe(*now, &scenario.online, &reachable);
+      controller.observe(&scenario.online, &reachable);
       if controller.state() == RecoveryState::Recovering && controller.due(*now) {
         // The candidate order is a pure function of the seed and the
         // current unreachable set, so replays are exact.
@@ -436,7 +433,7 @@ mod scale_tests {
     let mut controller = RecoveryController::new(RecoveryPolicy::new(4, 16, 1, 60));
     // One partition: 512 members are unreachable.
     let reachable: BTreeSet<NodeId> = (0..512).map(node_at).collect();
-    controller.observe(0, &online, &reachable);
+    controller.observe(&online, &reachable);
     assert_eq!(controller.state(), RecoveryState::Recovering);
 
     let step = controller.next_step(0, &(512..1_024).map(node_at).collect());
@@ -447,7 +444,7 @@ mod scale_tests {
 
     // Quiescence at scale: once every member is reachable the controller
     // stops without a full mesh.
-    controller.observe(1, &online, &online);
+    controller.observe(&online, &online);
     assert_eq!(controller.state(), RecoveryState::Connected);
   }
 }
