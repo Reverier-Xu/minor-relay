@@ -457,6 +457,7 @@ impl ResourceRecordV1 {
 }
 
 pub(crate) mod page;
+pub(crate) mod retention;
 pub(crate) mod store;
 
 // The crash matrix drives the JSON adapter's commit-path hooks, which are

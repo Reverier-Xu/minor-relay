@@ -606,14 +606,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G07-05"
 verification_id = "VERIFY-G07-05"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G07-05"
 owner_task = "T-G07-05"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g07-05-removal-retention.sh"]
 timeout_seconds = 1800
 
 [[task]]

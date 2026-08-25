@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
   ClusterId, CommitReceipt, LabelKey, LabelSet, LabelValue, NodeId, ReconcileOutcome,
-  StoreRequirements,
+  StoreRequirements, TransactionId,
   api::SystemEntropy,
   provider::StorageFactory,
   storage::{MetadataStore, json::JsonStoreFactory},
@@ -40,6 +40,10 @@ const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 /// The child commits under this deterministic entropy so the parent can
 /// reproduce its exact pending-transaction identity.
 const CHILD_ENTROPY_SEED: u8 = 7;
+
+/// The delete lane's transaction-id entropy: distinct from the
+/// commit lane seed so install and delete in one store never reuse an id.
+const DELETE_ENTROPY_SEED: u8 = 9;
 
 /// Crash points inside the JSON adapter's commit path; the exact
 /// committed-from boundary is discovered monotonically rather than
@@ -241,21 +245,7 @@ async fn resource_crash_boundaries_recover_exact_old_or_new_register() {
         );
         committed_points.push(point);
       }
-      other => {
-        let mut listing = String::new();
-        for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
-          listing.push_str(&format!("{}\n", entry.path().display()));
-          if entry.path().extension().is_some_and(|ext| ext == "json")
-            || entry.path().to_string_lossy().contains("gen-")
-          {
-            listing.push_str(&std::fs::read_to_string(entry.path()).unwrap_or_default());
-          }
-        }
-        panic!(
-          "point {point} must reconcile decisively, got {other:?}; identity={:?}; dir:\n{listing}",
-          identity.transaction()
-        );
-      }
+      other => panic!("point {point} must reconcile decisively, got {other:?}"),
     }
   }
 
@@ -269,6 +259,200 @@ async fn resource_crash_boundaries_recover_exact_old_or_new_register() {
     assert!(
       last_aborted < first_committed,
       "crash boundary must be monotonic"
+    );
+  }
+}
+
+/// The seeded removal record the delete lane deletes at every crash
+/// point; its tuple is deterministic so the dry-run identity matches.
+fn removal_record() -> ResourceRecordV1 {
+  record(1_000, true, "file:///removed")
+}
+
+/// Reproduces the delete child's exact pending-transaction identity the
+/// same way `child_identity` does for the commit lane.
+async fn delete_identity() -> CommitReceipt {
+  let dir = TempDir::new().unwrap();
+  let factory = factory(&dir).await;
+  let store = MetadataStore::open(&factory, Duration::from_secs(10))
+    .await
+    .unwrap();
+  match commit_record_ctx(&store, &SeedEntropy(CHILD_ENTROPY_SEED), &removal_record())
+    .await
+    .unwrap()
+  {
+    ResourceCommitOutcome::Installed(_) => {}
+    other => panic!("delete-lane seed must install, got {other:?}"),
+  }
+  // Release the metadata handle so the raw provider lane can reopen the
+  // store (one exclusive handle per store).
+  drop(store);
+  let provider = factory.open(requirements()).await.unwrap();
+  let snapshot = provider.snapshot().await.unwrap();
+  let namespace = crate::StoreNamespace::new(
+    crate::QualifiedTag::parse(super::store::RESOURCE_RECORD_NAMESPACE).unwrap(),
+  )
+  .unwrap();
+  let key = crate::StoreKey::new(Arc::from(name().as_str().as_bytes().to_vec()));
+  let stored = snapshot
+    .get(&namespace, &key)
+    .await
+    .unwrap()
+    .expect("seeded removal must be present");
+  let transaction = crate::StoreTransaction::new(
+    TransactionId::generate(&SeedEntropy(DELETE_ENTROPY_SEED)).unwrap(),
+    snapshot.revision().clone(),
+    vec![crate::StoreOperation::Delete {
+      namespace,
+      key,
+      expected: stored.digest().clone(),
+    }],
+  )
+  .unwrap();
+  match provider.commit(transaction).await.unwrap() {
+    crate::CommitOutcome::Committed(receipt) => receipt,
+    other => panic!("delete-lane dry run must commit, got {other:?}"),
+  }
+}
+
+fn run_delete_child(dir: &TempDir, point: u8) {
+  let executable = std::env::current_exe().unwrap();
+  let mut child = Command::new(executable)
+    .args([
+      "--exact",
+      "resource::crash::resource_delete_child_entry",
+      "--ignored",
+      "--nocapture",
+    ])
+    .env(CRASH_DIR_ENV, dir.path())
+    .env(CRASH_POINT_ENV, point.to_string())
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  let status = match child.wait_timeout(CHILD_TIMEOUT).unwrap() {
+    Some(status) => status,
+    None => {
+      child.kill().unwrap();
+      panic!("delete crash child at point {point} did not exit within {CHILD_TIMEOUT:?}");
+    }
+  };
+  assert!(
+    !status.success(),
+    "delete crash child at point {point} must terminate abnormally"
+  );
+}
+
+#[ignore = "resource delete crash-matrix child process entry point"]
+#[tokio::test]
+async fn resource_delete_child_entry() {
+  let _directory = std::env::var_os(CRASH_DIR_ENV).expect("crash directory");
+  let point: u8 = std::env::var(CRASH_POINT_ENV)
+    .expect("crash point")
+    .parse()
+    .expect("numeric crash point");
+  crate::storage::json::select_crash_point(point);
+  let directory = std::path::PathBuf::from(_directory);
+  let factory: Arc<dyn StorageFactory> = Arc::new(JsonStoreFactory::new(directory));
+  let store = MetadataStore::open(&factory, Duration::from_secs(10))
+    .await
+    .unwrap();
+  drop(store);
+  let provider = factory.open(requirements()).await.unwrap();
+  let snapshot = provider.snapshot().await.unwrap();
+  let namespace = crate::StoreNamespace::new(
+    crate::QualifiedTag::parse(super::store::RESOURCE_RECORD_NAMESPACE).unwrap(),
+  )
+  .unwrap();
+  let key = crate::StoreKey::new(Arc::from(name().as_str().as_bytes().to_vec()));
+  let stored = snapshot
+    .get(&namespace, &key)
+    .await
+    .unwrap()
+    .expect("seeded removal must be present before the child deletes it");
+  let transaction = crate::StoreTransaction::new(
+    TransactionId::generate(&SeedEntropy(DELETE_ENTROPY_SEED)).unwrap(),
+    snapshot.revision().clone(),
+    vec![crate::StoreOperation::Delete {
+      namespace,
+      key,
+      expected: stored.digest().clone(),
+    }],
+  )
+  .unwrap();
+  match provider.commit(transaction).await.unwrap() {
+    crate::CommitOutcome::Committed(_) => {}
+    other => panic!("delete child must reach a decisive outcome, got {other:?}"),
+  }
+}
+
+/// SC-G07-P0-14: every cleanup/delete boundary reopens to old-or-new —
+/// the removal record is fully present or fully gone, never partial, and
+/// the delete transaction's identity reconciles consistently.
+#[tokio::test]
+async fn resource_delete_boundaries_recover_old_or_new_presence() {
+  let identity = delete_identity().await;
+  let mut aborted_points = Vec::new();
+  let mut committed_points = Vec::new();
+  for point in 1..=LAST_POINT {
+    let dir = TempDir::new().unwrap();
+    let factory = factory(&dir).await;
+    let store = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    match commit_record_ctx(&store, &SystemEntropy, &removal_record())
+      .await
+      .unwrap()
+    {
+      ResourceCommitOutcome::Installed(_) => {}
+      other => panic!("delete-lane seed must install, got {other:?}"),
+    }
+    drop(store);
+
+    run_delete_child(&dir, point);
+
+    let reopened = open_store(&factory).await;
+    let stored = read_record_ctx(&reopened, &name()).await.unwrap();
+    let present = stored.as_ref() == Some(&removal_record());
+    let absent = stored.is_none();
+    assert!(
+      present ^ absent,
+      "point {point} must reopen to old-or-new presence, got {stored:?}"
+    );
+
+    drop(reopened);
+    let provider = factory.open(requirements()).await.unwrap();
+    let outcome = provider
+      .reconcile(identity.transaction(), identity.operation_digest())
+      .await
+      .unwrap();
+    match outcome {
+      ReconcileOutcome::Aborted => {
+        assert!(
+          present,
+          "point {point} reconciled aborted but the record is gone"
+        );
+        aborted_points.push(point);
+      }
+      ReconcileOutcome::Committed(_) => {
+        assert!(
+          absent,
+          "point {point} reconciled committed but the record remains"
+        );
+        committed_points.push(point);
+      }
+      other => panic!("point {point} must reconcile decisively, got {other:?}"),
+    }
+  }
+  assert_eq!(aborted_points.first().copied(), Some(1));
+  assert_eq!(committed_points.last().copied(), Some(LAST_POINT));
+  if let (Some(last_aborted), Some(first_committed)) =
+    (aborted_points.last(), committed_points.first())
+  {
+    assert!(
+      last_aborted < first_committed,
+      "delete boundary must be monotonic"
     );
   }
 }

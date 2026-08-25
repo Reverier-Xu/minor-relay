@@ -344,6 +344,7 @@ async fn supervise(
       _ = recovery_timer.tick() => {
         let _ = supervisor.recovery_tick(&mut tasks).await;
         supervisor.trace_retention_sweep().await;
+        supervisor.resource_removal_sweep().await;
       }
     }
   }
@@ -877,6 +878,27 @@ impl Supervisor {
       Err(error) => {
         tracing::warn!(kind = ?error.kind(), "trace retention sweep failed");
       }
+    }
+  }
+
+  /// One host-wall-clock retention pass over the resource removal
+  /// evidence (T-G07-05): expired and excess signed removal records leave
+  /// by exact conditional deletes that never dereference a resource URI
+  /// or touch caller data; live resource metadata is never evicted.
+  async fn resource_removal_sweep(&mut self) {
+    let Ok(context) = self.context() else {
+      return;
+    };
+    if let Err(error) = crate::resource::retention::sweep_removed_ctx(
+      context.store(),
+      self.dependencies.entropy.as_ref(),
+      &crate::storage::receipt::HostWallClock,
+      crate::resource::retention::RESOURCE_REMOVAL_RETENTION,
+      crate::resource::retention::RESOURCE_REGISTER_CAP,
+    )
+    .await
+    {
+      tracing::warn!(kind = ?error.kind(), "resource removal sweep failed");
     }
   }
 
