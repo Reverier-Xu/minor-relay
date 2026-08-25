@@ -39,6 +39,7 @@ mod operation;
 mod packet;
 mod protocol;
 mod provider;
+mod resource;
 mod routing;
 mod runtime;
 mod session;
