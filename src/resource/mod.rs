@@ -118,10 +118,14 @@ struct ResourceRecordBodyWire {
   timestamp_millis: u64,
   #[n(8)]
   writer: String,
-  /// Removal rank: orders removal evidence against same-timestamp writes
-  /// from the same writer (the tuple's third element).
+  /// Removal rank: orders removal evidence against same-writer writes at
+  /// the same timestamp (the tuple's third element).
   #[n(9)]
   removal_rank: u64,
+  /// Whether this record removes the named resource rather than asserting
+  /// live metadata.
+  #[n(10)]
+  removed: bool,
 }
 
 /// The full wire record: the signed body plus its digest and the writer's
@@ -150,8 +154,10 @@ struct ResourceRecordWire {
   #[n(9)]
   removal_rank: u64,
   #[n(10)]
-  digest: ByteVec,
+  removed: bool,
   #[n(11)]
+  digest: ByteVec,
+  #[n(12)]
   signature: ByteVec,
 }
 
@@ -166,6 +172,7 @@ pub(crate) struct ResourceRecordV1 {
   timestamp_millis: u64,
   writer: NodeId,
   removal_rank: u64,
+  removed: bool,
   digest: Digest,
   signature: Signature,
 }
@@ -176,7 +183,7 @@ impl ResourceRecordV1 {
   pub(crate) fn encode_signed_body(
     cluster: &ClusterId, name: &ResourceName, resource_type: &LabelValue,
     resource_uri: &LabelValue, labels: &LabelSet, timestamp_millis: u64, writer: &NodeId,
-    removal_rank: u64,
+    removal_rank: u64, removed: bool,
   ) -> Result<Vec<u8>> {
     encode_canonical(
       &ResourceRecordBodyWire {
@@ -193,6 +200,7 @@ impl ResourceRecordV1 {
         timestamp_millis,
         writer: writer.as_str().to_owned(),
         removal_rank,
+        removed,
       },
       RECORD_LIMITS,
     )
@@ -204,7 +212,7 @@ impl ResourceRecordV1 {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn seal(
     cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: LabelValue,
-    labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64,
+    labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64, removed: bool,
     signature: Signature,
   ) -> Result<Self> {
     let body = Self::encode_signed_body(
@@ -216,6 +224,7 @@ impl ResourceRecordV1 {
       timestamp_millis,
       &writer,
       removal_rank,
+      removed,
     )?;
     Ok(Self {
       cluster,
@@ -226,6 +235,7 @@ impl ResourceRecordV1 {
       timestamp_millis,
       writer,
       removal_rank,
+      removed,
       digest: body_digest(&body),
       signature,
     })
@@ -237,7 +247,7 @@ impl ResourceRecordV1 {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn sign(
     cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: LabelValue,
-    labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64,
+    labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64, removed: bool,
     signing_key: &ed25519_dalek::SigningKey,
   ) -> Result<Self> {
     let body = Self::encode_signed_body(
@@ -249,6 +259,7 @@ impl ResourceRecordV1 {
       timestamp_millis,
       &writer,
       removal_rank,
+      removed,
     )?;
     let signature = signing_key.sign(&signature_message(RESOURCE_RECORD_V1_DOMAIN, &body));
     Self::seal(
@@ -260,6 +271,7 @@ impl ResourceRecordV1 {
       timestamp_millis,
       writer,
       removal_rank,
+      removed,
       Signature::from_bytes(signature.to_bytes()),
     )
   }
@@ -309,6 +321,12 @@ impl ResourceRecordV1 {
     self.removal_rank
   }
 
+  /// Whether this record removes the named resource rather than asserting
+  /// live metadata.
+  pub(crate) const fn removed(&self) -> bool {
+    self.removed
+  }
+
   pub(crate) const fn digest(&self) -> &Digest {
     &self.digest
   }
@@ -331,6 +349,7 @@ impl ResourceRecordV1 {
         timestamp_millis: self.timestamp_millis,
         writer: self.writer.as_str().to_owned(),
         removal_rank: self.removal_rank,
+        removed: self.removed,
         digest: ByteVec::from(self.digest.as_bytes().to_vec()),
         signature: ByteVec::from(self.signature.as_bytes().to_vec()),
       },
@@ -365,6 +384,7 @@ impl ResourceRecordV1 {
       timestamp_millis: wire.timestamp_millis,
       writer,
       removal_rank: wire.removal_rank,
+      removed: wire.removed,
       digest: Digest::from_bytes(
         wire.digest[..]
           .try_into()
@@ -397,6 +417,7 @@ impl ResourceRecordV1 {
       self.timestamp_millis,
       &self.writer,
       self.removal_rank,
+      self.removed,
     )
   }
 
@@ -434,6 +455,11 @@ impl ResourceRecordV1 {
     self.tuple_order(other) == std::cmp::Ordering::Greater
   }
 }
+
+pub(crate) mod store;
+
+#[cfg(all(test, feature = "json"))]
+mod crash;
 
 #[cfg(test)]
 mod tests {
@@ -473,6 +499,41 @@ mod tests {
     name: &ResourceName, timestamp_millis: u64, writer: &NodeId, removal_rank: u64,
     labels: &LabelSet, resource_type: &str, uri: &str, seed: [u8; 32],
   ) -> ResourceRecordV1 {
+    live(
+      name,
+      timestamp_millis,
+      writer,
+      removal_rank,
+      labels,
+      resource_type,
+      uri,
+      seed,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn live(
+    name: &ResourceName, timestamp_millis: u64, writer: &NodeId, removal_rank: u64,
+    labels: &LabelSet, resource_type: &str, uri: &str, seed: [u8; 32],
+  ) -> ResourceRecordV1 {
+    signed_variant(
+      name,
+      timestamp_millis,
+      writer,
+      removal_rank,
+      false,
+      labels,
+      resource_type,
+      uri,
+      seed,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn signed_variant(
+    name: &ResourceName, timestamp_millis: u64, writer: &NodeId, removal_rank: u64, removed: bool,
+    labels: &LabelSet, resource_type: &str, uri: &str, seed: [u8; 32],
+  ) -> ResourceRecordV1 {
     ResourceRecordV1::sign(
       ClusterId::parse("cluster_000000000000000000001").unwrap(),
       name.clone(),
@@ -482,6 +543,7 @@ mod tests {
       timestamp_millis,
       writer.clone(),
       removal_rank,
+      removed,
       &SigningKey::from_bytes(&seed),
     )
     .unwrap()
@@ -504,7 +566,7 @@ mod tests {
   /// vector; deterministic CBOR plus the ed25519 signature over the
   /// domain-separated digest of seed `[11; 32]`).
   const GOLDEN_RESOURCE_RECORD_V1: &[u8] = &[
-    0x8C, 0x78, 0x2B, 0x72, 0x65, 0x6C, 0x61, 0x79, 0x2E, 0x77, 0x6F, 0x6F, 0x6F, 0x6F, 0x2E, 0x74,
+    0x8D, 0x78, 0x2B, 0x72, 0x65, 0x6C, 0x61, 0x79, 0x2E, 0x77, 0x6F, 0x6F, 0x6F, 0x6F, 0x2E, 0x74,
     0x65, 0x63, 0x68, 0x2F, 0x73, 0x63, 0x68, 0x65, 0x6D, 0x61, 0x73, 0x2F, 0x72, 0x65, 0x73, 0x6F,
     0x75, 0x72, 0x63, 0x65, 0x2D, 0x72, 0x65, 0x63, 0x6F, 0x72, 0x64, 0x2D, 0x76, 0x31, 0x01, 0x78,
     0x1D, 0x63, 0x6C, 0x75, 0x73, 0x74, 0x65, 0x72, 0x5F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
@@ -517,13 +579,13 @@ mod tests {
     0x65, 0x6C, 0x73, 0x2F, 0x6F, 0x77, 0x6E, 0x65, 0x72, 0x66, 0x74, 0x65, 0x61, 0x6D, 0x2D, 0x61,
     0x19, 0x03, 0xE8, 0x78, 0x1A, 0x6E, 0x6F, 0x64, 0x65, 0x5F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
     0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x00,
-    0x58, 0x20, 0x62, 0x26, 0xA7, 0x42, 0x2D, 0xD3, 0xE4, 0xBF, 0xAC, 0x76, 0xB8, 0x79, 0xFB, 0xEC,
-    0xAC, 0xFF, 0x90, 0x86, 0x6B, 0x15, 0xBD, 0x50, 0x05, 0xF7, 0x21, 0xCF, 0xA2, 0x94, 0xDE, 0x23,
-    0x1C, 0x36, 0x58, 0x40, 0x4A, 0xDA, 0xA3, 0x3A, 0x56, 0x37, 0x90, 0x6E, 0x2C, 0x41, 0xD8, 0xB6,
-    0x99, 0x9A, 0xEE, 0xC3, 0x82, 0x97, 0x1E, 0x71, 0xEF, 0x61, 0xB4, 0x5B, 0x0A, 0xB3, 0x72, 0x96,
-    0xF8, 0x7D, 0xB5, 0xA8, 0x12, 0xE6, 0x94, 0x4F, 0x58, 0xF2, 0xE4, 0x13, 0xB2, 0x32, 0x33, 0x74,
-    0x62, 0xAD, 0xC6, 0xF2, 0x64, 0x9A, 0x83, 0xD5, 0xD2, 0x83, 0xC3, 0x51, 0x89, 0xEF, 0x46, 0x87,
-    0x6A, 0x1F, 0xC8, 0x05,
+    0xF4, 0x58, 0x20, 0xA8, 0xD7, 0x9D, 0x28, 0x4F, 0xF6, 0xA3, 0xB4, 0x65, 0xC1, 0xF8, 0x1A, 0x7A,
+    0x15, 0x43, 0x8D, 0xE1, 0x65, 0x64, 0xFA, 0x4A, 0xDE, 0xB2, 0x63, 0x72, 0x70, 0x22, 0x5B, 0x35,
+    0x72, 0x5B, 0x88, 0x58, 0x40, 0x6A, 0x59, 0x80, 0x31, 0x08, 0x37, 0x6C, 0x91, 0x0C, 0xA5, 0x97,
+    0x06, 0xA5, 0x36, 0x08, 0x10, 0x31, 0xD7, 0x1F, 0x4E, 0x2A, 0x70, 0x17, 0xD2, 0xE9, 0xC0, 0x47,
+    0x4A, 0x79, 0xED, 0xF3, 0xCB, 0x83, 0x05, 0x28, 0x1E, 0x85, 0xCF, 0x05, 0x26, 0x1B, 0xB8, 0x47,
+    0xA5, 0x98, 0x8A, 0x24, 0xEB, 0x20, 0xEC, 0x93, 0xA7, 0x55, 0x4C, 0x2A, 0x20, 0x01, 0x4E, 0x77,
+    0x73, 0xBD, 0x55, 0xC8, 0x04,
   ];
 
   fn writer_key_of(seed: [u8; 32]) -> crate::PublicKey {
@@ -750,6 +812,7 @@ mod tests {
       5_000,
       writer(),
       0,
+      false,
       &SigningKey::from_bytes(&SEED),
     )
     .unwrap();

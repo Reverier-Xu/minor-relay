@@ -1,0 +1,348 @@
+//! Conditional local transactions for resource metadata (T-G07-03).
+//!
+//! One named resource is one register: a put or removal conditionally
+//! commits exactly one whole signed record under the register key, and the
+//! commit installs only when the incoming tuple strictly wins over the
+//! stored record (SC-G07-P0-08). Losing records are accepted and store
+//! nothing — acceptance never promises a current or future win. A losing,
+//! conflicting, or indeterminate outcome never leaves partial labels or a
+//! hidden causal ordering behind: the storage contract's conditional
+//! transactions reopen to exactly the old or the new whole record
+//! (SC-G07-P0-07), and concurrent exact-version writes resolve to typed
+//! conflicts or one commit (SC-G07-P0-09).
+
+use std::sync::Arc;
+
+use super::{ResourceName, ResourceRecordV1};
+use crate::{
+  CommitReceipt, Digest, Error, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
+  StoreValue, TransactionId, api::Entropy, storage::MetadataStore,
+};
+
+/// The durable namespace holding one register per resource name.
+pub(crate) const RESOURCE_RECORD_NAMESPACE: &str = "relay.woooo.tech/metadata/resource-record-v1";
+
+fn namespace() -> Result<StoreNamespace> {
+  StoreNamespace::new(crate::QualifiedTag::parse(RESOURCE_RECORD_NAMESPACE)?)
+}
+
+fn record_key(name: &ResourceName) -> StoreKey {
+  StoreKey::new(Arc::from(name.as_str().as_bytes().to_vec()))
+}
+
+/// The outcome of one conditional resource commit.
+#[derive(Debug)]
+pub(crate) enum ResourceCommitOutcome {
+  /// The record is now the register's stored winner; the receipt proves
+  /// the durable commit.
+  Installed(CommitReceipt),
+  /// A greater tuple already occupies the register: the write is accepted
+  /// but stores nothing and wins nothing (accepted writes may lose tuple
+  /// order; losers stay harmless).
+  Superseded(ResourceRecordV1),
+  /// The commit ended indeterminate: the caller must reconcile the
+  /// pending transaction identity before knowing whether old or new
+  /// metadata won. The register reopens to exactly one of them. The
+  /// identity fields become caller-visible once the runtime wires this
+  /// outcome into its recovery surface.
+  Indeterminate {
+    #[allow(dead_code)]
+    transaction: TransactionId,
+    #[allow(dead_code)]
+    operation_digest: Digest,
+  },
+}
+
+/// Reads the stored winner for one resource name, if any.
+pub(crate) async fn read_record_ctx(
+  store: &MetadataStore, name: &ResourceName,
+) -> Result<Option<ResourceRecordV1>> {
+  let namespace = namespace()?;
+  let value = store
+    .snapshot()
+    .await?
+    .get(&namespace, &record_key(name))
+    .await?;
+  let Some(value) = value else {
+    return Ok(None);
+  };
+  Ok(Some(ResourceRecordV1::decode(value.as_bytes())?))
+}
+
+/// Conditionally commits one signed resource record: the register accepts
+/// the record only when its tuple strictly wins over any stored winner.
+/// The whole record is one store value, so no outcome can expose partial
+/// labels, and every transaction id is freshly generated so digests are
+/// never reused.
+pub(crate) async fn commit_record_ctx(
+  store: &MetadataStore, entropy: &dyn Entropy, record: &ResourceRecordV1,
+) -> Result<ResourceCommitOutcome> {
+  let namespace = namespace()?;
+  let key = record_key(record.name());
+  // One snapshot view for both the tuple decision and the per-key CAS
+  // expectation, so a concurrent writer can only produce a typed conflict,
+  // never an unordered overwrite.
+  let snapshot = store.snapshot().await?;
+  if let Some(existing) = snapshot.get(&namespace, &key).await? {
+    let existing = ResourceRecordV1::decode(existing.as_bytes())?;
+    if !record.wins_over(&existing) {
+      return Ok(ResourceCommitOutcome::Superseded(existing));
+    }
+  }
+  let expected = match snapshot.get(&namespace, &key).await? {
+    Some(current) => StoreExpectation::Exact(current.digest().clone()),
+    None => StoreExpectation::Absent,
+  };
+  let transaction = store.prepare_transaction(
+    TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    vec![StoreOperation::Put {
+      namespace,
+      key,
+      expected,
+      value: StoreValue::new(Arc::from(record.encode()?)),
+    }],
+  )?;
+  match store.commit(transaction).await? {
+    crate::CommitOutcome::Committed(receipt) => Ok(ResourceCommitOutcome::Installed(receipt)),
+    // A raced writer moved the register between snapshot and commit: the
+    // exact-version expectation fails closed with a typed conflict.
+    crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => {
+      Err(Error::conflict("resource record"))
+    }
+    crate::CommitOutcome::Unknown {
+      transaction,
+      operation_digest,
+    } => Ok(ResourceCommitOutcome::Indeterminate {
+      transaction,
+      operation_digest,
+    }),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{sync::Arc, time::Duration};
+
+  use ed25519_dalek::SigningKey;
+
+  use super::{
+    ResourceCommitOutcome, ResourceName, ResourceRecordV1, commit_record_ctx, read_record_ctx,
+  };
+  use crate::{
+    ClusterId, LabelKey, LabelSet, LabelValue, NodeId, api::SystemEntropy,
+    provider::StorageFactory, storage::MetadataStore,
+  };
+
+  const SEED: [u8; 32] = [21; 32];
+
+  fn name() -> ResourceName {
+    ResourceName::parse("relay.woooo.tech/resources/store-demo").unwrap()
+  }
+
+  fn labels() -> LabelSet {
+    LabelSet::new()
+      .insert(
+        LabelKey::parse("example.org/labels/tier").unwrap(),
+        LabelValue::parse("gold").unwrap(),
+      )
+      .unwrap()
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn variant(
+    timestamp_millis: u64, removal_rank: u64, removed: bool, uri: &str,
+  ) -> ResourceRecordV1 {
+    ResourceRecordV1::sign(
+      ClusterId::parse("cluster_000000000000000000001").unwrap(),
+      name(),
+      LabelValue::parse("document").unwrap(),
+      LabelValue::parse(uri).unwrap(),
+      labels(),
+      timestamp_millis,
+      NodeId::parse("node_000000000000000000001").unwrap(),
+      removal_rank,
+      removed,
+      &SigningKey::from_bytes(&SEED),
+    )
+    .unwrap()
+  }
+
+  fn put(timestamp_millis: u64, uri: &str) -> ResourceRecordV1 {
+    variant(timestamp_millis, 0, false, uri)
+  }
+
+  fn removal(timestamp_millis: u64) -> ResourceRecordV1 {
+    variant(timestamp_millis, 1, true, "file:///removed")
+  }
+
+  async fn open_store() -> (Arc<dyn StorageFactory>, MetadataStore) {
+    let factory: Arc<dyn StorageFactory> =
+      Arc::new(crate::storage::contract::ReferenceFactory::new(
+        crate::storage::contract::required_capabilities(),
+      ));
+    let store = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    (factory, store)
+  }
+
+  /// SC-G07-P0-07: a local put conditionally commits one whole signed
+  /// record; a fresh handle reopens exactly that metadata with every label
+  /// intact.
+  #[tokio::test]
+  async fn local_put_installs_whole_and_reopens_intact() {
+    let (_factory, store) = open_store().await;
+    assert!(read_record_ctx(&store, &name()).await.unwrap().is_none());
+
+    let record = put(1_000, "file:///a");
+    match commit_record_ctx(&store, &SystemEntropy, &record)
+      .await
+      .unwrap()
+    {
+      ResourceCommitOutcome::Installed(_) => {}
+      other => panic!("first install must commit, got {other:?}"),
+    }
+
+    drop(store);
+    let reopened = MetadataStore::open(&_factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    let stored = read_record_ctx(&reopened, &name()).await.unwrap().unwrap();
+    assert_eq!(&stored, &record);
+    assert_eq!(stored.labels().entries().count(), 1);
+    assert!(!stored.removed());
+  }
+
+  /// SC-G07-P0-08: a losing write is accepted but stores nothing and wins
+  /// nothing — the stored winner is untouched and the loser never becomes
+  /// visible through any read path.
+  #[tokio::test]
+  async fn losing_writes_are_accepted_and_stay_harmless() {
+    let (_factory, store) = open_store().await;
+    let winner = put(2_000, "file:///winner");
+    assert!(matches!(
+      commit_record_ctx(&store, &SystemEntropy, &winner)
+        .await
+        .unwrap(),
+      ResourceCommitOutcome::Installed(_)
+    ));
+
+    // An older-stamped remote write loses by tuple order (clock rollback:
+    // later local work can lose).
+    let loser = put(1_000, "file:///loser");
+    match commit_record_ctx(&store, &SystemEntropy, &loser)
+      .await
+      .unwrap()
+    {
+      ResourceCommitOutcome::Superseded(existing) => {
+        assert_eq!(existing.digest(), winner.digest());
+      }
+      other => panic!("losing write must supersede, got {other:?}"),
+    }
+    // Equal-tuple losers are idempotent-adjacent: same writer, rank, and
+    // digest replays stay harmless too.
+    match commit_record_ctx(&store, &SystemEntropy, &winner)
+      .await
+      .unwrap()
+    {
+      ResourceCommitOutcome::Superseded(_) => {}
+      other => panic!("byte-identical replay must not reinstall, got {other:?}"),
+    }
+    let stored = read_record_ctx(&store, &name()).await.unwrap().unwrap();
+    assert_eq!(stored.digest(), winner.digest());
+  }
+
+  /// A removal is just a signed record: a greater-tuple removal replaces a
+  /// live record, and an even-greater live put replaces the removal — the
+  /// register has no hidden causal or tombstone permanence at this layer
+  /// (removal evidence retention is T-G07-05).
+  #[tokio::test]
+  async fn removals_and_puts_converge_by_tuple_order_alone() {
+    let (_factory, store) = open_store().await;
+    commit_record_ctx(&store, &SystemEntropy, &put(1_000, "file:///live"))
+      .await
+      .unwrap();
+    let remove = removal(2_000);
+    assert!(matches!(
+      commit_record_ctx(&store, &SystemEntropy, &remove)
+        .await
+        .unwrap(),
+      ResourceCommitOutcome::Installed(_)
+    ));
+    assert!(
+      read_record_ctx(&store, &name())
+        .await
+        .unwrap()
+        .unwrap()
+        .removed()
+    );
+
+    let revive = put(3_000, "file:///revived");
+    assert!(matches!(
+      commit_record_ctx(&store, &SystemEntropy, &revive)
+        .await
+        .unwrap(),
+      ResourceCommitOutcome::Installed(_)
+    ));
+    let stored = read_record_ctx(&store, &name()).await.unwrap().unwrap();
+    assert!(!stored.removed());
+    assert_eq!(stored.resource_uri(), revive.resource_uri());
+  }
+
+  /// SC-G07-P0-09: two exact-version writes prepared from one snapshot can
+  /// produce only typed conflicts or one commit — never partial labels or
+  /// hidden ordering.
+  #[tokio::test]
+  async fn raced_exact_version_writes_fail_with_typed_conflicts() {
+    let (_factory, store) = open_store().await;
+    let namespace = crate::StoreNamespace::new(
+      crate::QualifiedTag::parse(super::RESOURCE_RECORD_NAMESPACE).unwrap(),
+    )
+    .unwrap();
+    let key = crate::StoreKey::new(Arc::from(name().as_str().as_bytes().to_vec()));
+
+    let snapshot = store.snapshot().await.unwrap();
+    let revision = snapshot.revision().clone();
+    let first = put(1_000, "file:///first");
+    let second = put(1_000, "file:///second");
+    let tx_first = store
+      .prepare_transaction(
+        crate::TransactionId::generate(&SystemEntropy).unwrap(),
+        revision.clone(),
+        vec![crate::StoreOperation::Put {
+          namespace: namespace.clone(),
+          key: key.clone(),
+          expected: crate::StoreExpectation::Absent,
+          value: crate::StoreValue::new(Arc::from(first.encode().unwrap())),
+        }],
+      )
+      .unwrap();
+    let tx_second = store
+      .prepare_transaction(
+        crate::TransactionId::generate(&SystemEntropy).unwrap(),
+        revision,
+        vec![crate::StoreOperation::Put {
+          namespace,
+          key,
+          expected: crate::StoreExpectation::Absent,
+          value: crate::StoreValue::new(Arc::from(second.encode().unwrap())),
+        }],
+      )
+      .unwrap();
+
+    assert!(matches!(
+      store.commit(tx_first).await.unwrap(),
+      crate::CommitOutcome::Committed(_)
+    ));
+    // The loser of the race fails closed on its stale exact-version
+    // expectation with a typed conflict; the register holds exactly one
+    // whole winner.
+    assert!(matches!(
+      store.commit(tx_second).await.unwrap(),
+      crate::CommitOutcome::Conflict
+    ));
+    let stored = read_record_ctx(&store, &name()).await.unwrap().unwrap();
+    assert!(stored.digest() == first.digest() || stored.digest() == second.digest());
+  }
+}
