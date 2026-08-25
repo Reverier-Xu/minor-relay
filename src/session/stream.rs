@@ -119,6 +119,8 @@ pub(crate) struct SessionPacketContext {
   route_policy: Option<QualifiedTag>,
   sessions: SessionTable,
   routes: RouteTable,
+  forwarding_capacity: usize,
+  parser_limits: crate::protocol::CborLimits,
 }
 
 impl SessionPacketContext {
@@ -129,6 +131,7 @@ impl SessionPacketContext {
     local: NodeId, registry: Arc<ExtensionRegistry>, policy: SessionPolicy,
     runtime: crate::runtime::RuntimeClient, clock: Arc<dyn crate::storage::receipt::WallClock>,
     route_policy: Option<QualifiedTag>, sessions: SessionTable, routes_clone: RouteTable,
+    forwarding_capacity: usize, parser_limits: crate::protocol::CborLimits,
   ) -> Self {
     Self {
       local,
@@ -140,6 +143,8 @@ impl SessionPacketContext {
       route_policy,
       sessions,
       routes: routes_clone,
+      forwarding_capacity,
+      parser_limits,
     }
   }
 
@@ -150,6 +155,16 @@ impl SessionPacketContext {
 
   pub(crate) const fn local(&self) -> &NodeId {
     &self.local
+  }
+
+  /// The caller-selected bound on concurrently forwarded routes.
+  pub(crate) const fn forwarding_capacity(&self) -> usize {
+    self.forwarding_capacity
+  }
+
+  /// The caller-selected packet parser limits (G3's checked finite limits).
+  pub(crate) const fn parser_limits(&self) -> crate::protocol::CborLimits {
+    self.parser_limits
   }
 }
 
@@ -741,7 +756,7 @@ async fn read_loop(
     };
     trace!(kind = ?kind, "session frame received");
     match kind {
-      PacketKind::Open => match wire::decode_open(&message.body) {
+      PacketKind::Open => match wire::decode_open(&message.body, context.parser_limits()) {
         Ok(open) => {
           // A routed frame addressed elsewhere is forwarded; everything
           // else goes through the local admission path.
@@ -756,6 +771,7 @@ async fn read_loop(
               &context.forwarding,
               &context.registry,
               context.route_policy(),
+              context.forwarding_capacity(),
             )
             .await;
           } else if admit_open(
@@ -777,7 +793,7 @@ async fn read_loop(
           break;
         }
       },
-      PacketKind::Chunk => match wire::decode_chunk(&message.body) {
+      PacketKind::Chunk => match wire::decode_chunk(&message.body, context.parser_limits()) {
         Ok(chunk) => {
           let trace = chunk.trace_id.clone();
           if forward::contains(&context.forwarding, &trace) {
@@ -792,7 +808,7 @@ async fn read_loop(
           break;
         }
       },
-      PacketKind::End => match wire::decode_end(&message.body) {
+      PacketKind::End => match wire::decode_end(&message.body, context.parser_limits()) {
         Ok(end) => {
           trace!(trace_id = %end.trace_id, "incoming stream ended");
           if forward::contains(&context.forwarding, &end.trace_id) {
@@ -816,7 +832,7 @@ async fn read_loop(
           break;
         }
       },
-      PacketKind::Ack => match wire::decode_ack(&message.body) {
+      PacketKind::Ack => match wire::decode_ack(&message.body, context.parser_limits()) {
         Ok(ack) => {
           resolve_ack(ack.clone(), pending_acks);
           // A late failure for an admitted stream (a downstream hop died

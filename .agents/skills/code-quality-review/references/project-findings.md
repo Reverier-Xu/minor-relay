@@ -52,6 +52,40 @@
 >     (stream.rs:1363); god-functions run_outbound (~200 ln), sync_tick,
 >     Supervisor::new, send_packet.
 
+> **Post-closure spot review 2026-08-25 (main @ cc984d8, two fresh
+> reviewer agents + supervisor-run verify lanes):** evidence chain
+> COMPLETE — all five verify-g06-* scripts PASS locally; task/scenario/
+> impact registration consistent; all nine development-gates G6 Verify
+> bullets covered. Code verdict NEEDS-WORK → remediated same day:
+>
+> ### Fixed in the remediation pass
+> 1. relay_chunk dropped the hop's relay lock before its backpressure
+>    await (contradicting its own comment), letting a concurrent
+>    close_for_peer enqueue End ahead of an in-flight chunk — strict
+>    chunk-then-end order (SC-G06-P0-09) could break under load. The
+>    guard now spans encode + send_waiting; regression test
+>    closing_session_end_queues_after_the_last_in_flight_chunk pins it.
+> 2. ForwardingTable had no concurrent-route cap: any authenticated peer
+>    could open unbounded trace_ids. New routes beyond
+>    TraceMetadataLimits::active() now fail closed with AckStatus::Overloaded.
+> 3. MemberView construction de-duplicated: membership::member_view now
+>    takes the ConnectivityStatus directly and routing.rs candidate reads
+>    plus supervisor label mutation flow through it (was three inline
+>    constructions contradicting the "single mapper" doc).
+> 4. ParserLimits TODO(G6) resolved: NodeConfig::parser_cbor_limits feeds
+>    every packet-frame decode (decode_open/chunk/end/ack take limits);
+>    public knob is no longer write-only.
+> 5. Terminal trace persistence bounded by a 16-permit semaphore inside
+>    TraceSink; retention-sweep skip-gate counter now tracks successful
+>    persists minus sweep removals instead of counting total packets ever.
+>    take_existing alias folded into take.
+>
+> ### Still open (carried)
+> - Policy invoked before envelope validation in forward::open (minor).
+> - SC-G06-P0-18 rollback/freeze clock cases and wire-level
+>   duplicate-open consumer-twice test remain unwritten.
+> - Fresh backlog (2026-08-24) P1 items unchanged.
+
 > **Re-review 2026-08-24 (main @ post-ADR-0008, four fresh agents +
 > orchestrator):** G5 verdict PASS-WITH-GAPS; Q suite and all twelve
 > g04/g05 lanes green. Session-trust migration (ADR-0008) verified

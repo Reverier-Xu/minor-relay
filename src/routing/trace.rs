@@ -813,30 +813,49 @@ mod tests {
 /// The persistence handle shared with the packet pump: clones cheaply and
 /// records terminal transitions best-effort — a persistence failure is
 /// surfaced as a diagnostic and never corrupts the data plane's explicit
-/// semantics.
+/// semantics. Concurrent persistence tasks are bounded so a burst of
+/// completions cannot spawn unbounded work, and the shared live-record
+/// counter lets the retention sweep stay skipped while no durable record
+/// exists.
 #[derive(Clone)]
 pub(crate) struct TraceSink {
   context: std::sync::Arc<crate::identity::lifecycle::LocalIdentityContext>,
   entropy: std::sync::Arc<dyn Entropy>,
   clock: std::sync::Arc<dyn WallClock>,
+  /// Bounds concurrently running persistence tasks.
+  permits: std::sync::Arc<tokio::sync::Semaphore>,
+  /// Approximate durable record population: incremented per successful
+  /// persistence, decremented by the retention sweep's removals. Transition
+  /// rewrites may over-approximate; that only costs extra cheap sweeps,
+  /// never a missed one.
+  live_records: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
+
+/// The maximum number of concurrent terminal-record persistence tasks.
+const MAX_CONCURRENT_TRACE_PERSISTENCE: usize = 16;
 
 impl TraceSink {
   pub(crate) fn new(
     context: std::sync::Arc<crate::identity::lifecycle::LocalIdentityContext>,
     entropy: std::sync::Arc<dyn Entropy>, clock: std::sync::Arc<dyn WallClock>,
+    live_records: std::sync::Arc<std::sync::atomic::AtomicUsize>,
   ) -> Self {
     Self {
       context,
       entropy,
       clock,
+      permits: std::sync::Arc::new(tokio::sync::Semaphore::new(
+        MAX_CONCURRENT_TRACE_PERSISTENCE,
+      )),
+      live_records,
     }
   }
 
   /// Records one transition; failures are logged, never propagated into
   /// the stream path.
   pub(crate) async fn record(&self, record: TraceRecord) {
-    if let Err(error) = put_trace(
+    let _permit = self.permits.acquire().await;
+    match put_trace(
       self.context.store(),
       self.entropy.as_ref(),
       self.clock.as_ref(),
@@ -844,7 +863,14 @@ impl TraceSink {
     )
     .await
     {
-      tracing::warn!(kind = ?error.kind(), "route trace persistence failed");
+      Ok(()) => {
+        self
+          .live_records
+          .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
+      Err(error) => {
+        tracing::warn!(kind = ?error.kind(), "route trace persistence failed");
+      }
     }
   }
 

@@ -67,7 +67,7 @@ pub(crate) fn contains(table: &ForwardingTable, trace_id: &TraceId) -> bool {
 pub(crate) async fn open(
   local: &NodeId, peer: &NodeId, open: OpenFrame, upstream: &BoundedSender,
   sessions: &SessionTable, forwarding: &ForwardingTable, registry: &ExtensionRegistry,
-  route_policy: Option<&crate::QualifiedTag>,
+  route_policy: Option<&crate::QualifiedTag>, forwarding_capacity: usize,
 ) -> bool {
   let envelope = crate::routing::RouteContext::from_frame(
     open.trace_id.clone(),
@@ -87,10 +87,22 @@ pub(crate) async fn open(
       .unwrap_or_else(|| Err(crate::Error::route_unavailable("route policy")))
   }) {
     Ok(crate::routing::RouteProgress::Continue { context, next_hop }) => {
-      relay_open(
-        &context, &next_hop, peer, &open, upstream, sessions, forwarding,
-      )
-      .await;
+      if locked(forwarding).len() >= forwarding_capacity {
+        // The caller-selected bound on in-flight forwarded routes is a
+        // load condition, not a protocol violation: fail closed with the
+        // typed overload status and leave the hop unregistered.
+        debug!(
+          trace_id = %open.trace_id,
+          capacity = forwarding_capacity,
+          "forwarded route refused at capacity"
+        );
+        send_status(upstream, &open.trace_id, AckStatus::Overloaded);
+      } else {
+        relay_open(
+          &context, &next_hop, peer, &open, upstream, sessions, forwarding,
+        )
+        .await;
+      }
       true
     }
     other => {
@@ -113,11 +125,13 @@ pub(crate) async fn relay_chunk(table: &ForwardingTable, frame: ChunkFrame) -> b
   // Hold the relay lock across the unbounded backpressure await: the entry
   // stays visible to close_for_peer, and a concurrent close either queues
   // its end after this chunk or removes the entry before this relay starts.
-  let relay = hop.relay_lock.lock().await;
+  // Dropping the guard before `send_waiting` would let a closing session
+  // enqueue its end while this chunk is still waiting, breaking the strict
+  // chunk-then-end order downstream.
+  let _relay = hop.relay_lock.lock().await;
   if !contains(table, &frame.trace_id) {
     return true;
   }
-  drop(relay);
   let body = match wire::encode_chunk(&frame) {
     Ok(body) => body,
     Err(error) => return fail_hop(table, &frame.trace_id, error.kind()).await,
@@ -182,7 +196,7 @@ pub(crate) async fn close_for_peer(table: &ForwardingTable, upstream_peer: &Node
     // the last chunk; a cancelled reader leaves its entry in place, so the
     // end is sent exactly once by whoever holds the lock next.
     let relay = hop.relay_lock.lock().await;
-    let Some(hop) = take_existing(table, &trace_id) else {
+    let Some(hop) = take(table, &trace_id) else {
       continue;
     };
     drop(relay);
@@ -309,14 +323,10 @@ async fn select_next_hop(
   }
 }
 
+/// Removes the entry (the caller already holds the hop's relay lock, so no
+/// relay can be mid-flight and no other closer can win the race).
 fn take(table: &ForwardingTable, trace_id: &TraceId) -> Option<ForwardingHop> {
   locked(table).remove(trace_id)
-}
-
-/// Removes the entry only when it is still present (the caller already
-/// holds the hop's relay lock, so no relay can be mid-flight).
-fn take_existing(table: &ForwardingTable, trace_id: &TraceId) -> Option<ForwardingHop> {
-  take(table, trace_id)
 }
 
 /// Clones the current hop without removing it: relays hold the clone while
@@ -437,7 +447,11 @@ mod tests {
       let frame = downstream_drain.recv().await.unwrap();
       match frame.kind {
         PacketKind::Chunk => {
-          let decoded = crate::packet::wire::decode_chunk(&frame.body).unwrap();
+          let decoded = crate::packet::wire::decode_chunk(
+            &frame.body,
+            crate::protocol::offer::OFFER_CBOR_LIMITS,
+          )
+          .unwrap();
           assert_eq!(decoded.sequence, seen.len() as u64);
           assert_eq!(decoded.bytes[0], payload_byte(decoded.sequence));
           seen.push(decoded.sequence);
@@ -536,7 +550,9 @@ mod tests {
     // Exactly one typed failure reached the upstream holder.
     let frame = upstream_rx.recv().await.unwrap();
     assert_eq!(frame.kind, PacketKind::Ack);
-    let ack = crate::packet::wire::decode_ack(&frame.body).unwrap();
+    let ack =
+      crate::packet::wire::decode_ack(&frame.body, crate::protocol::offer::OFFER_CBOR_LIMITS)
+        .unwrap();
     assert_eq!(ack.trace_id, trace(3));
     assert_eq!(ack.status, AckStatus::Failed);
     drop(upstream_keep);
@@ -587,5 +603,61 @@ mod tests {
     .unwrap();
     super::close_for_peer(&table, &node(9)).await;
     assert!(super::contains(&table, &trace(6)));
+  }
+
+  /// A closing session's end never passes a still-in-flight chunk: the
+  /// relay lock spans the backpressure await, so the downstream leg keeps
+  /// the strict chunk-then-end prefix even when a session close races a
+  /// stalled relay (SC-G06-P0-09).
+  #[tokio::test]
+  async fn closing_session_end_queues_after_the_last_in_flight_chunk() {
+    let table = new_table();
+    let feeder = node(9);
+    let (upstream_tx, _) = crate::session::stream::test_queue(16, usize::MAX);
+    let (downstream_tx, mut downstream_drain) = crate::session::stream::test_queue(1, usize::MAX);
+    super::register(
+      &table,
+      trace(7),
+      ForwardingHop {
+        upstream: upstream_tx,
+        downstream: downstream_tx,
+        upstream_peer: feeder.clone(),
+        relay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+      },
+    )
+    .unwrap();
+
+    // Occupy the single downstream slot.
+    assert!(relay_chunk(&table, chunk(7, 0, payload_byte(0))).await);
+    // This relay stalls on backpressure while holding the hop's relay lock.
+    let mut stalled = Box::pin(relay_chunk(&table, chunk(7, 1, payload_byte(1))));
+    for _ in 0..20 {
+      if stalled.as_mut().now_or_never().is_some() {
+        panic!("the relay ignored downstream backpressure");
+      }
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // A concurrent session close must wait out the in-flight chunk relay
+    // instead of enqueueing its end ahead of the queued chunk.
+    let closer_table = std::sync::Arc::clone(&table);
+    let closer = tokio::spawn(async move {
+      super::close_for_peer(&closer_table, &feeder).await;
+    });
+
+    // Release the stalled relay; the chunk must leave before the end.
+    let released = downstream_drain.recv().await.unwrap();
+    assert_eq!(released.kind, PacketKind::Chunk);
+    assert!(stalled.await);
+    let frame = downstream_drain.recv().await.unwrap();
+    assert_eq!(frame.kind, PacketKind::Chunk);
+    let decoded =
+      crate::packet::wire::decode_chunk(&frame.body, crate::protocol::offer::OFFER_CBOR_LIMITS)
+        .unwrap();
+    assert_eq!(decoded.sequence, 1);
+    let frame = downstream_drain.recv().await.unwrap();
+    assert_eq!(frame.kind, PacketKind::End);
+    closer.await.unwrap();
+    assert!(!super::contains(&table, &trace(7)));
   }
 }

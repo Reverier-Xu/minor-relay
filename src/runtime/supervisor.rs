@@ -391,7 +391,10 @@ struct Supervisor {
   // same factory must not race a lingering driver).
   sync_driver: Option<tokio::task::JoinHandle<()>>,
   trace_sink: crate::routing::trace::TraceSink,
-  trace_records: std::sync::atomic::AtomicUsize,
+  // Approximate live durable trace-record population, shared with the
+  // sink (incremented per successful persistence) and decremented by the
+  // retention sweep's removals; zero means sweeps can stay skipped.
+  trace_records: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Supervisor {
@@ -420,6 +423,8 @@ impl Supervisor {
       dependencies.config.route_policy().cloned(),
       dependencies.sessions.clone(),
       dependencies.routes.clone(),
+      dependencies.config.trace_metadata_limits().active(),
+      dependencies.config.parser_cbor_limits(),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let sync_context = Arc::clone(&context);
@@ -452,10 +457,12 @@ impl Supervisor {
     ));
     // The durable trace-metadata sink shares the runtime identity context
     // and injected entropy; persistence failures never touch the data plane.
+    let trace_records = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let trace_sink = crate::routing::trace::TraceSink::new(
       Arc::clone(&context),
       dependencies.entropy.clone(),
       std::sync::Arc::new(crate::storage::receipt::HostWallClock),
+      std::sync::Arc::clone(&trace_records),
     );
     let recovery = crate::membership::recovery::RecoveryController::new(
       crate::membership::recovery::RecoveryPolicy::new(
@@ -480,7 +487,7 @@ impl Supervisor {
       recovery_excluded: std::collections::BTreeSet::new(),
       sync_driver,
       trace_sink,
-      trace_records: std::sync::atomic::AtomicUsize::new(0),
+      trace_records,
     }
   }
 
@@ -805,9 +812,6 @@ impl Supervisor {
     let trace = if request.internal {
       None
     } else {
-      self
-        .trace_records
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
       Some(self.trace_sink.clone())
     };
     tasks.spawn(async move {
@@ -819,8 +823,7 @@ impl Supervisor {
   /// One host-wall-clock retention pass over the durable route-trace
   /// records: terminal records expire at their configured deadline and the
   /// terminal population stays within the caller-selected cap; active
-  /// records are never removed. Skipped entirely while no durable trace
-  /// record exists.
+  /// records are never removed. Skipped while no durable record exists.
   async fn trace_retention_sweep(&mut self) {
     if self
       .trace_records
@@ -833,7 +836,7 @@ impl Supervisor {
     let Ok(context) = self.context() else {
       return;
     };
-    if let Err(error) = crate::routing::trace::sweep(
+    match crate::routing::trace::sweep(
       context.store(),
       self.dependencies.entropy.as_ref(),
       &crate::storage::receipt::HostWallClock,
@@ -842,7 +845,19 @@ impl Supervisor {
     )
     .await
     {
-      tracing::warn!(kind = ?error.kind(), "trace retention sweep failed");
+      Ok(removed) => {
+        self
+          .trace_records
+          .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |live| Some(live.saturating_sub(removed)),
+          )
+          .ok();
+      }
+      Err(error) => {
+        tracing::warn!(kind = ?error.kind(), "trace retention sweep failed");
+      }
     }
   }
 
@@ -958,7 +973,11 @@ impl Supervisor {
     let descriptor = crate::membership::page::decode_descriptor(value.as_bytes())?;
     Ok(Some(crate::membership::member_view(
       &descriptor,
-      connected,
+      if connected {
+        crate::ConnectivityStatus::Connected
+      } else {
+        crate::ConnectivityStatus::Reachable
+      },
     )?))
   }
 
@@ -994,8 +1013,14 @@ impl Supervisor {
         continue;
       }
       let descriptor = crate::membership::page::decode_descriptor(entry.value().as_bytes())?;
-      let connected = connected.contains(descriptor.node());
-      items.push(crate::membership::member_view(&descriptor, connected)?);
+      items.push(crate::membership::member_view(
+        &descriptor,
+        if connected.contains(descriptor.node()) {
+          crate::ConnectivityStatus::Connected
+        } else {
+          crate::ConnectivityStatus::Reachable
+        },
+      )?);
       last_key = Some(key.to_vec());
       if items.len() >= limit {
         break;
@@ -1168,15 +1193,7 @@ impl Supervisor {
       &updated,
     )
     .await?;
-    Ok(crate::MemberView::new(
-      updated.node().clone(),
-      updated.public_key().clone(),
-      updated.revision(),
-      crate::membership::node_descriptor_digest(&updated)?,
-      crate::ConnectivityStatus::Connected,
-      updated.endpoints().to_vec(),
-      updated.labels().clone(),
-    ))
+    crate::membership::member_view(&updated, crate::ConnectivityStatus::Connected)
   }
 
   /// The public recovery observation: whether every known online member

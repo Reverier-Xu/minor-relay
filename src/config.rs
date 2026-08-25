@@ -17,8 +17,8 @@ pub struct NodeConfig {
   // peer missing a keepalive result is closed. Zero disables keepalive.
   keepalive_interval: Duration,
   keepalive_timeout: Duration,
-  // TODO(G6): consumed by the packet parser when G6 lands (the CBOR layer
-  // enforces CborLimits today; ParserLimits is the public twin).
+  // Caller-selected packet parser limits (G3): depth, collection items,
+  // and frame bytes bound every packet-body decode allocation.
   parser_limits: ParserLimits,
   trace_metadata_limits: TraceMetadataLimits,
   route_policy: Option<crate::QualifiedTag>,
@@ -50,9 +50,8 @@ impl NodeConfig {
     Ok(self)
   }
 
-  /// Sets the parser limits (G1's "checked caller-selected finite
-  /// limits"). Validated eagerly; the frame consumer lands with the
-  /// bounded-parser work.
+  /// Sets the parser limits (G1/G3's "checked caller-selected finite
+  /// limits"): every packet-frame decode enforces them.
   pub fn with_parser_limits(mut self, value: ParserLimits) -> Result<Self> {
     self.parser_limits = value;
     Ok(self)
@@ -121,6 +120,16 @@ impl NodeConfig {
 
   pub(crate) const fn trace_metadata_limits(&self) -> &TraceMetadataLimits {
     &self.trace_metadata_limits
+  }
+
+  /// The packet parser limits as canonical-decoder bounds: depth, item
+  /// count, and frame bytes map one-to-one onto the CBOR layer's checks.
+  pub(crate) const fn parser_cbor_limits(&self) -> crate::protocol::CborLimits {
+    crate::protocol::CborLimits::new(
+      self.parser_limits.depth,
+      self.parser_limits.collection_items as u64,
+      self.parser_limits.frame_bytes,
+    )
   }
   /// The node's configured next-hop routing policy tag, if any.
   pub(crate) const fn route_policy(&self) -> Option<&crate::QualifiedTag> {

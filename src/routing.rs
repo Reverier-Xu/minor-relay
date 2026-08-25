@@ -401,15 +401,10 @@ impl CandidateNodeReader for StoreCandidateReader {
         if descriptor.removed() || !selector.matches(descriptor.labels()) {
           continue;
         }
-        items.push(crate::MemberView::new(
-          descriptor.node().clone(),
-          descriptor.public_key().clone(),
-          descriptor.revision(),
-          crate::membership::node_descriptor_digest(&descriptor)?,
+        items.push(crate::membership::member_view(
+          &descriptor,
           crate::ConnectivityStatus::Unknown,
-          descriptor.endpoints().to_vec(),
-          descriptor.labels().clone(),
-        ));
+        )?);
         if items.len() >= limit {
           // A page at capacity continues only when another entry follows;
           // peeking one entry keeps the stream honest about its end.

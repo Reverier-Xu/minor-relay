@@ -229,17 +229,18 @@ pub(crate) fn encode_open(frame: &OpenFrame) -> Result<Vec<u8>> {
 
 /// Decodes one packet-open frame body, enforcing canonical encoding,
 /// canonical metadata ordering, the bounded metadata map, and — for routed
-/// frames — a duplicate-free visited chain.
-pub(crate) fn decode_open(body: &[u8]) -> Result<OpenFrame> {
+/// frames — a duplicate-free visited chain. The caller-selected parser
+/// limits bound every decode allocation (G3's checked finite limits).
+pub(crate) fn decode_open(body: &[u8], limits: CborLimits) -> Result<OpenFrame> {
   // The current frame shape carries the optional route element.
-  if let Ok(wire) = decode_canonical::<OpenWire>(body, PACKET_CBOR_LIMITS)
+  if let Ok(wire) = decode_canonical::<OpenWire>(body, limits)
     && encode_canonical(&wire, PACKET_CBOR_LIMITS).is_ok_and(|encoded| encoded == body)
   {
     return open_from_wire(wire);
   }
   // The previous fixture shape ends at the metadata element.
-  let wire: OpenWireV1 = decode_canonical(body, PACKET_CBOR_LIMITS)
-    .map_err(|_| Error::invalid_input("packet open decode"))?;
+  let wire: OpenWireV1 =
+    decode_canonical(body, limits).map_err(|_| Error::invalid_input("packet open decode"))?;
   if !encode_canonical(&wire, PACKET_CBOR_LIMITS).is_ok_and(|encoded| encoded == body) {
     return Err(Error::invalid_input("packet open canonical"));
   }
@@ -310,8 +311,8 @@ pub(crate) fn encode_chunk(frame: &ChunkFrame) -> Result<Vec<u8>> {
 }
 
 /// Decodes one packet-chunk frame body, enforcing the streaming quantum.
-pub(crate) fn decode_chunk(body: &[u8]) -> Result<ChunkFrame> {
-  let wire: ChunkWire = decode_checked(body)?;
+pub(crate) fn decode_chunk(body: &[u8], limits: CborLimits) -> Result<ChunkFrame> {
+  let wire: ChunkWire = decode_checked(body, limits)?;
   if wire.bytes.len() > MAX_CHUNK_BYTES {
     return Err(Error::invalid_input("packet chunk"));
   }
@@ -333,8 +334,8 @@ pub(crate) fn encode_end(frame: &EndFrame) -> Result<Vec<u8>> {
 }
 
 /// Decodes one packet-end frame body.
-pub(crate) fn decode_end(body: &[u8]) -> Result<EndFrame> {
-  let wire: EndWire = decode_checked(body)?;
+pub(crate) fn decode_end(body: &[u8], limits: CborLimits) -> Result<EndFrame> {
+  let wire: EndWire = decode_checked(body, limits)?;
   Ok(EndFrame {
     trace_id: wire.trace_id.parse()?,
   })
@@ -353,8 +354,8 @@ pub(crate) fn encode_ack(frame: &AckFrame) -> Result<Vec<u8>> {
 }
 
 /// Decodes one packet-ack frame body. Unknown outcome codes fail closed.
-pub(crate) fn decode_ack(body: &[u8]) -> Result<AckFrame> {
-  let wire: AckWire = decode_checked(body)?;
+pub(crate) fn decode_ack(body: &[u8], limits: CborLimits) -> Result<AckFrame> {
+  let wire: AckWire = decode_checked(body, limits)?;
   let status =
     AckStatus::from_code(wire.outcome).ok_or_else(|| Error::invalid_input("packet ack outcome"))?;
   Ok(AckFrame {
@@ -365,11 +366,13 @@ pub(crate) fn decode_ack(body: &[u8]) -> Result<AckFrame> {
 }
 
 /// Decodes and re-encodes one frame body; any deviation from the
-/// deterministic canonical encoding is rejected.
-fn decode_checked<'a, T>(body: &'a [u8]) -> Result<T>
+/// deterministic canonical encoding is rejected. The re-encode comparison
+/// stays at the protocol's fixed budget while the decode allocations honor
+/// the caller-selected parser limits.
+fn decode_checked<'a, T>(body: &'a [u8], limits: CborLimits) -> Result<T>
 where
   T: Decode<'a, ()> + Encode<()>, {
-  decode_canonical_strict(body, PACKET_CBOR_LIMITS, "packet frame canonical")
+  decode_canonical_strict(body, limits, "packet frame canonical")
 }
 
 #[cfg(test)]
@@ -379,8 +382,9 @@ mod tests {
   use minicbor::bytes::ByteVec;
 
   use super::{
-    AckFrame, AckStatus, ChunkFrame, EndFrame, MAX_CHUNK_BYTES, OpenFrame, decode_ack,
-    decode_chunk, decode_end, decode_open, encode_ack, encode_chunk, encode_end, encode_open,
+    AckFrame, AckStatus, ChunkFrame, EndFrame, MAX_CHUNK_BYTES, OpenFrame, PACKET_CBOR_LIMITS,
+    decode_ack, decode_chunk, decode_end, decode_open, encode_ack, encode_chunk, encode_end,
+    encode_open,
   };
   use crate::{
     ErrorKind, NodeId, PacketMetadata, ProtocolTag, TraceId,
@@ -422,7 +426,7 @@ mod tests {
   fn tls_transport_packet_open_frame_round_trips_canonically() {
     let frame = open_frame();
     let body = encode_open(&frame).unwrap();
-    let decoded = decode_open(&body).unwrap();
+    let decoded = decode_open(&body, PACKET_CBOR_LIMITS).unwrap();
     assert_eq!(decoded.trace_id, frame.trace_id);
     assert_eq!(decoded.source, frame.source);
     assert_eq!(decoded.destination, frame.destination);
@@ -452,19 +456,21 @@ mod tests {
       route: None,
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    let error = decode_open(&body).unwrap_err();
+    let error = decode_open(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
+
+  /// A routed frame whose route chain contains a duplicate node fails
 
   #[test]
   fn tls_transport_packet_open_frame_rejects_noncanonical_padding() {
     let body = encode_open(&open_frame()).unwrap();
     let mut padded = body.clone();
     padded.push(0);
-    assert!(decode_open(&padded).is_err());
+    assert!(decode_open(&padded, PACKET_CBOR_LIMITS).is_err());
     let mut truncated = body;
     truncated.pop();
-    assert!(decode_open(&truncated).is_err());
+    assert!(decode_open(&truncated, PACKET_CBOR_LIMITS).is_err());
   }
 
   #[test]
@@ -476,7 +482,7 @@ mod tests {
       bytes: ByteVec::from(vec![0xAB; 1_024]),
     };
     let body = encode_chunk(&frame).unwrap();
-    let decoded = decode_chunk(&body).unwrap();
+    let decoded = decode_chunk(&body, PACKET_CBOR_LIMITS).unwrap();
     assert_eq!(decoded, frame);
 
     let oversize = ChunkFrame {
@@ -495,7 +501,7 @@ mod tests {
       bytes: ByteVec::from(vec![0xAB; MAX_CHUNK_BYTES + 1]),
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    let error = decode_chunk(&body).unwrap_err();
+    let error = decode_chunk(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
 
@@ -505,7 +511,7 @@ mod tests {
     let end = EndFrame {
       trace_id: trace_id.clone(),
     };
-    let decoded = decode_end(&encode_end(&end).unwrap()).unwrap();
+    let decoded = decode_end(&encode_end(&end).unwrap(), PACKET_CBOR_LIMITS).unwrap();
     assert_eq!(decoded, end);
 
     for status in [
@@ -518,7 +524,7 @@ mod tests {
         status,
         admitted_at_millis: 1_700_000_000_000,
       };
-      let decoded = decode_ack(&encode_ack(&ack).unwrap()).unwrap();
+      let decoded = decode_ack(&encode_ack(&ack).unwrap(), PACKET_CBOR_LIMITS).unwrap();
       assert_eq!(decoded, ack);
     }
   }
@@ -532,7 +538,7 @@ mod tests {
       admitted_at_millis: 0,
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    let error = decode_ack(&body).unwrap_err();
+    let error = decode_ack(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
 
@@ -542,7 +548,7 @@ mod tests {
       trace_id: "trace_NOT-CANONICAL".to_owned(),
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    let error = decode_end(&body).unwrap_err();
+    let error = decode_end(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
 
     let wire = super::OpenWire {
@@ -554,7 +560,7 @@ mod tests {
       route: None,
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    let error = decode_open(&body).unwrap_err();
+    let error = decode_open(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
 
@@ -568,7 +574,7 @@ mod tests {
       bytes: ByteVec::from(b"payload".to_vec()),
     };
     let body = encode_chunk(&chunk).unwrap();
-    assert!(decode_end(&body).is_err());
+    assert!(decode_end(&body, PACKET_CBOR_LIMITS).is_err());
   }
 }
 
@@ -578,7 +584,7 @@ mod route_tests {
 
   use minicbor::bytes::ByteVec;
 
-  use super::{OpenFrame, OpenWireV1, RouteWire, decode_open, encode_open};
+  use super::{OpenFrame, OpenWireV1, PACKET_CBOR_LIMITS, RouteWire, decode_open, encode_open};
   use crate::{
     NodeId, PacketMetadata, ProtocolTag, TraceId,
     protocol::{encode_canonical, offer::OFFER_CBOR_LIMITS},
@@ -612,7 +618,7 @@ mod route_tests {
       }),
     };
     let body = encode_open(&frame).unwrap();
-    let decoded = decode_open(&body).unwrap();
+    let decoded = decode_open(&body, PACKET_CBOR_LIMITS).unwrap();
     assert_eq!(decoded.destination, destination);
     // Canonical: re-encoding reproduces the exact bytes.
     assert_eq!(encode_open(&decoded).unwrap(), body);
@@ -638,7 +644,7 @@ mod route_tests {
       metadata: Vec::new(),
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    let decoded = decode_open(&body).unwrap();
+    let decoded = decode_open(&body, PACKET_CBOR_LIMITS).unwrap();
     assert!(decoded.route.is_none());
     assert_eq!(decoded.source, source);
     assert_eq!(decoded.destination, destination);
@@ -665,7 +671,7 @@ mod route_tests {
       }),
     };
     let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
-    assert!(decode_open(&body).is_err());
+    assert!(decode_open(&body, PACKET_CBOR_LIMITS).is_err());
 
     // Truncation and padding stay rejected on routed frames too.
     let frame = OpenFrame {
@@ -688,7 +694,7 @@ mod route_tests {
     let body = encode_open(&frame).unwrap();
     let mut truncated = body.clone();
     truncated.pop();
-    assert!(decode_open(&truncated).is_err());
+    assert!(decode_open(&truncated, PACKET_CBOR_LIMITS).is_err());
     let _ = ByteVec::from(Vec::<u8>::new());
   }
 }

@@ -167,21 +167,18 @@ pub(crate) fn node_descriptor_digest(descriptor: &NodeDescriptorV1) -> Result<cr
 
 /// The single descriptor → public member view mapper: annotates the
 /// owner-revision descriptor with the session-table connectivity decision.
-/// Used by both the exact-member lookup and the paged population read so
-/// the view shape cannot drift between them.
+/// Every public member view (exact lookup, paged population read, and
+/// routed candidate reads) flows through here so the view shape cannot
+/// drift between them.
 pub(crate) fn member_view(
-  descriptor: &NodeDescriptorV1, connected: bool,
+  descriptor: &NodeDescriptorV1, status: crate::ConnectivityStatus,
 ) -> Result<crate::MemberView> {
   Ok(crate::MemberView::new(
     descriptor.node().clone(),
     descriptor.public_key().clone(),
     descriptor.revision(),
     node_descriptor_digest(descriptor)?,
-    if connected {
-      crate::ConnectivityStatus::Connected
-    } else {
-      crate::ConnectivityStatus::Reachable
-    },
+    status,
     descriptor.endpoints().to_vec(),
     descriptor.labels().clone(),
   ))
