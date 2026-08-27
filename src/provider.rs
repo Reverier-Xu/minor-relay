@@ -457,6 +457,19 @@ pub enum StoreExpectation {
   Exact(Digest),
 }
 
+/// Builds the per-key expectation for a conditional write from one
+/// snapshot view, so the expectation and the CAS revision handed to
+/// `prepare_transaction` cannot disagree (single source for the
+/// snapshot-view CAS pattern).
+pub(crate) async fn snapshot_expectation(
+  snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, key: &StoreKey,
+) -> Result<StoreExpectation> {
+  Ok(match snapshot.get(namespace, key).await? {
+    Some(current) => StoreExpectation::Exact(current.digest().clone()),
+    None => StoreExpectation::Absent,
+  })
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StoreOperation {

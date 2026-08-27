@@ -116,7 +116,7 @@ fn spawn_sync_driver(
             .lock()
             .map(|endpoints| endpoints.clone())
             .unwrap_or_default();
-          let _ = crate::membership::sync::sync_tick(
+          if let Err(error) = crate::membership::sync::sync_tick(
             &driver_context,
             &driver_entropy,
             &driver_sessions,
@@ -124,15 +124,23 @@ fn spawn_sync_driver(
             &endpoints,
             &mut sync_cursor,
           )
-          .await;
-          let _ = crate::resource::sync::resource_sync_tick(
+          .await
+          {
+            // Persistent anti-entropy failure must stay visible in
+            // diagnostics; the next tick retries regardless.
+            tracing::warn!(kind = ?error.kind(), "membership sync tick failed");
+          }
+          if let Err(error) = crate::resource::sync::resource_sync_tick(
             &driver_context,
             &driver_entropy,
             &driver_sessions,
             &driver_runtime,
             &mut resource_cursor,
           )
-          .await;
+          .await
+          {
+            tracing::warn!(kind = ?error.kind(), "resource sync tick failed");
+          }
         }
       }
     }
@@ -228,7 +236,23 @@ async fn supervise(
     return;
   }
 
-  let mut supervisor = Supervisor::new(dependencies);
+  let mut supervisor = match Supervisor::new(dependencies) {
+    Ok(supervisor) => supervisor,
+    Err(failure) => {
+      let (error, dependencies) = *failure;
+      tracing::error!(kind = ?error.kind(), "supervisor provisioning failed");
+      finish_shutdown(
+        control,
+        tasks,
+        dependencies,
+        Vec::new(),
+        &mut lifecycle,
+        None,
+      )
+      .await;
+      return;
+    }
+  };
   // Any trace records still non-terminal from a previous incarnation
   // terminate explicitly at startup: a restart never continues a body.
   if let Some(context) = supervisor.dependencies.context.as_ref()
@@ -418,27 +442,31 @@ struct Supervisor {
 }
 
 impl Supervisor {
-  fn new(dependencies: RuntimeDependencies) -> Self {
-    let context = dependencies
-      .context
-      .clone()
-      .unwrap_or_else(|| unreachable!("runtime context is provisioned at startup"));
-    let registry = FeatureRegistry::builtin()
-      .unwrap_or_else(|_| unreachable!("builtin feature registry is valid"));
-    let offer = node_offer(&registry, dependencies.config.required_features())
-      .unwrap_or_else(|_| unreachable!("local feature offer is valid"));
+  /// Builds the supervisor; provisioning failures return the dependencies
+  /// so the caller can still run a clean shutdown instead of panicking.
+  fn new(
+    dependencies: RuntimeDependencies,
+  ) -> std::result::Result<Self, Box<(Error, RuntimeDependencies)>> {
+    let Some(context) = dependencies.context.clone() else {
+      return Err(Box::new((Error::internal("runtime context"), dependencies)));
+    };
+    let registry = match FeatureRegistry::builtin() {
+      Ok(registry) => registry,
+      Err(error) => return Err(Box::new((error, dependencies))),
+    };
+    let offer = match node_offer(&registry, dependencies.config.required_features()) {
+      Ok(offer) => offer,
+      Err(error) => return Err(Box::new((error, dependencies))),
+    };
+    let Some(packet_tx) = dependencies.packet_tx.clone() else {
+      return Err(Box::new((Error::internal("packet channel"), dependencies)));
+    };
     let policy = crate::session::stream::SessionPolicy::from_config(&dependencies.config);
     let packet = Arc::new(SessionPacketContext::new(
       context.identity().node().clone(),
       dependencies.extensions.clone(),
       policy,
-      crate::runtime::RuntimeClient::routing_only(
-        dependencies
-          .packet_tx
-          .clone()
-          .unwrap_or_else(|| unreachable!("packet channel is provisioned at startup")),
-        dependencies.routes.clone(),
-      ),
+      crate::runtime::RuntimeClient::routing_only(packet_tx.clone(), dependencies.routes.clone()),
       std::sync::Arc::new(crate::storage::receipt::HostWallClock),
       dependencies.config.route_policy().cloned(),
       dependencies.sessions.clone(),
@@ -464,13 +492,7 @@ impl Supervisor {
       &sync_context,
       dependencies.entropy.clone(),
       dependencies.sessions.clone(),
-      crate::runtime::RuntimeClient::routing_only(
-        dependencies
-          .packet_tx
-          .clone()
-          .unwrap_or_else(|| unreachable!("packet channel is provisioned at startup")),
-        dependencies.routes.clone(),
-      ),
+      crate::runtime::RuntimeClient::routing_only(packet_tx, dependencies.routes.clone()),
       Arc::clone(&published_endpoints),
       dependencies.config.anti_entropy_interval(),
       shutdown_tx.subscribe(),
@@ -492,7 +514,7 @@ impl Supervisor {
         dependencies.config.recovery().maximum_backoff_seconds(),
       ),
     );
-    Self {
+    Ok(Self {
       dependencies,
       shutdown_tx,
       connection_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -508,7 +530,7 @@ impl Supervisor {
       sync_driver,
       trace_sink,
       trace_records,
-    }
+    })
   }
 
   fn into_dependencies(mut self) -> (RuntimeDependencies, Vec<tokio::task::JoinHandle<()>>) {
@@ -1003,15 +1025,11 @@ impl Supervisor {
       .lock()
       .map_err(|_| Error::internal("session table"))?
       .contains_key(&node);
-    let snapshot = self.context()?.store().snapshot().await?;
-    let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
-      crate::membership::NODE_DESCRIPTOR_NAMESPACE,
-    )?)?;
-    let key = crate::StoreKey::new(std::sync::Arc::from(node.as_str().as_bytes().to_vec()));
-    let Some(value) = snapshot.get(&namespace, &key).await? else {
+    let Some(descriptor) =
+      crate::membership::store::read_descriptor_ctx(self.context()?.store(), &node).await?
+    else {
       return Ok(None);
     };
-    let descriptor = crate::membership::page::decode_descriptor(value.as_bytes())?;
     Ok(Some(crate::membership::member_view(
       &descriptor,
       if connected {
@@ -1275,6 +1293,10 @@ impl Supervisor {
     // from their signed descriptor; reachability stays distinct from the
     // active topology and recovery never dials strangers (SC-G05-P0-11/18).
     let bindings = crate::identity::trust::store::trusted_bindings(self.context()?.store()).await?;
+    // One snapshot for the whole cycle: per-member descriptor reads must
+    // not pay one snapshot acquisition each (a 1,024-member recovery tick
+    // would otherwise acquire 1,024 snapshots).
+    let snapshot = self.context()?.store().snapshot().await?;
     let mut candidates = std::collections::BTreeSet::new();
     for member in online.difference(&direct) {
       if self.recovery_excluded.contains(member) {
@@ -1285,7 +1307,7 @@ impl Supervisor {
         continue;
       }
       let descriptor =
-        crate::membership::store::read_descriptor_ctx(self.context()?.store(), member).await;
+        crate::membership::store::read_descriptor_snapshot(snapshot.as_ref(), member).await;
       if let Ok(Some(descriptor)) = descriptor
         && let Some(endpoint) = descriptor.endpoints().first()
       {

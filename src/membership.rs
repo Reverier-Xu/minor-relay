@@ -195,8 +195,8 @@ pub(crate) mod store {
 
   use super::{NODE_DESCRIPTOR_NAMESPACE, NodeDescriptorV1};
   use crate::{
-    Error, NodeId, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreValue,
-    TransactionId, api::Entropy, storage::MetadataStore,
+    Error, NodeId, Result, StoreKey, StoreNamespace, StoreOperation, StoreValue, TransactionId,
+    api::Entropy, storage::MetadataStore,
   };
 
   fn namespace() -> Result<StoreNamespace> {
@@ -205,6 +205,22 @@ pub(crate) mod store {
 
   fn descriptor_key(node: &NodeId) -> StoreKey {
     StoreKey::new(Arc::from(node.as_str().as_bytes().to_vec()))
+  }
+
+  /// Reads the current descriptor for one node, if any, from an
+  /// already-acquired snapshot, so callers iterating many members pay one
+  /// snapshot acquisition per cycle instead of one per member.
+  pub(crate) async fn read_descriptor_snapshot(
+    snapshot: &dyn crate::provider::StoreSnapshot, node: &NodeId,
+  ) -> Result<Option<NodeDescriptorV1>> {
+    let namespace = namespace()?;
+    let key = descriptor_key(node);
+    let Some(value) = snapshot.get(&namespace, &key).await? else {
+      return Ok(None);
+    };
+    Ok(Some(crate::membership::page::decode_descriptor(
+      value.as_bytes(),
+    )?))
   }
 
   /// Reads the current descriptor for one node, if any, over the running
@@ -253,10 +269,8 @@ pub(crate) mod store {
     }
     // One snapshot view for both the per-key expectation and the CAS
     // revision, so a concurrent writer cannot make them disagree.
-    let expected = match snapshot.get(&namespace, &key).await? {
-      Some(current) => StoreExpectation::Exact(current.digest().clone()),
-      None => StoreExpectation::Absent,
-    };
+    let expected =
+      crate::provider::snapshot_expectation(snapshot.as_ref(), &namespace, &key).await?;
     let transaction = store.prepare_transaction(
       TransactionId::generate(entropy)?,
       snapshot.revision().clone(),

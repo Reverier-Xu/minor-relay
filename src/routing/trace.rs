@@ -318,10 +318,7 @@ pub(crate) async fn put_trace(
   let space = namespace()?;
   let key = key(&record.trace_id);
   let snapshot = store.snapshot().await?;
-  let expected = match snapshot.get(&space, &key).await? {
-    Some(current) => crate::StoreExpectation::Exact(current.digest().clone()),
-    None => crate::StoreExpectation::Absent,
-  };
+  let expected = crate::provider::snapshot_expectation(snapshot.as_ref(), &space, &key).await?;
   let transaction = store.prepare_transaction(
     crate::TransactionId::generate(entropy)?,
     snapshot.revision().clone(),

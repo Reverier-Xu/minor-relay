@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use super::{ResourceName, ResourceRecordV1};
 use crate::{
-  CommitReceipt, Digest, Error, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
-  StoreValue, TransactionId, api::Entropy, storage::MetadataStore,
+  CommitReceipt, Digest, Error, Result, StoreKey, StoreNamespace, StoreOperation, StoreValue,
+  TransactionId, api::Entropy, storage::MetadataStore,
 };
 
 /// The durable namespace holding one register per resource name.
@@ -90,10 +90,7 @@ pub(crate) async fn commit_record_ctx(
       return Ok(ResourceCommitOutcome::Superseded(existing));
     }
   }
-  let expected = match snapshot.get(&namespace, &key).await? {
-    Some(current) => StoreExpectation::Exact(current.digest().clone()),
-    None => StoreExpectation::Absent,
-  };
+  let expected = crate::provider::snapshot_expectation(snapshot.as_ref(), &namespace, &key).await?;
   let transaction = store.prepare_transaction(
     TransactionId::generate(entropy)?,
     snapshot.revision().clone(),
