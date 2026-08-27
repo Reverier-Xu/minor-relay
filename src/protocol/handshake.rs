@@ -52,7 +52,7 @@ use super::{
   credential::{
     CredentialProof, CredentialSecret, PROOF_LEN, ProofRole, derive_proof, verify_proof,
   },
-  decode_canonical, encode_canonical,
+  encode_canonical,
   feature::FeatureRegistry,
   offer::{FeatureOffer, OFFER_CBOR_LIMITS, Role},
   selection::{Selection, select},
@@ -828,18 +828,12 @@ const fn position_sender(kind: HandshakeKind) -> Role {
 fn decode_wire<T>(bytes: &[u8]) -> Result<T, HandshakeError>
 where
   T: for<'bytes> Decode<'bytes, ()> + Encode<()>, {
-  let wire: T =
-    decode_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
+  super::decode_canonical_strict_or(bytes, OFFER_CBOR_LIMITS).map_err(|failure| match failure {
+    super::StrictDecodeFailure::Decode(_) => HandshakeError::Malformed {
       context: "handshake message decode",
-    })?;
-  let reencoded =
-    encode_canonical(&wire, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
-      context: "handshake encode",
-    })?;
-  if reencoded != bytes {
-    return Err(HandshakeError::NonCanonical);
-  }
-  Ok(wire)
+    },
+    super::StrictDecodeFailure::NonCanonical => HandshakeError::NonCanonical,
+  })
 }
 
 fn fixed_bytes<const LENGTH: usize>(

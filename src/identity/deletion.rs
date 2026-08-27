@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::{
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_recovered_journal,
+    discover_local_identity, discovery_corrupt,
   },
   records::{
     KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key, local_identity_key,
@@ -40,10 +40,16 @@ pub(crate) async fn delete_unreferenced_key(
 ) -> Result<()> {
   let store = context.store();
   let purpose = deletion_purpose(handle);
-  if store.recover_pending(&purpose).await?.is_some() {
-    reconcile_recovered_journal(store).await?;
-    cleanup_pending_exact(store, entropy, &purpose, "key deletion pending cleanup").await?;
-  }
+  // The deletion path reconciles a frozen store after journal recovery
+  // too (a cheap no-op on a non-frozen store), matching its historical
+  // unconditional reconcile.
+  crate::identity::lifecycle::recover_journal_prologue(
+    store,
+    entropy,
+    &purpose,
+    "key deletion pending cleanup",
+  )
+  .await?;
   store.reconcile_if_frozen().await?;
 
   let mut attempts = 0_u8;

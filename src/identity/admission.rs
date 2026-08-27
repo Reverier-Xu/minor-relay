@@ -13,7 +13,7 @@ use super::{
   genesis::{existing_cluster, require_empty_namespace},
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_recovered_journal,
+    discover_local_identity, discovery_corrupt,
   },
   records::{
     AdmissionGrantV1, AdmissionId, CredentialUseV1, GenerationId, IdentityBindingV1,
@@ -75,15 +75,19 @@ pub(crate) async fn commit_admission(
 ) -> Result<AdmissionGrantV1> {
   let store = context.store();
   let purpose = admission_purpose(&proposal.generation);
-  if store.recover_pending(&purpose).await?.is_some() {
-    reconcile_recovered_journal(store).await?;
-    cleanup_pending_exact(store, entropy, &purpose, "admission pending cleanup").await?;
+  if crate::identity::lifecycle::recover_journal_prologue(
+    store,
+    entropy,
+    &purpose,
+    "admission pending cleanup",
+  )
+  .await?
+  {
     return match admission_state(context, proposal).await? {
       AdmissionState::Consumed(_, grant) => Ok(*grant),
       AdmissionState::Aborted => Err(discovery_corrupt()),
     };
   }
-  store.reconcile_if_frozen().await?;
 
   let identity = context.identity();
   let snapshot = store.snapshot().await?;
@@ -264,15 +268,19 @@ pub(crate) async fn adopt_admission(
 ) -> Result<()> {
   let store = context.store();
   let purpose = adoption_purpose(grant.admission());
-  if store.recover_pending(&purpose).await?.is_some() {
-    reconcile_recovered_journal(store).await?;
-    cleanup_pending_exact(store, entropy, &purpose, "adoption pending cleanup").await?;
+  if crate::identity::lifecycle::recover_journal_prologue(
+    store,
+    entropy,
+    &purpose,
+    "adoption pending cleanup",
+  )
+  .await?
+  {
     return match adoption_state(context, grant, issuer_key, genesis_digest).await? {
       AdoptionState::Adopted => Ok(()),
       AdoptionState::Absent => Err(discovery_corrupt()),
     };
   }
-  store.reconcile_if_frozen().await?;
 
   let identity = context.identity();
   if grant.subject() != identity.node()

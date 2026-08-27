@@ -312,7 +312,7 @@ pub(crate) fn encode_chunk(frame: &ChunkFrame) -> Result<Vec<u8>> {
 
 /// Decodes one packet-chunk frame body, enforcing the streaming quantum.
 pub(crate) fn decode_chunk(body: &[u8], limits: CborLimits) -> Result<ChunkFrame> {
-  let wire: ChunkWire = decode_checked(body, limits)?;
+  let wire: ChunkWire = decode_canonical_strict(body, limits, "packet frame canonical")?;
   if wire.bytes.len() > MAX_CHUNK_BYTES {
     return Err(Error::invalid_input("packet chunk"));
   }
@@ -335,7 +335,7 @@ pub(crate) fn encode_end(frame: &EndFrame) -> Result<Vec<u8>> {
 
 /// Decodes one packet-end frame body.
 pub(crate) fn decode_end(body: &[u8], limits: CborLimits) -> Result<EndFrame> {
-  let wire: EndWire = decode_checked(body, limits)?;
+  let wire: EndWire = decode_canonical_strict(body, limits, "packet frame canonical")?;
   Ok(EndFrame {
     trace_id: wire.trace_id.parse()?,
   })
@@ -355,7 +355,7 @@ pub(crate) fn encode_ack(frame: &AckFrame) -> Result<Vec<u8>> {
 
 /// Decodes one packet-ack frame body. Unknown outcome codes fail closed.
 pub(crate) fn decode_ack(body: &[u8], limits: CborLimits) -> Result<AckFrame> {
-  let wire: AckWire = decode_checked(body, limits)?;
+  let wire: AckWire = decode_canonical_strict(body, limits, "packet frame canonical")?;
   let status =
     AckStatus::from_code(wire.outcome).ok_or_else(|| Error::invalid_input("packet ack outcome"))?;
   Ok(AckFrame {
@@ -363,16 +363,6 @@ pub(crate) fn decode_ack(body: &[u8], limits: CborLimits) -> Result<AckFrame> {
     status,
     admitted_at_millis: wire.admitted_at_millis,
   })
-}
-
-/// Decodes and re-encodes one frame body; any deviation from the
-/// deterministic canonical encoding is rejected. The re-encode comparison
-/// stays at the protocol's fixed budget while the decode allocations honor
-/// the caller-selected parser limits.
-fn decode_checked<'a, T>(body: &'a [u8], limits: CborLimits) -> Result<T>
-where
-  T: Decode<'a, ()> + Encode<()>, {
-  decode_canonical_strict(body, limits, "packet frame canonical")
 }
 
 #[cfg(test)]

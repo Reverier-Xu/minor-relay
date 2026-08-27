@@ -38,7 +38,7 @@ use sha2::{Digest as ShaDigest, Sha256};
 use super::{CborLimits, FeatureTag, ProtocolTag, QualifiedTag, encode_canonical};
 use crate::{Digest, Error, Result};
 
-const BUILTIN_DOMAIN: &str = "relay.woooo.tech";
+const BUILTIN_DOMAIN: &str = super::tag::BUILTIN_DOMAIN;
 const BUILTIN_TEST_OWNER: &str = "VERIFY-G03-01";
 const FINGERPRINT_SEED_PREFIX: &str = "relay.woooo.tech/crypto/feature-fingerprint-v1/";
 
@@ -300,7 +300,7 @@ impl LimitDefinition {
     tag: QualifiedTag, width: LimitWidth, unit: LimitUnit, range: LimitRange, owner: FeatureTag,
     mandatory: bool,
   ) -> Result<Self> {
-    if tag.category() != "limits" {
+    if tag.category() != crate::protocol::tag::CATEGORY_LIMITS {
       return Err(Error::invalid_input("limit definition category"));
     }
     if range.ceiling > width.maximum() {

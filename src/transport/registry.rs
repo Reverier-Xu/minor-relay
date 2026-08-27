@@ -178,11 +178,15 @@ impl WssTransport {
     Self
   }
 
-  /// The canonical tag of the built-in transport.
+  /// The canonical tag of the built-in transport, parsed once.
   pub(crate) fn tag() -> Result<TransportTag> {
     // The literal is a fixed canonical constant; parse once and surface the
     // impossible failure as an internal error instead of panicking.
-    TransportTag::parse("relay.woooo.tech/transports/wss")
+    static TAG: std::sync::OnceLock<std::result::Result<TransportTag, ()>> =
+      std::sync::OnceLock::new();
+    TAG
+      .get_or_init(|| TransportTag::parse("relay.woooo.tech/transports/wss").map_err(|_| ()))
+      .clone()
       .map_err(|_| crate::Error::internal("built-in transport tag"))
   }
 }
@@ -203,7 +207,7 @@ impl Transport for WssTransport {
         .map_err(|_| Error::internal("listener address"))?;
       let certificate = super::cert::EphemeralCertificate::generate(&crate::api::SystemEntropy)?;
       let config = super::tls::server_config(&certificate)?;
-      let rules = crate::session::handshake_frame_rules()?;
+      let rules = crate::protocol::wire::handshake_frame_rules()?;
       let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
       Ok(Box::new(WssListener {
         listener: tcp,
@@ -233,7 +237,7 @@ impl Transport for WssTransport {
           )
         })?;
       let server_name = endpoint.server_name()?;
-      let rules = crate::session::handshake_frame_rules()?;
+      let rules = crate::protocol::wire::handshake_frame_rules()?;
       super::connection::Connection::connect(tcp, client, server_name, rules).await
     })
   }

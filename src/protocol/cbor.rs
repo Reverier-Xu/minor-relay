@@ -94,6 +94,32 @@ where
   Ok(value)
 }
 
+/// The two failure modes of strict canonical decoding, for callers whose
+/// error taxonomy separates malformed input from non-canonical input
+/// (the handshake state machine maps them to distinct typed errors).
+pub(crate) enum StrictDecodeFailure {
+  Decode(Error),
+  NonCanonical,
+}
+
+/// The split-error core of [`decode_canonical_strict`]: decode, re-encode,
+/// and byte-compare exactly once crate-wide.
+pub(crate) fn decode_canonical_strict_or<'bytes, T>(
+  bytes: &'bytes [u8], limits: CborLimits,
+) -> std::result::Result<T, StrictDecodeFailure>
+where
+  T: Decode<'bytes, ()> + Encode<()>, {
+  let value: T = decode_canonical(bytes, limits).map_err(StrictDecodeFailure::Decode)?;
+  if encode_canonical(&value, limits)
+    .map_err(StrictDecodeFailure::Decode)?
+    .as_slice()
+    != bytes
+  {
+    return Err(StrictDecodeFailure::NonCanonical);
+  }
+  Ok(value)
+}
+
 /// Decodes canonical CBOR and additionally rejects non-canonical
 /// encodings: the decoded value must re-encode to byte-identical input.
 /// Every persisted record and every authenticated-session payload decodes
@@ -104,11 +130,10 @@ pub(crate) fn decode_canonical_strict<'bytes, T>(
 ) -> Result<T>
 where
   T: Decode<'bytes, ()> + Encode<()>, {
-  let value: T = decode_canonical(bytes, limits)?;
-  if encode_canonical(&value, limits)?.as_slice() != bytes {
-    return Err(Error::invalid_input(canonical_context));
-  }
-  Ok(value)
+  decode_canonical_strict_or(bytes, limits).map_err(|failure| match failure {
+    StrictDecodeFailure::Decode(error) => error,
+    StrictDecodeFailure::NonCanonical => Error::invalid_input(canonical_context),
+  })
 }
 
 pub(crate) fn validate_canonical(bytes: &[u8], limits: CborLimits) -> Result<()> {

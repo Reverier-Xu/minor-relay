@@ -759,7 +759,7 @@ fn validate_purpose(purpose: &str) -> Result<()> {
 
 pub(super) fn pending_namespace() -> Result<StoreNamespace> {
   let tag = QualifiedTag::parse(PENDING_NAMESPACE)?;
-  if tag.category() != "metadata" {
+  if tag.category() != crate::protocol::tag::CATEGORY_METADATA {
     return Err(Error::invalid_input("pending transaction namespace"));
   }
   StoreNamespace::new(tag)

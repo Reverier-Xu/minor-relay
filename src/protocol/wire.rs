@@ -87,6 +87,46 @@ impl HandshakeKind {
 pub(crate) const MAGIC: &str = "MRLY";
 /// The four prelude magic bytes, derived from the canonical [`MAGIC`] text.
 pub(crate) const MAGIC_BYTES: [u8; 4] = *b"MRLY";
+// The stated single-source invariant is enforced, not just claimed: both
+// forms describe the same four bytes or the crate does not compile.
+const _: () = {
+  let text = MAGIC.as_bytes();
+  assert!(text.len() == 4);
+  assert!(
+    text[0] == MAGIC_BYTES[0]
+      && text[1] == MAGIC_BYTES[1]
+      && text[2] == MAGIC_BYTES[2]
+      && text[3] == MAGIC_BYTES[3]
+  );
+};
+
+/// The local policy applied to every sent and received wire message.
+/// Protocol owns the type: transports and sessions both consume wire
+/// policy from the protocol domain, never from each other.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameRules {
+  /// Flag bits permitted by the negotiated schema.
+  pub(crate) allowed_flags: u16,
+  /// The message class limit applied to the declared body length.
+  pub(crate) message_limit: u32,
+  /// The configured receive limit applied before any body allocation.
+  pub(crate) receive_limit: u32,
+  /// The closed registry check for `(schema_id, kind_id)` pairs.
+  pub(crate) is_declared: fn(u16, u16) -> bool,
+}
+
+/// The frame rules of the handshake phase: declared handshake kinds only,
+/// no flags, bounded by the offer decode limits.
+pub(crate) fn handshake_frame_rules() -> crate::Result<FrameRules> {
+  let limit = u32::try_from(crate::protocol::offer::OFFER_CBOR_LIMITS.max_body_len())
+    .map_err(|_| crate::Error::invalid_input("handshake frame limit"))?;
+  Ok(FrameRules {
+    allowed_flags: 0,
+    message_limit: limit,
+    receive_limit: limit,
+    is_declared,
+  })
+}
 
 /// One published packet-stream message kind of base schema `0x0001`
 /// (ADR-0007).
