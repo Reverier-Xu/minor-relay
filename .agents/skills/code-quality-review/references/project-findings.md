@@ -1,5 +1,63 @@
 # minor-relay Verified Findings (G3-era review, 2026-08)
 
+> **G7 re-review 2026-08-25 (main, four fresh reviewer lanes +
+> orchestrator):** G7 verdict **PASS-WITH-GAPS**; all six verify-g07-\*
+> lanes PASS; Q suite green on rerun (first run had one parallel-load
+> flake: routed_packets handshake `AuthenticationFailed: handshake
+> closed`, 3/3 green in isolation — harness lacks connect retry).
+> All P0/P1 findings spot-checked against source.
+>
+> ### P1 — verified
+> 1. session/stream.rs:1118 unbounded `pending_acks` HashMap; entries
+>    removed only on ack/session end; liveness_observer (:613) exempts
+>    sessions with pending work from idle close → a peer that accepts
+>    opens but never acks keeps sessions alive while origin memory grows
+>    linearly with sends. Cap concurrent pending admissions per session
+>    (typed Overloaded) and/or deadline-bound the has-work hold-off.
+> 2. Cursor-pagination loop ×5 with ALREADY-DIVERGENT end-of-stream:
+>    routing.rs:377-417 peeks one extra entry (honest has_more);
+>    supervisor.rs page_members/page_topology use `items.len() < limit`
+>    heuristic that can emit a trailing cursor whose next page is empty;
+>    membership/page.rs + resource/page.rs emit_page_ctx are two more
+>    copies. Extract one shared scan_paged helper.
+>
+> ### P2 hotspots (top of backlog)
+> - membership/sync.rs ↔ resource/sync.rs systemic duplication:
+>   drain_body+MAX_SYNC_BYTES, alive_peers/peers_fingerprint,
+>   send_payload — security-relevant validation paths fixed twice.
+> - Page envelope codec duplicated membership/page.rs:46-146 vs
+>   resource/page.rs:50-121 (capacity/canonical/fingerprint).
+> - Subprocess crash-matrix scaffolding triplicated (json/crash.rs,
+>   resource/crash.rs ×2 lanes, json/native.rs) with hardcoded
+>   crash-point numbering.
+> - resource/retention.rs sweep_removed_ctx materializes every removal
+>   record then applies cap post-hoc, O(n·m) freshness filter, full
+>   namespace scan every 2s unconditional — violates boundedness rule
+>   at the 262,144-record cap (contrast trace lane's counter gate).
+> - transport→session domain cycle: registry.rs:206,236 calls
+>   session::handshake_frame_rules; frame rules belong in protocol.
+> - node/builder.rs:48-59 WSS hardcoded as dial/listen transport;
+>   registry extensibility decorative at node level.
+> - supervisor.rs recovery_tick N+1 snapshot per unreachable member.
+> - simulation/* incl. artifact fs capture compiles into non-test builds.
+> - storage/receipt.rs:412 outcome classified by operations.len()==2.
+> - Magic literal 64 in supervisor paging + neighbor degree vs named
+>   consts; "limits" category literal compared in 3 places; tag.rs:139
+>   hardcoded reserved (domain,category) pair duplicating feature.rs
+>   policy; records.rs record_digest duplicates signature::body_digest;
+>   handshake decode_wire reimplements decode_canonical_strict.
+>
+> ### Evidence gaps for the G7 gate record
+> - SC-G07-P0-18 (revised 16-node SLO workload covering admission+
+>   packets+node revisions+resources ≤10000 ms): NO test exists;
+>   resource/e2e.rs:386 comment defers it to a dedicated G10 harness.
+>   Either write the G7 sample or amend the catalog/plan row.
+> - E2E-06 covered at store+sync layer only (resource::e2e); no real-
+>   session/public-facade resource convergence integration test exists
+>   in tests/ (membership_sync covers metadata but not resources).
+> - SC-G07-P0-11 restart/readdress mid-resource-repair exercised only
+>   indirectly via partition-healing e2e; no dedicated case.
+
 > **G6 re-review 2026-08-25 (main @ b9cd349, five fresh reviewer lanes +
 > orchestrator):** G6 verdict **PASS-WITH-GAPS**; Q suite and all five
 > verify-g06-\* lanes green; planning validator green (69/226/10/29).
