@@ -5,6 +5,46 @@ use std::collections::{BTreeMap, VecDeque};
 
 use sha2::{Digest as ShaDigest, Sha256};
 
+/// The crash-matrix child wait bound shared by every subprocess lane.
+pub const CHILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Spawns the current test binary as one crash-matrix child (single
+/// source for the JSON adapter and resource register lanes): exact test
+/// filter, environment-selected crash directory and point, no stdio.
+/// Panics unless the child terminates abnormally within the timeout.
+// Test-harness code: a spawn/wait failure is itself the test failure,
+// reported as a panic with the crash point in the message.
+#[allow(clippy::unwrap_used)]
+pub fn run_crash_child(
+  test_name: &str, dir_env: &str, point_env: &str, dir: &std::path::Path, point: u8, label: &str,
+) {
+  use std::process::{Command, Stdio};
+
+  use wait_timeout::ChildExt as _;
+
+  let executable = std::env::current_exe().unwrap();
+  let mut child = Command::new(executable)
+    .args(["--exact", test_name, "--ignored", "--nocapture"])
+    .env(dir_env, dir)
+    .env(point_env, point.to_string())
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  let status = match child.wait_timeout(CHILD_TIMEOUT).unwrap() {
+    Some(status) => status,
+    None => {
+      child.kill().unwrap();
+      panic!("{label} crash child at point {point} did not exit within {CHILD_TIMEOUT:?}");
+    }
+  };
+  assert!(
+    !status.success(),
+    "{label} crash child at point {point} must terminate abnormally"
+  );
+}
+
 pub const MAX_ARTIFACT_BYTES: usize = 1_048_576;
 pub const MAX_RETAINED_EVENTS: usize = 10_000;
 const EVENT_DIGEST_DOMAIN: &[u8] = b"relay.woooo.tech/failure-replay/event-stream/v2";

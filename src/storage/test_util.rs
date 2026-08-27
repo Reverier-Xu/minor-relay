@@ -25,3 +25,20 @@ pub(crate) fn value(bytes: &[u8]) -> StoreValue {
 pub(crate) fn transaction_id(index: u64) -> TransactionId {
   TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }
+
+/// The store requirements of the subprocess durability lanes (single
+/// source): unix directory barriers make the plain metadata profile
+/// sufficient; other platforms must require process-crash atomicity
+/// explicitly.
+#[cfg_attr(not(feature = "json"), allow(dead_code))]
+pub(crate) fn crash_requirements() -> crate::StoreRequirements {
+  #[cfg(unix)]
+  {
+    crate::StoreRequirements::metadata()
+  }
+  #[cfg(not(unix))]
+  {
+    crate::StoreRequirements::metadata()
+      .with_required_durability(crate::DurabilityLevel::ProcessCrashAtomic)
+  }
+}

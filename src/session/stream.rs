@@ -723,7 +723,7 @@ async fn liveness_observer(
 pub(crate) fn retire_session(table: &SessionTable, peer: &NodeId) -> Result<()> {
   let entry = table
     .lock()
-    .map_err(|_| crate::Error::internal("session table"))?
+    .map_err(crate::Error::session_table)?
     .remove(peer);
   if let Some(entry) = entry {
     retire(&entry);

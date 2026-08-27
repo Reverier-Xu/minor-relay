@@ -6,7 +6,8 @@ rust-version = "1.98.0"
 version      = "0.1.0"
 
 [dependencies]
-sha2 = "0.11"
+sha2         = "0.11"
+wait-timeout = "0.2"
 
 [lints.rust]
 unsafe_code = "forbid"

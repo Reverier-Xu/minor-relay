@@ -8,14 +8,9 @@
 //! timing assumptions are used: the child always reaches its abort point
 //! deterministically, and the parent only bounds the wait.
 
-use std::{
-  process::{Command, Stdio},
-  sync::Arc,
-  time::Duration,
-};
+use std::sync::Arc;
 
 use tempfile::TempDir;
-use wait_timeout::ChildExt as _;
 
 use super::{JsonStoreFactory, helpers};
 use crate::{
@@ -24,7 +19,6 @@ use crate::{
 
 const CRASH_DIR_ENV: &str = "MINOR_RELAY_JSON_CRASH_DIR";
 const CRASH_POINT_ENV: &str = "MINOR_RELAY_JSON_CRASH_POINT";
-const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Crash points inside the commit path.
 ///
@@ -37,15 +31,7 @@ const FIRST_COMMITTED_POINT: u8 = 8;
 const LAST_POINT: u8 = 13;
 
 fn requirements() -> StoreRequirements {
-  #[cfg(unix)]
-  {
-    StoreRequirements::metadata()
-  }
-  #[cfg(not(unix))]
-  {
-    StoreRequirements::metadata()
-      .with_required_durability(crate::DurabilityLevel::ProcessCrashAtomic)
-  }
+  crate::storage::test_util::crash_requirements()
 }
 
 fn seed_transaction() -> StoreTransactionAlias {
@@ -83,31 +69,13 @@ async fn json_crash_child_entry() {
 
 /// Spawns the child at one crash point and returns once it died.
 fn run_child(dir: &TempDir, point: u8) {
-  let executable = std::env::current_exe().unwrap();
-  let mut child = Command::new(executable)
-    .args([
-      "--exact",
-      "storage::json::crash::json_crash_child_entry",
-      "--ignored",
-      "--nocapture",
-    ])
-    .env(CRASH_DIR_ENV, dir.path())
-    .env(CRASH_POINT_ENV, point.to_string())
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn()
-    .unwrap();
-  let status = match child.wait_timeout(CHILD_TIMEOUT).unwrap() {
-    Some(status) => status,
-    None => {
-      child.kill().unwrap();
-      panic!("crash child at point {point} did not exit within {CHILD_TIMEOUT:?}");
-    }
-  };
-  assert!(
-    !status.success(),
-    "crash child at point {point} must terminate abnormally"
+  minor_relay_test_support::run_crash_child(
+    "storage::json::crash::json_crash_child_entry",
+    CRASH_DIR_ENV,
+    CRASH_POINT_ENV,
+    dir.path(),
+    point,
+    "json",
   );
 }
 

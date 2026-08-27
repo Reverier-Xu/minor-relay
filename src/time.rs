@@ -37,6 +37,11 @@ pub(crate) fn from_millis(millis: u64) -> SystemTime {
   UNIX_EPOCH + std::time::Duration::from_millis(millis)
 }
 
+/// Rebuilds a [`SystemTime`] from stored UNIX seconds.
+pub(crate) fn from_seconds(seconds: u64) -> SystemTime {
+  UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{Duration, UNIX_EPOCH};

@@ -824,7 +824,7 @@ impl Supervisor {
       .dependencies
       .sessions
       .lock()
-      .map_err(|_| Error::internal("session table"))?
+      .map_err(Error::session_table)?
       .get(&destination)
       .cloned();
     // A direct path is preferred; without one, the node's registered
@@ -941,7 +941,7 @@ impl Supervisor {
       .dependencies
       .sessions
       .lock()
-      .map_err(|_| Error::internal("session table"))?
+      .map_err(Error::session_table)?
       .iter()
       .filter(|(_, entry)| entry.alive())
       .map(|(peer, _)| peer.clone())
@@ -956,7 +956,7 @@ impl Supervisor {
       .dependencies
       .sessions
       .lock()
-      .map_err(|_| Error::internal("session table"))?
+      .map_err(Error::session_table)?
       .get(&hop)
       .filter(|entry| entry.alive())
       .cloned();
@@ -1023,7 +1023,7 @@ impl Supervisor {
       .dependencies
       .sessions
       .lock()
-      .map_err(|_| Error::internal("session table"))?
+      .map_err(Error::session_table)?
       .contains_key(&node);
     let Some(descriptor) =
       crate::membership::store::read_descriptor_ctx(self.context()?.store(), &node).await?
@@ -1053,7 +1053,7 @@ impl Supervisor {
       .dependencies
       .sessions
       .lock()
-      .map_err(|_| Error::internal("session table"))?
+      .map_err(Error::session_table)?
       .keys()
       .cloned()
       .collect();
@@ -1100,7 +1100,7 @@ impl Supervisor {
         .dependencies
         .sessions
         .lock()
-        .map_err(|_| Error::internal("session table"))?
+        .map_err(Error::session_table)?
         .iter()
         .map(|(peer, entry)| {
           (
@@ -1250,7 +1250,7 @@ impl Supervisor {
       self
         .recovery
         .next_attempt_seconds(now)
-        .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+        .map(crate::time::from_seconds),
     )
   }
 
@@ -1267,7 +1267,7 @@ impl Supervisor {
       .dependencies
       .sessions
       .lock()
-      .map_err(|_| Error::internal("session table"))?
+      .map_err(Error::session_table)?
       .iter()
       .filter(|(_, entry)| entry.alive())
       .map(|(peer, _)| peer.clone())

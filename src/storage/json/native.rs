@@ -27,14 +27,7 @@ const NATIVE_DIR_ENV: &str = "MINOR_RELAY_JSON_NATIVE_DIR";
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn requirements() -> StoreRequirements {
-  #[cfg(unix)]
-  {
-    StoreRequirements::metadata()
-  }
-  #[cfg(not(unix))]
-  {
-    StoreRequirements::metadata().with_required_durability(DurabilityLevel::ProcessCrashAtomic)
-  }
+  crate::storage::test_util::crash_requirements()
 }
 
 async fn open(factory: &Arc<dyn StorageFactory>) -> Box<dyn Storage> {

@@ -78,10 +78,7 @@ impl ExtensionRegistry {
   pub(crate) fn register_transport(
     &mut self, tag: TransportTag, value: Arc<dyn Transport>,
   ) -> Result<&mut Self> {
-    if self.transports.contains_key(&tag) {
-      return Err(Error::conflict("transport registration"));
-    }
-    self.transports.insert(tag, value);
+    insert_once(&mut self.transports, tag, value, "transport registration")?;
     Ok(self)
   }
 
@@ -91,10 +88,7 @@ impl ExtensionRegistry {
   pub(crate) fn register_discovery(
     &mut self, tag: DiscoveryTag, value: Arc<dyn Discovery>,
   ) -> Result<&mut Self> {
-    if self.discoveries.contains_key(&tag) {
-      return Err(Error::conflict("discovery registration"));
-    }
-    self.discoveries.insert(tag, value);
+    insert_once(&mut self.discoveries, tag, value, "discovery registration")?;
     Ok(self)
   }
 
@@ -120,7 +114,7 @@ impl ExtensionRegistry {
       let mut balancers = self
         .load_balancers
         .lock()
-        .map_err(|_| Error::internal("extension registry"))?;
+        .map_err(Error::extension_registry)?;
       insert_once(&mut balancers, tag, value, "load balancer registration")?;
     }
     Ok(self)
@@ -154,10 +148,7 @@ impl ExtensionRegistry {
     &mut self, tag: crate::QualifiedTag, value: Arc<dyn crate::RouteNextHop>,
   ) -> Result<&mut Self> {
     {
-      let mut policies = self
-        .next_hops
-        .lock()
-        .map_err(|_| Error::internal("extension registry"))?;
+      let mut policies = self.next_hops.lock().map_err(Error::extension_registry)?;
       insert_once(&mut policies, tag, value, "next-hop registration")?;
     }
     Ok(self)
@@ -194,20 +185,16 @@ impl ExtensionRegistry {
   fn register_protocol_inner(
     &self, value: ProtocolDefinition, consumer: Arc<dyn PacketConsumer>,
   ) -> Result<()> {
-    let mut protocols = self
-      .protocols
-      .lock()
-      .map_err(|_| Error::internal("extension registry"))?;
-    if protocols.contains_key(&value.tag) {
-      return Err(Error::conflict("protocol registration"));
-    }
-    protocols.insert(
+    let mut protocols = self.protocols.lock().map_err(Error::extension_registry)?;
+    insert_once(
+      &mut protocols,
       value.tag.clone(),
       Arc::new(ProtocolRegistration {
         definition: value,
         consumer,
       }),
-    );
+      "protocol registration",
+    )?;
     Ok(())
   }
 
@@ -244,15 +231,30 @@ impl fmt::Debug for ExtensionRegistry {
       )
       .field("transports", &self.transports.len())
       .field("discoveries", &self.discoveries.len())
+      .field(
+        "load_balancers",
+        &self
+          .load_balancers
+          .lock()
+          .map(|balancers| balancers.len())
+          .unwrap_or(0),
+      )
+      .field(
+        "next_hops",
+        &self
+          .next_hops
+          .lock()
+          .map(|policies| policies.len())
+          .unwrap_or(0),
+      )
       .finish()
   }
 }
 
 /// Inserts `value` only when `tag` is absent; a duplicate is a typed
 /// conflict. The single insertion-once rule for every registry map.
-fn insert_once<V>(
-  map: &mut std::collections::BTreeMap<crate::QualifiedTag, V>, tag: crate::QualifiedTag, value: V,
-  context: &'static str,
+fn insert_once<K: Ord, V>(
+  map: &mut std::collections::BTreeMap<K, V>, tag: K, value: V, context: &'static str,
 ) -> Result<()> {
   use std::collections::btree_map::Entry;
   match map.entry(tag) {

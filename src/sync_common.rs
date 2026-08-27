@@ -35,9 +35,7 @@ pub(crate) async fn drain_body(
 
 /// The alive-peer set of one node, in stable order.
 pub(crate) fn alive_peers(sessions: &SessionTable) -> Result<Vec<NodeId>> {
-  let guard = sessions
-    .lock()
-    .map_err(|_| Error::internal("session table"))?;
+  let guard = sessions.lock().map_err(Error::session_table)?;
   Ok(
     guard
       .iter()
