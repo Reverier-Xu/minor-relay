@@ -5,7 +5,88 @@
 //! further raw entry provably exists, so no trailing empty page
 //! terminates the stream.
 
-use crate::Result;
+use minicbor::{Decode, Encode, bytes::ByteVec};
+
+use crate::{Error, Result};
+
+/// The one bounded-page wire envelope every anti-entropy lane encodes:
+/// positional array layout, so membership pages and resource pages share
+/// the exact byte shape (golden vectors pin both).
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct PageEnvelopeWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  items: Vec<ByteVec>,
+  #[n(2)]
+  cursor: Option<ByteVec>,
+}
+
+/// The page shape policy (single source): capacity is a typed resource
+/// exhaustion and an empty page cannot carry a continuation cursor.
+pub(crate) fn check_page_shape(
+  count: usize, max: usize, cursor: &Option<Vec<u8>>, context: &'static str,
+) -> Result<()> {
+  if count > max {
+    return Err(Error::resource_exhausted(context));
+  }
+  if count == 0 && cursor.is_some() {
+    return Err(Error::invalid_input(context));
+  }
+  Ok(())
+}
+
+/// Encodes one bounded page envelope over pre-encoded items.
+pub(crate) fn encode_page(
+  schema: &str, items: &[Vec<u8>], cursor: Option<&[u8]>,
+) -> Result<Vec<u8>> {
+  crate::protocol::encode_canonical(
+    &PageEnvelopeWire {
+      schema: schema.to_owned(),
+      items: items
+        .iter()
+        .map(|item| ByteVec::from(item.clone()))
+        .collect(),
+      cursor: cursor.map(|value| ByteVec::from(value.to_vec())),
+    },
+    crate::protocol::offer::OFFER_CBOR_LIMITS,
+  )
+}
+
+/// The decoded content of one page envelope: pre-decoded items plus the
+/// continuation cursor.
+type PageEnvelope = (Vec<Vec<u8>>, Option<Vec<u8>>);
+
+/// Decodes one bounded page envelope, rejecting unknown schemas,
+/// non-canonical encodings, and over-capacity item lists (fail closed).
+pub(crate) fn decode_page(
+  bytes: &[u8], schema: &str, max_items: usize, context: &'static str,
+) -> Result<PageEnvelope> {
+  let wire: PageEnvelopeWire = crate::protocol::decode_canonical_strict(
+    bytes,
+    crate::protocol::offer::OFFER_CBOR_LIMITS,
+    context,
+  )?;
+  if wire.schema != schema {
+    return Err(Error::invalid_input(context));
+  }
+  check_page_shape(wire.items.len(), max_items, &None, context)?;
+  Ok((
+    wire
+      .items
+      .iter()
+      .map(|item| {
+        let bytes: &[u8] = item.as_ref();
+        bytes.to_vec()
+      })
+      .collect(),
+    wire.cursor.map(|value| {
+      let bytes: &[u8] = value.as_ref();
+      bytes.to_vec()
+    }),
+  ))
+}
 
 /// One decoded page of items plus the continuation cursor (the last
 /// processed raw key; pages resume strictly after it).
