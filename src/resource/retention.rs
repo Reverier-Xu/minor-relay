@@ -28,12 +28,79 @@ pub(crate) const RESOURCE_REMOVAL_RETENTION: Duration = Duration::from_secs(30 *
 /// removal population exceeds this bound, the oldest evict first.
 pub(crate) const RESOURCE_REGISTER_CAP: usize = 262_144;
 
+/// One fresh removal seen during the scan, ordered by timestamp so a
+/// heap bounded by the cap can track the oldest candidates without
+/// materializing the removal population.
+struct RemovalCandidate {
+  stamped: std::time::SystemTime,
+  key: StoreKey,
+  digest: crate::Digest,
+}
+
+impl PartialEq for RemovalCandidate {
+  fn eq(&self, other: &Self) -> bool {
+    self.stamped == other.stamped
+  }
+}
+impl Eq for RemovalCandidate {}
+impl PartialOrd for RemovalCandidate {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.cmp(other))
+  }
+}
+impl Ord for RemovalCandidate {
+  // Max-heap by timestamp: popping evicts the *newest* candidate, so a
+  // heap bounded at `cap` always retains the `cap` oldest fresh removals.
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    self.stamped.cmp(&other.stamped)
+  }
+}
+
+/// Deletes one removal record by exact conditional expectation: a stale
+/// expectation (the register moved since the scan) conflicts without
+/// mutating anything, and an indeterminate outcome leaves the record for
+/// the next pass. Returns whether the record was removed.
+async fn delete_exact(
+  store: &MetadataStore, entropy: &dyn Entropy, snapshot: &crate::StoreRevision,
+  namespace: &crate::StoreNamespace, key: StoreKey, digest: crate::Digest,
+) -> Result<bool> {
+  let transaction = store.prepare_transaction(
+    crate::TransactionId::generate(entropy)?,
+    snapshot.clone(),
+    vec![StoreOperation::Delete {
+      namespace: namespace.clone(),
+      key,
+      expected: digest,
+    }],
+  )?;
+  match store.commit(transaction).await? {
+    crate::CommitOutcome::Committed(_) => Ok(true),
+    // A stale expectation conflicts without mutation: the newer winner
+    // stays untouched.
+    crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => Ok(false),
+    crate::CommitOutcome::Unknown { .. } => {
+      // The pending identity is discoverable through the store's
+      // recovery surface; leave the record in place rather than
+      // guessing, and let the next pass finish the job.
+      tracing::debug!("resource removal sweep ended indeterminate; retried next pass");
+      Ok(false)
+    }
+  }
+}
+
 /// Runs one bounded retention pass over the resource namespace:
 /// `removed()` records expire at their retention deadline and the removal
 /// population stays within the cap, oldest-first. Every removal is one
 /// conditional delete against the exact stored digest; a record whose
 /// expectation no longer matches is left untouched (a conflicting stale
 /// expectation is never mutated away).
+///
+/// The pass is bounded by construction: expired removals are deleted
+/// inline while streaming (nothing is materialized), and a max-heap
+/// bounded by `cap` tracks the oldest fresh removals so the cap applies
+/// during the scan instead of after collecting everything. One pass
+/// evicts at most `cap` overflow records; a bulk overflow converges over
+/// repeated passes.
 ///
 /// Live records are never evicted, matching the trace lane's active-record
 /// rule. Returns the number of removal records actually cleaned.
@@ -47,65 +114,58 @@ pub(crate) async fn sweep_removed_ctx(
   let now = clock.now();
   let snapshot = store.snapshot().await?;
   let mut scan = snapshot.scan(&namespace, &[]).await?;
-  let mut removals: Vec<(StoreKey, crate::Digest, std::time::SystemTime)> = Vec::new();
+  let mut removed = 0_usize;
+  let mut fresh_total = 0_usize;
+  let mut oldest: std::collections::BinaryHeap<RemovalCandidate> =
+    std::collections::BinaryHeap::new();
   while let Some(entry) = scan.next().await? {
     let record = super::ResourceRecordV1::decode(entry.value().as_bytes())?;
     if !record.removed() {
       // Live metadata is never evicted by retention.
       continue;
     }
-    removals.push((
-      StoreKey::new(std::sync::Arc::from(entry.key().as_bytes().to_vec())),
-      entry.value().digest().clone(),
-      record.timestamp(),
-    ));
+    let key = StoreKey::new(std::sync::Arc::from(entry.key().as_bytes().to_vec()));
+    let digest = entry.value().digest().clone();
+    let expired = now
+      .duration_since(record.timestamp())
+      .is_ok_and(|age| age >= retention);
+    if expired {
+      if delete_exact(store, entropy, snapshot.revision(), &namespace, key, digest).await? {
+        removed = removed.saturating_add(1);
+      }
+      continue;
+    }
+    fresh_total = fresh_total.saturating_add(1);
+    oldest.push(RemovalCandidate {
+      stamped: record.timestamp(),
+      key,
+      digest,
+    });
+    if oldest.len() > cap {
+      // Pop the newest candidate: the heap always holds the `cap` oldest.
+      oldest.pop();
+    }
   }
   drop(scan);
 
-  let mut to_delete: Vec<(StoreKey, crate::Digest)> = Vec::new();
-  for (key, digest, stamped) in removals.iter() {
-    let expired = now
-      .duration_since(*stamped)
-      .is_ok_and(|age| age >= retention);
-    if expired {
-      to_delete.push((key.clone(), digest.clone()));
-    }
-  }
-  // Enforce the cap oldest-first across the remaining fresh removals.
-  let fresh: Vec<(StoreKey, crate::Digest, std::time::SystemTime)> = removals
-    .into_iter()
-    .filter(|(key, ..)| !to_delete.iter().any(|(k, _)| k == key))
-    .collect();
-  let overflow = fresh.len().saturating_sub(cap);
+  // Enforce the cap oldest-first: the overflow is the oldest
+  // `fresh_total - cap` fresh removals, capped at one heap per pass.
+  let overflow = fresh_total.saturating_sub(cap).min(oldest.len());
   if overflow > 0 {
-    let mut oldest = fresh;
-    oldest.sort_by_key(|(_, _, stamped)| *stamped);
-    for (key, digest, _) in oldest.into_iter().take(overflow) {
-      to_delete.push((key, digest));
-    }
-  }
-
-  let mut removed = 0_usize;
-  for (key, digest) in to_delete {
-    let transaction = store.prepare_transaction(
-      crate::TransactionId::generate(entropy)?,
-      snapshot.revision().clone(),
-      vec![StoreOperation::Delete {
-        namespace: namespace.clone(),
-        key,
-        expected: digest.clone(),
-      }],
-    )?;
-    match store.commit(transaction).await? {
-      crate::CommitOutcome::Committed(_) => removed = removed.saturating_add(1),
-      // A stale expectation (the register moved since the scan) conflicts
-      // without mutation: the newer winner stays untouched.
-      crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => {}
-      crate::CommitOutcome::Unknown { .. } => {
-        // The pending identity is discoverable through the store's
-        // recovery surface; leave the record in place rather than
-        // guessing, and let the next pass finish the job.
-        tracing::debug!("resource removal sweep ended indeterminate; retried next pass");
+    let mut candidates = oldest.into_vec();
+    candidates.sort_by_key(|candidate| candidate.stamped);
+    for candidate in candidates.into_iter().take(overflow) {
+      if delete_exact(
+        store,
+        entropy,
+        snapshot.revision(),
+        &namespace,
+        candidate.key,
+        candidate.digest,
+      )
+      .await?
+      {
+        removed = removed.saturating_add(1);
       }
     }
   }
