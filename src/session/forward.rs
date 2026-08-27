@@ -16,7 +16,7 @@ use super::stream::{BoundedSender, PendingAck, PendingAcks, SessionFrame, Sessio
 use crate::{
   ErrorKind, NodeId, Result, TraceId,
   extension_registry::ExtensionRegistry,
-  packet::wire::{self, AckFrame, AckStatus, ChunkFrame, EndFrame, OpenFrame},
+  packet::wire::{self, AckStatus, ChunkFrame, EndFrame, OpenFrame},
   protocol::wire::PacketKind,
 };
 
@@ -239,6 +239,12 @@ async fn relay_open(
     if acks.contains_key(&open.trace_id) {
       return reject_open(upstream, &open.trace_id);
     }
+    // The downstream session's admission bound applies to relayed opens
+    // too: beyond it the hop fails closed with typed backpressure.
+    if acks.len() >= crate::session::stream::MAX_PENDING_ADMISSIONS {
+      send_status(upstream, &open.trace_id, AckStatus::Overloaded);
+      return;
+    }
     acks.insert(
       open.trace_id.clone(),
       PendingAck::Relay {
@@ -375,13 +381,7 @@ async fn fail_hop(table: &ForwardingTable, trace_id: &TraceId, kind: ErrorKind) 
 }
 
 fn send_status(upstream: &BoundedSender, trace_id: &TraceId, status: AckStatus) {
-  if let Ok(body) = wire::encode_ack(&AckFrame {
-    trace_id: trace_id.clone(),
-    status,
-    admitted_at_millis: 0,
-  }) {
-    upstream.try_send(SessionFrame::new(PacketKind::Ack, body));
-  }
+  upstream.try_send_status(trace_id, status);
 }
 
 #[cfg(test)]
