@@ -383,41 +383,25 @@ impl CandidateNodeReader for StoreCandidateReader {
         crate::membership::NODE_DESCRIPTOR_NAMESPACE,
       )?)?;
       let mut scan = self.snapshot.scan(&namespace, &[]).await?;
-      let mut items = Vec::new();
-      let mut last_key: Option<Vec<u8>> = None;
-      let mut has_more = false;
-      while let Some(entry) = scan.next().await? {
-        let key = entry.key().as_bytes();
-        if let Some(cursor) = cursor.as_ref()
-          && key <= cursor.as_bytes()
-        {
-          continue;
-        }
-        last_key = Some(key.to_vec());
-        let Ok(descriptor) = crate::membership::page::decode_descriptor(entry.value().as_bytes())
-        else {
-          continue;
-        };
-        if descriptor.removed() || !selector.matches(descriptor.labels()) {
-          continue;
-        }
-        items.push(crate::membership::member_view(
-          &descriptor,
-          crate::ConnectivityStatus::Unknown,
-        )?);
-        if items.len() >= limit {
-          // A page at capacity continues only when another entry follows;
-          // peeking one entry keeps the stream honest about its end.
-          has_more = scan.next().await?.is_some();
-          break;
-        }
-      }
-      let next = if has_more {
-        last_key.map(|key| crate::PageCursor::new(std::sync::Arc::from(key)))
-      } else {
-        None
-      };
-      Ok(crate::MemberPage::new(items, next))
+      let paged = crate::paging::scan_paged(
+        scan.as_mut(),
+        cursor.as_ref().map(|cursor| cursor.as_bytes()),
+        limit,
+        |_key, bytes| {
+          let Ok(descriptor) = crate::membership::page::decode_descriptor(bytes) else {
+            return Ok(None);
+          };
+          if descriptor.removed() || !selector.matches(descriptor.labels()) {
+            return Ok(None);
+          }
+          crate::membership::member_view(&descriptor, crate::ConnectivityStatus::Unknown).map(Some)
+        },
+      )
+      .await?;
+      let next = paged
+        .next
+        .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
+      Ok(crate::MemberPage::new(paged.items, next))
     })
   }
 }

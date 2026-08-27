@@ -1028,7 +1028,7 @@ impl Supervisor {
     &mut self, cursor: Option<crate::PageCursor>, limit: usize,
   ) -> Result<crate::MemberPage> {
     self.ensure_self_descriptor().await?;
-    let limit = limit.clamp(1, 64);
+    let limit = limit.clamp(1, crate::paging::MAX_VIEW_PAGE_ITEMS);
     // Snapshot the connected set under the lock, then release it before
     // any await so the supervisor future stays `Send`.
     let connected: std::collections::BTreeSet<NodeId> = self
@@ -1044,36 +1044,28 @@ impl Supervisor {
     )?)?;
     let snapshot = self.context()?.store().snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
-    let mut items = Vec::new();
-    let mut last_key: Option<Vec<u8>> = None;
-    while let Some(entry) = scan.next().await? {
-      let key = entry.key().as_bytes();
-      if let Some(cursor) = cursor.as_ref()
-        && key <= cursor.as_bytes()
-      {
-        continue;
-      }
-      let descriptor = crate::membership::page::decode_descriptor(entry.value().as_bytes())?;
-      items.push(crate::membership::member_view(
-        &descriptor,
-        if connected.contains(descriptor.node()) {
-          crate::ConnectivityStatus::Connected
-        } else {
-          crate::ConnectivityStatus::Reachable
-        },
-      )?);
-      last_key = Some(key.to_vec());
-      if items.len() >= limit {
-        break;
-      }
-    }
-    let reached_end = items.len() < limit;
-    let next = if reached_end {
-      None
-    } else {
-      last_key.map(|key| crate::PageCursor::new(std::sync::Arc::from(key)))
-    };
-    Ok(crate::MemberPage::new(items, next))
+    let paged = crate::paging::scan_paged(
+      scan.as_mut(),
+      cursor.as_ref().map(|cursor| cursor.as_bytes()),
+      limit,
+      |_key, bytes| {
+        let descriptor = crate::membership::page::decode_descriptor(bytes)?;
+        crate::membership::member_view(
+          &descriptor,
+          if connected.contains(descriptor.node()) {
+            crate::ConnectivityStatus::Connected
+          } else {
+            crate::ConnectivityStatus::Reachable
+          },
+        )
+        .map(Some)
+      },
+    )
+    .await?;
+    let next = paged
+      .next
+      .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
+    Ok(crate::MemberPage::new(paged.items, next))
   }
 
   /// Pages the authenticated sessions as directed topology edges
@@ -1081,43 +1073,35 @@ impl Supervisor {
   async fn page_topology(
     &mut self, cursor: Option<crate::PageCursor>, limit: usize,
   ) -> Result<crate::TopologyPage> {
-    let limit = limit.clamp(1, 64);
+    let limit = limit.clamp(1, crate::paging::MAX_VIEW_PAGE_ITEMS);
     // Build the edge list entirely under the lock (no await inside), so the
     // guard drops before the future completes.
-    let mut items = Vec::new();
-    let mut last_key: Option<Vec<u8>> = None;
     let context_node = self.context()?.identity().node().clone();
-    for (peer, entry) in self
-      .dependencies
-      .sessions
-      .lock()
-      .map_err(|_| Error::internal("session table"))?
-      .iter()
-    {
-      let key = peer.as_str().as_bytes();
-      if let Some(cursor) = cursor.as_ref()
-        && key <= cursor.as_bytes()
-      {
-        continue;
-      }
-      items.push(crate::TopologyEdgeView::new(
-        context_node.clone(),
-        peer.clone(),
-        entry.alive(),
-        std::time::SystemTime::now(),
-      ));
-      last_key = Some(key.to_vec());
-      if items.len() >= limit {
-        break;
-      }
-    }
-    let reached_end = items.len() < limit;
-    let next = if reached_end {
-      None
-    } else {
-      last_key.map(|key| crate::PageCursor::new(std::sync::Arc::from(key)))
-    };
-    Ok(crate::TopologyPage::new(items, next))
+    let paged = crate::paging::page_keys(
+      self
+        .dependencies
+        .sessions
+        .lock()
+        .map_err(|_| Error::internal("session table"))?
+        .iter()
+        .map(|(peer, entry)| {
+          (
+            peer.as_str().as_bytes().to_vec(),
+            crate::TopologyEdgeView::new(
+              context_node.clone(),
+              peer.clone(),
+              entry.alive(),
+              std::time::SystemTime::now(),
+            ),
+          )
+        }),
+      cursor.as_ref().map(|cursor| cursor.as_bytes()),
+      limit,
+    );
+    let next = paged
+      .next
+      .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
+    Ok(crate::TopologyPage::new(paged.items, next))
   }
 
   /// Pages the public trust observations (SC-G05-P0-25): the exact

@@ -143,27 +143,11 @@ pub(crate) mod sync {
     )?)?;
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
-    let mut records = Vec::new();
-    let mut last_key: Option<Vec<u8>> = None;
-    let mut reached_end = true;
-    while let Some(entry) = scan.next().await? {
-      let key_text = entry.key().as_bytes();
-      if let Some(cursor) = cursor
-        && key_text <= cursor
-      {
-        continue;
-      }
-      let record = ResourceRecordV1::decode(entry.value().as_bytes())?;
-      records.push(record);
-      last_key = Some(key_text.to_vec());
-      if records.len() >= limit {
-        reached_end = false;
-        break;
-      }
-    }
-    // The cursor is meaningful only when more records may follow; a page
-    // that exhausted the store ends the stream.
-    ResourcePage::new(records, if reached_end { None } else { last_key })
+    let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {
+      ResourceRecordV1::decode(bytes).map(Some)
+    })
+    .await?;
+    ResourcePage::new(paged.items, paged.next)
   }
 
   /// Applies one received page over the running node's metadata store.

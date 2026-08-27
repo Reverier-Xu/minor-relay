@@ -166,30 +166,13 @@ pub(crate) mod sync {
     )?)?;
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
-    let mut descriptors = Vec::new();
-    let mut last_key: Option<Vec<u8>> = None;
-    let mut reached_end = true;
-    while let Some(entry) = scan.next().await? {
-      let key = entry.key().as_bytes();
-      if let Some(cursor) = cursor
-        && key <= cursor
-      {
-        continue;
-      }
-      let bytes = entry.value().as_bytes();
+    let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {
       // The sender only pages its own stored records; entries are trusted
       // through the session that delivers them (ADR-0008).
-      let descriptor = super::decode_descriptor(bytes)?;
-      descriptors.push(descriptor);
-      last_key = Some(key.to_vec());
-      if descriptors.len() >= limit {
-        reached_end = false;
-        break;
-      }
-    }
-    // The cursor is meaningful only when more descriptors may follow; a
-    // page that exhausted the store ends the stream.
-    MembershipPage::new(descriptors, if reached_end { None } else { last_key })
+      super::decode_descriptor(bytes).map(Some)
+    })
+    .await?;
+    MembershipPage::new(paged.items, paged.next)
   }
 
   /// Applies one received page over the running node's metadata store:

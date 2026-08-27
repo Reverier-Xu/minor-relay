@@ -37,6 +37,7 @@ mod membership;
 mod node;
 mod operation;
 mod packet;
+mod paging;
 mod protocol;
 mod provider;
 mod resource;
