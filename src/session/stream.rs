@@ -52,10 +52,22 @@ const INCOMING_STREAM_CHUNKS: usize = 8;
 pub(crate) type SessionTable = Arc<Mutex<BTreeMap<NodeId, SessionEntry>>>;
 
 /// One pending outbound admission: a synchronous waiter, or a forwarding
-/// hop whose acknowledgement must be relayed upstream (T-G06-03).
+/// hop whose acknowledgement must be relayed upstream (T-G06-03). The
+/// map holding these is bounded per session by
+/// [`SessionPolicy::pending_admissions`]: a peer that accepts opens
+/// without acknowledging them cannot grow origin memory without limit.
 pub(crate) enum PendingAck {
-  Wait(oneshot::Sender<AckOutcome>),
-  Relay { upstream: BoundedSender },
+  Wait {
+    notify: oneshot::Sender<AckOutcome>,
+    /// Host wall-clock seconds at insertion; the liveness policy lets the
+    /// idle deadline close a session whose oldest waiting admission has
+    /// been outstanding for a full idle deadline, so a silent peer cannot
+    /// hold a session open forever through the owned-work exemption.
+    queued_at: u64,
+  },
+  Relay {
+    upstream: BoundedSender,
+  },
 }
 
 pub(crate) type PendingAcks = Arc<Mutex<HashMap<TraceId, PendingAck>>>;
@@ -77,10 +89,22 @@ pub(crate) type RouteTable = Arc<Mutex<BTreeMap<TraceId, RouteRecord>>>;
 pub(crate) struct SessionPolicy {
   pub(crate) queue_messages: usize,
   pub(crate) queue_bytes: usize,
+  /// Concurrent outbound admissions awaiting their peer's ack per
+  /// session (the pending-acknowledgement map). An internal protection
+  /// bound (like the trace persistence semaphore), not a caller knob: it
+  /// caps origin-side memory against a peer that accepts opens without
+  /// acknowledging them. The inbound admitted-stream table instead shares
+  /// the caller-selected `queue_messages` budget (see `admit_open`).
+  pub(crate) pending_admissions: usize,
   pub(crate) idle_timeout: Duration,
   pub(crate) keepalive_interval: Duration,
   pub(crate) keepalive_timeout: Duration,
 }
+
+/// The fixed per-session bound on concurrent admissions awaiting their
+/// peer (T-G06 review): beyond it, new opens fail closed with typed
+/// `Overloaded` backpressure instead of growing memory.
+pub(crate) const MAX_PENDING_ADMISSIONS: usize = 256;
 
 impl SessionPolicy {
   pub(crate) fn new(
@@ -90,6 +114,7 @@ impl SessionPolicy {
     Self {
       queue_messages,
       queue_bytes,
+      pending_admissions: MAX_PENDING_ADMISSIONS,
       idle_timeout,
       keepalive_interval,
       keepalive_timeout,
@@ -245,6 +270,35 @@ pub(crate) struct BoundedSender {
 }
 
 impl BoundedSender {
+  /// Best-effort admission-status relay (single construction site): the
+  /// encoded ack is enqueued when the bounded queue has room; a saturated
+  /// queue drops the status and the upstream liveness policy bounds the
+  /// wait regardless.
+  pub(crate) fn try_send_status(&self, trace_id: &TraceId, status: crate::packet::wire::AckStatus) {
+    if let Ok(body) = wire::encode_ack(&crate::packet::wire::AckFrame {
+      trace_id: trace_id.clone(),
+      status,
+      admitted_at_millis: 0,
+    }) {
+      self.try_send(SessionFrame::new(PacketKind::Ack, body));
+    }
+  }
+
+  /// Awaiting variant of [`Self::try_send_status`] used when tearing a
+  /// session down: the drained queue has room and the interruption status
+  /// must reach the upstream hop before the connection closes.
+  pub(crate) async fn send_status(
+    &self, trace_id: &TraceId, status: crate::packet::wire::AckStatus,
+  ) {
+    if let Ok(body) = wire::encode_ack(&crate::packet::wire::AckFrame {
+      trace_id: trace_id.clone(),
+      status,
+      admitted_at_millis: 0,
+    }) {
+      let _ = self.send(SessionFrame::new(PacketKind::Ack, body)).await;
+    }
+  }
+
   /// The non-blocking variant used for best-effort control frames (relay
   /// acknowledgements): saturation drops the frame instead of awaiting.
   pub(crate) fn try_send(&self, frame: SessionFrame) {
@@ -359,6 +413,11 @@ impl BoundedReceiver {
 pub(crate) struct SessionEntry {
   pub(super) frames: BoundedSender,
   pub(super) pending_acks: PendingAcks,
+  /// Per-session concurrent admission bound from the session policy,
+  /// carried here so the outbound pump (which runs without the session
+  /// context) can enforce typed backpressure.
+  pub(super) pending_admissions: usize,
+  pub(super) clock: Arc<dyn crate::storage::receipt::WallClock>,
   alive: Arc<AtomicBool>,
   direction: DialDirection,
   retire: watch::Sender<()>,
@@ -405,6 +464,8 @@ pub(crate) async fn run_session(
   let entry = SessionEntry {
     frames: frames.clone(),
     pending_acks: Arc::clone(&pending_acks),
+    pending_admissions: context.policy.pending_admissions,
+    clock: context.clock.clone(),
     alive: Arc::clone(&alive),
     direction,
     retire: retire_tx,
@@ -524,7 +585,7 @@ pub(crate) async fn run_session(
     let mut relays = Vec::new();
     for (trace_id, entry) in pending.drain() {
       match entry {
-        PendingAck::Wait(notify) => {
+        PendingAck::Wait { notify, .. } => {
           let _ = notify.send(Err(ErrorKind::StreamInterrupted));
         }
         PendingAck::Relay { upstream } => relays.push((trace_id, upstream)),
@@ -538,18 +599,9 @@ pub(crate) async fn run_session(
     Vec::new()
   };
   for (trace_id, upstream) in relays {
-    if let Ok(body) = wire::encode_ack(&crate::packet::wire::AckFrame {
-      trace_id,
-      status: crate::packet::wire::AckStatus::Failed,
-      admitted_at_millis: 0,
-    }) {
-      let _ = upstream
-        .send(SessionFrame {
-          kind: PacketKind::Ack,
-          body,
-        })
-        .await;
-    }
+    upstream
+      .send_status(&trace_id, crate::packet::wire::AckStatus::Failed)
+      .await;
   }
   forward::close_for_peer(&context.forwarding, &peer).await;
 }
@@ -610,12 +662,37 @@ async fn liveness_observer(
     tokio::time::sleep(tick).await;
     let now = clock_seconds(clock.as_ref());
     let last = last_activity.load(Ordering::Relaxed);
-    let has_work = pending_acks
+    // Owned in-flight work holds the session open, but the hold-off is
+    // itself deadline-bounded: once the oldest waiting admission has been
+    // outstanding for a full idle deadline, a silent peer no longer
+    // exempts the session from the idle close (which then fails every
+    // pending admission explicitly with StreamInterrupted).
+    let holds_session = pending_acks
       .lock()
-      .map(|pending| !pending.is_empty())
+      .map(|pending| {
+        if pending.is_empty() {
+          return false;
+        }
+        let oldest_wait = pending
+          .values()
+          .filter_map(|entry| match entry {
+            PendingAck::Wait { queued_at, .. } => Some(*queued_at),
+            PendingAck::Relay { .. } => None,
+          })
+          .min();
+        match oldest_wait {
+          Some(oldest) => now.saturating_sub(oldest) < idle_timeout.as_secs(),
+          // Pure forwarding hops are bounded transitively by the liveness
+          // policies of the sessions on both ends of the relay.
+          None => true,
+        }
+      })
       .unwrap_or(false);
-    // Idle close only when no owned in-flight work remains.
-    if !idle_timeout.is_zero() && !has_work && now.saturating_sub(last) >= idle_timeout.as_secs() {
+    // Idle close only when no owned in-flight work remains (or it went stale).
+    if !idle_timeout.is_zero()
+      && !holds_session
+      && now.saturating_sub(last) >= idle_timeout.as_secs()
+    {
       return;
     }
     if !keepalive_interval.is_zero()
@@ -647,7 +724,7 @@ async fn liveness_observer(
 pub(crate) fn retire_session(table: &SessionTable, peer: &NodeId) -> Result<()> {
   let entry = table
     .lock()
-    .map_err(|_| crate::Error::internal("session table"))?
+    .map_err(crate::Error::session_table)?
     .remove(peer);
   if let Some(entry) = entry {
     retire(&entry);
@@ -660,20 +737,14 @@ fn retire(entry: &SessionEntry) {
   if let Ok(mut pending) = entry.pending_acks.lock() {
     for (trace_id, ack) in pending.drain() {
       match ack {
-        PendingAck::Wait(notify) => {
+        PendingAck::Wait { notify, .. } => {
           let _ = notify.send(Err(ErrorKind::StreamInterrupted));
         }
         PendingAck::Relay { upstream } => {
           // Best-effort relay of the interruption; a saturated queue
           // cannot be repaired here and the upstream liveness policy
           // bounds the wait regardless.
-          if let Ok(body) = wire::encode_ack(&crate::packet::wire::AckFrame {
-            trace_id,
-            status: crate::packet::wire::AckStatus::Failed,
-            admitted_at_millis: 0,
-          }) {
-            upstream.try_send(SessionFrame::new(PacketKind::Ack, body));
-          }
+          upstream.try_send_status(&trace_id, crate::packet::wire::AckStatus::Failed);
         }
       }
     }
@@ -930,7 +1001,11 @@ async fn admit_open(
         // Saturation prioritises conflicts over genuinely new streams:
         // identical duplicates were already answered above, conflicting
         // ones failed closed above, and only a new stream now receives
-        // the typed backpressure (SC-G06-P0-15).
+        // the typed backpressure (SC-G06-P0-15). The inbound admitted
+        // stream table deliberately shares the caller-selected session
+        // queue message budget: every admitted stream occupies queue
+        // capacity, so one knob bounds both (T-G06 review: documented,
+        // no longer silent).
         if incoming.len() >= context.policy.queue_messages {
           break 'status AckStatus::Overloaded;
         }
@@ -1040,7 +1115,7 @@ fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks) {
     return;
   };
   match entry {
-    PendingAck::Wait(notify) => {
+    PendingAck::Wait { notify, .. } => {
       // The single AckStatus→kind mapping lives on the wire type; `Admitted`
       // carries the admission time and every rejection its typed kind.
       let outcome = match ack.status.to_kind() {
@@ -1114,14 +1189,34 @@ pub(crate) async fn run_outbound(
     return;
   }
   {
-    let registered = entry
-      .pending_acks
-      .lock()
-      .map(|mut pending| pending.insert(trace_id.clone(), PendingAck::Wait(ack_tx)));
-    if registered.is_err() {
-      request.reject(ErrorKind::Internal);
-      terminal!(ErrorKind::Internal);
-      return;
+    let queued_at = clock_seconds(entry.clock.as_ref());
+    let registered = entry.pending_acks.lock().map(|mut pending| {
+      // Typed backpressure instead of unbounded growth: beyond the
+      // per-session admission bound the open fails closed (T-G06 review).
+      if pending.len() >= entry.pending_admissions {
+        return Err(());
+      }
+      pending.insert(
+        trace_id.clone(),
+        PendingAck::Wait {
+          notify: ack_tx,
+          queued_at,
+        },
+      );
+      Ok(())
+    });
+    match registered {
+      Ok(Ok(())) => {}
+      Ok(Err(())) => {
+        request.reject(ErrorKind::Overloaded);
+        terminal!(ErrorKind::Overloaded);
+        return;
+      }
+      Err(_) => {
+        request.reject(ErrorKind::Internal);
+        terminal!(ErrorKind::Internal);
+        return;
+      }
     }
   }
 
@@ -1510,7 +1605,7 @@ mod liveness_tests {
     time::{Duration, UNIX_EPOCH},
   };
 
-  use tokio::sync::watch;
+  use tokio::sync::{oneshot, watch};
 
   use super::{PendingAcks, liveness_observer};
   use crate::storage::contract::helpers::ManualClock;
@@ -1657,6 +1752,139 @@ mod liveness_tests {
     clock.set(UNIX_EPOCH + Duration::from_secs(1_015));
     tokio::time::advance(Duration::from_secs(2)).await;
     handle.await.unwrap();
+  }
+
+  /// T-G06 review follow-up: the owned-work hold-off is itself
+  /// deadline-bounded — a waiting admission older than the idle deadline
+  /// no longer exempts the session, so a peer that never acknowledges
+  /// cannot hold it open forever.
+  #[tokio::test(start_paused = true)]
+  async fn stale_owned_work_no_longer_blocks_the_idle_close() {
+    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(100)));
+    let last_activity = Arc::new(AtomicU64::new(100));
+    let pending = no_pending();
+    {
+      let (notify, _wait) = oneshot::channel();
+      pending.lock().unwrap().insert(
+        crate::TraceId::parse("trace_000000000000000000001").unwrap(),
+        super::PendingAck::Wait {
+          notify,
+          queued_at: 100,
+        },
+      );
+    }
+    let (ping_tx, _) = watch::channel(());
+    let handle = tokio::spawn({
+      let last_activity = Arc::clone(&last_activity);
+      let pending = Arc::clone(&pending);
+      let clock = clock.clone();
+      let ping_tx = ping_tx.clone();
+      async move {
+        liveness_observer(
+          &last_activity,
+          &pending,
+          clock,
+          Duration::from_secs(10),
+          Duration::ZERO,
+          Duration::ZERO,
+          &ping_tx,
+        )
+        .await
+      }
+    });
+
+    // Fresh owned work still holds the session open.
+    clock.set(UNIX_EPOCH + Duration::from_secs(109));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(!handle.is_finished());
+
+    // Once the oldest waiting admission is a full idle deadline old, the
+    // hold-off expires and the idle close proceeds.
+    clock.set(UNIX_EPOCH + Duration::from_secs(110));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    handle.await.unwrap();
+  }
+}
+
+#[cfg(test)]
+mod pending_admission_tests {
+  use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex, atomic::AtomicBool},
+    time::{Duration, UNIX_EPOCH},
+  };
+
+  use tokio::sync::{mpsc, oneshot, watch};
+
+  use super::{
+    BoundedSender, DialDirection, PendingAck, PendingAcks, QueueState, RouteTable, SessionEntry,
+    run_outbound,
+  };
+  use crate::{
+    ErrorKind, NodeId, PacketMetadata, PacketTarget, ProtocolTag, TraceId, packet::StaticBody,
+    storage::contract::helpers::ManualClock,
+  };
+
+  fn node(value: u8) -> NodeId {
+    NodeId::parse(&format!("node_{value:021}")).unwrap()
+  }
+
+  /// A session entry whose pending map is pre-filled with relayed
+  /// admissions, ready for one more outbound pump.
+  fn saturated_entry(pending_admissions: usize) -> SessionEntry {
+    let (frames_tx, _frames_rx) = mpsc::channel(8);
+    let frames = BoundedSender {
+      inner: frames_tx,
+      state: Arc::new(QueueState::default()),
+      max_count: 8,
+      max_bytes: 1 << 20,
+    };
+    let pending_acks: PendingAcks = Arc::new(Mutex::new(HashMap::new()));
+    for seed in 0..pending_admissions {
+      let trace_id = TraceId::parse(&format!("trace_{seed:021}")).unwrap();
+      pending_acks.lock().unwrap().insert(
+        trace_id,
+        PendingAck::Relay {
+          upstream: frames.clone(),
+        },
+      );
+    }
+    let (retire, _) = watch::channel(());
+    SessionEntry {
+      frames,
+      pending_acks,
+      pending_admissions,
+      clock: Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(1))),
+      alive: Arc::new(AtomicBool::new(true)),
+      direction: DialDirection::Outgoing,
+      retire,
+    }
+  }
+
+  /// T-G06 review: a session at its concurrent-admission bound rejects a
+  /// new outbound open with typed `Overloaded` backpressure instead of
+  /// growing the pending map without limit.
+  #[tokio::test]
+  async fn admission_bound_rejects_new_opens_with_overloaded() {
+    let entry = saturated_entry(4);
+    let (ack_tx, ack_rx) = oneshot::channel();
+    let request = crate::packet::OutboundRequest {
+      trace_id: TraceId::parse("trace_000000000000000000099").unwrap(),
+      target: PacketTarget::Exact(node(2)),
+      load_balancer: None,
+      max_hops: 1,
+      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test").unwrap(),
+      metadata: PacketMetadata::new(),
+      body: Box::new(StaticBody::new(Arc::from(&b"x"[..]))),
+      internal: true,
+      ack_notify: ack_tx,
+    };
+    let routes: RouteTable = Arc::new(Mutex::new(BTreeMap::new()));
+    run_outbound(entry, node(1), request, routes, false, None).await;
+    assert_eq!(
+      ack_rx.await.ok().and_then(|outcome| outcome.err()),
+      Some(ErrorKind::Overloaded)
+    );
   }
 }
 

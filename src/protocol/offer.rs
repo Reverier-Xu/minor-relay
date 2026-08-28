@@ -44,6 +44,36 @@ impl Role {
   }
 }
 
+/// A sorted collection holds no adjacent duplicates (single source for
+/// the canonical-form duplicate rule).
+fn ensure_unique_sorted<T>(
+  sorted: &[T], key: impl Fn(&T) -> &str, context: &'static str,
+) -> Result<()> {
+  if sorted.windows(2).any(|pair| key(&pair[0]) == key(&pair[1])) {
+    return Err(Error::invalid_input(context));
+  }
+  Ok(())
+}
+
+/// Validates strict ascending wire ordering while transforming entries:
+/// duplicates and out-of-order entries fail closed (canonical form).
+fn map_ordered<'a, E: 'a, T>(
+  entries: impl IntoIterator<Item = &'a E>, key: impl Fn(&'a E) -> &'a str, context: &'static str,
+  mut map: impl FnMut(&'a E) -> Result<T>,
+) -> Result<Vec<T>> {
+  let mut out = Vec::new();
+  let mut previous: Option<&'a str> = None;
+  for entry in entries {
+    let current = key(entry);
+    if previous >= Some(current) {
+      return Err(Error::invalid_input(context));
+    }
+    previous = Some(current);
+    out.push(map(entry)?);
+  }
+  Ok(out)
+}
+
 /// One canonical, validated feature offer from a single endpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FeatureOffer {
@@ -72,17 +102,23 @@ impl FeatureOffer {
     supported.sort_by(|first, second| first.0.as_str().cmp(second.0.as_str()));
     required.sort_by(|first, second| first.as_str().cmp(second.as_str()));
     limits.sort_by(|first, second| first.0.as_str().cmp(second.0.as_str()));
-    if supported.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-      return Err(Error::invalid_input("feature offer supported duplicate"));
-    }
-    if required.windows(2).any(|pair| pair[0] == pair[1]) {
-      return Err(Error::invalid_input("feature offer required duplicate"));
-    }
-    if limits.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-      return Err(Error::invalid_input("feature offer limits duplicate"));
-    }
+    ensure_unique_sorted(
+      &supported,
+      |(tag, _)| tag.as_str(),
+      "feature offer supported duplicate",
+    )?;
+    ensure_unique_sorted(
+      &required,
+      |tag| tag.as_str(),
+      "feature offer required duplicate",
+    )?;
+    ensure_unique_sorted(
+      &limits,
+      |(tag, _)| tag.as_str(),
+      "feature offer limits duplicate",
+    )?;
     for (tag, _) in &limits {
-      if tag.category() != "limits" {
+      if tag.category() != crate::protocol::tag::CATEGORY_LIMITS {
         return Err(Error::invalid_input("feature offer limit category"));
       }
     }
@@ -180,41 +216,36 @@ impl FeatureOffer {
       return Err(Error::invalid_input("feature offer limits capacity"));
     }
 
-    let mut supported = Vec::with_capacity(wire.supported.len());
-    let mut previous: Option<&str> = None;
-    for entry in &wire.supported {
-      if previous >= Some(entry.label.as_str()) {
-        return Err(Error::invalid_input("feature offer supported ordering"));
-      }
-      previous = Some(entry.label.as_str());
-      let digest = <[u8; 32]>::try_from(entry.digest.as_slice())
-        .map_err(|_| Error::invalid_input("feature offer digest"))?;
-      supported.push((FeatureTag::parse(&entry.label)?, Digest::from_bytes(digest)));
-    }
+    let supported = map_ordered(
+      &wire.supported,
+      |entry| entry.label.as_str(),
+      "feature offer supported ordering",
+      |entry| {
+        let digest = <[u8; 32]>::try_from(entry.digest.as_slice())
+          .map_err(|_| Error::invalid_input("feature offer digest"))?;
+        Ok((FeatureTag::parse(&entry.label)?, Digest::from_bytes(digest)))
+      },
+    )?;
 
-    let mut required = Vec::with_capacity(wire.required.len());
-    let mut previous: Option<&str> = None;
-    for label in &wire.required {
-      if previous >= Some(label.as_str()) {
-        return Err(Error::invalid_input("feature offer required ordering"));
-      }
-      previous = Some(label.as_str());
-      required.push(FeatureTag::parse(label)?);
-    }
+    let required = map_ordered(
+      &wire.required,
+      |label| label.as_str(),
+      "feature offer required ordering",
+      |label| FeatureTag::parse(label),
+    )?;
 
-    let mut limits = Vec::with_capacity(wire.limits.len());
-    let mut previous: Option<&str> = None;
-    for entry in &wire.limits {
-      if previous >= Some(entry.tag.as_str()) {
-        return Err(Error::invalid_input("feature offer limits ordering"));
-      }
-      previous = Some(entry.tag.as_str());
-      let tag = QualifiedTag::parse(&entry.tag)?;
-      if tag.category() != "limits" {
-        return Err(Error::invalid_input("feature offer limit category"));
-      }
-      limits.push((tag, entry.value));
-    }
+    let limits = map_ordered(
+      &wire.limits,
+      |entry| entry.tag.as_str(),
+      "feature offer limits ordering",
+      |entry| {
+        let tag = QualifiedTag::parse(&entry.tag)?;
+        if tag.category() != crate::protocol::tag::CATEGORY_LIMITS {
+          return Err(Error::invalid_input("feature offer limit category"));
+        }
+        Ok((tag, entry.value))
+      },
+    )?;
 
     for tag in &required {
       if !supported.iter().any(|(candidate, _)| candidate == tag) {

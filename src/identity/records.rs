@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use minicbor::{Decode, Encode};
-use sha2::{Digest as ShaDigest, Sha256};
 
-use super::signature::{ADMISSION_GRANT_V1_DOMAIN, CLUSTER_GENESIS_V1_DOMAIN, verify_strict};
+use super::signature::{
+  ADMISSION_GRANT_V1_DOMAIN, CLUSTER_GENESIS_V1_DOMAIN, body_digest, verify_strict,
+};
 use crate::{
   ClusterId, Digest, Error, KeyHandle, KeyOperationId, NodeId, OperationId, PublicKey,
   QualifiedTag, Result, Signature, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
@@ -64,6 +65,18 @@ impl JournalPurpose {
 const ED25519_ALGORITHM: &str = "relay.woooo.tech/crypto/ed25519";
 const MAX_PURPOSE_LEN: usize = 128;
 
+/// The intent-purpose grammar (single source): nonempty, bounded, and
+/// printable ASCII, with the caller's context in the typed error.
+fn validate_purpose(purpose: &str, context: &'static str) -> Result<()> {
+  if purpose.is_empty()
+    || purpose.len() > MAX_PURPOSE_LEN
+    || !purpose.bytes().all(|byte| (0x20..=0x7E).contains(&byte))
+  {
+    return Err(Error::invalid_input(context));
+  }
+  Ok(())
+}
+
 const LOCAL_IDENTITY_SCHEMA: &str = "relay.woooo.tech/schemas/local-identity-v1";
 const KEY_CREATION_INTENT_SCHEMA: &str = "relay.woooo.tech/schemas/key-creation-intent-v1";
 const IDENTITY_BINDING_SCHEMA: &str = "relay.woooo.tech/schemas/identity-binding-v1";
@@ -86,10 +99,6 @@ const KEY_DELETED_NAMESPACE: &str = "relay.woooo.tech/metadata/key-deleted-v1";
 
 const SINGLETON_KEY: &[u8] = b"self";
 const RECORD_LIMITS: CborLimits = CborLimits::new(1, 16, 1_024);
-
-fn record_digest(bytes: &[u8]) -> Digest {
-  Digest::from_bytes(Sha256::digest(bytes).into())
-}
 
 fn decode_wire<'bytes, T>(bytes: &'bytes [u8]) -> Result<T>
 where
@@ -124,7 +133,7 @@ fn fixed_bytes<const LENGTH: usize>(bytes: &[u8], context: &'static str) -> Resu
 
 fn metadata_namespace(tag: &str) -> Result<StoreNamespace> {
   let tag = QualifiedTag::parse(tag)?;
-  if tag.category() != "metadata" {
+  if tag.category() != crate::protocol::tag::CATEGORY_METADATA {
     return Err(Error::invalid_input("identity record namespace"));
   }
   StoreNamespace::new(tag)
@@ -400,12 +409,7 @@ impl KeyCreationIntentV1 {
     operation: KeyOperationId, intended_node: NodeId, purpose: String, transaction: TransactionId,
     base_revision: StoreRevision,
   ) -> Result<Self> {
-    if purpose.is_empty()
-      || purpose.len() > MAX_PURPOSE_LEN
-      || !purpose.bytes().all(|byte| (0x20..=0x7E).contains(&byte))
-    {
-      return Err(Error::invalid_input("key creation intent purpose"));
-    }
+    validate_purpose(&purpose, "key creation intent purpose")?;
     Ok(Self {
       operation,
       intended_node,
@@ -523,12 +527,7 @@ impl KeyDeletionIntentV1 {
     operation: KeyOperationId, handle: KeyHandle, purpose: String, transaction: TransactionId,
     base_revision: StoreRevision,
   ) -> Result<Self> {
-    if purpose.is_empty()
-      || purpose.len() > MAX_PURPOSE_LEN
-      || !purpose.bytes().all(|byte| (0x20..=0x7E).contains(&byte))
-    {
-      return Err(Error::invalid_input("key deletion intent purpose"));
-    }
+    validate_purpose(&purpose, "key deletion intent purpose")?;
     Ok(Self {
       operation,
       handle,
@@ -836,7 +835,7 @@ impl ClusterGenesisV1 {
   }
 
   pub(crate) fn digest(&self) -> Result<Digest> {
-    Ok(record_digest(&self.encode()?))
+    Ok(body_digest(&self.encode()?))
   }
 
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
@@ -1476,7 +1475,7 @@ mod tests {
 
     assert_eq!(pointer.cluster(), genesis.cluster());
     assert_eq!(pointer.genesis_digest(), &genesis.digest().unwrap());
-    let expected = record_digest(&genesis.encode().unwrap());
+    let expected = body_digest(&genesis.encode().unwrap());
     assert_eq!(pointer.genesis_digest(), &expected);
   }
 

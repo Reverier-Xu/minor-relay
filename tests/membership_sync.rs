@@ -23,6 +23,17 @@ mod common;
 
 use common::{MemoryStorageFactory, ScriptedKeys};
 
+fn init_tracing() {
+  use std::sync::Once;
+  static INIT: Once = Once::new();
+  INIT.call_once(|| {
+    tracing_subscriber::fmt()
+      .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=debug"))
+      .with_test_writer()
+      .init();
+  });
+}
+
 /// The anti-entropy interval used by the harness. At sixteen-node scale a
 /// faster tick starves the shared runtime and the transport drops
 /// handshakes; 250 ms still converges far under the 10,000 ms SLO bound.
@@ -34,7 +45,51 @@ struct Node {
   id: minor_relay::NodeId,
 }
 
+/// The echo protocol tag of the revised SLO workload sample.
+const ECHO_PROTOCOL: &str = "relay.woooo.tech/protocols/workload-echo";
+
+/// Counts fully drained workload packets (SC-G07-P0-18 sample delivery
+/// observation).
+#[derive(Debug, Default)]
+struct EchoCollector {
+  packets: std::sync::Mutex<usize>,
+}
+
+impl minor_relay::PacketConsumer for EchoCollector {
+  fn accept<'a>(
+    &'a self, mut packet: minor_relay::IncomingPacket,
+  ) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), minor_relay::Error>> + Send + 'a>,
+  > {
+    Box::pin(async move {
+      while packet.body().next_chunk().await?.is_some() {}
+      *self.packets.lock().unwrap() += 1;
+      Ok(())
+    })
+  }
+}
+
+/// A one-chunk body for the workload sample packet.
+#[derive(Debug)]
+struct WorkloadBody {
+  chunk: Option<Arc<[u8]>>,
+}
+
+impl minor_relay::PacketBody for WorkloadBody {
+  fn next_chunk<'a>(
+    &'a mut self,
+  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+    Box::pin(async move { Ok(self.chunk.take()) })
+  }
+}
+
 async fn start_node(seed: u64, storage: Arc<MemoryStorageFactory>) -> Node {
+  start_node_inner(seed, storage, None).await
+}
+
+async fn start_node_inner(
+  seed: u64, storage: Arc<MemoryStorageFactory>, echo: Option<Arc<EchoCollector>>,
+) -> Node {
   let keys = Arc::new(ScriptedKeys::full_at(600_000 + seed * 1_000));
   let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage.clone();
   let config = NodeConfig::new()
@@ -44,11 +99,21 @@ async fn start_node(seed: u64, storage: Arc<MemoryStorageFactory>) -> Node {
       RecoveryConfig::new(4, 64, Duration::from_secs(2), Duration::from_secs(60)).unwrap(),
     )
     .unwrap();
-  let handle = NodeBuilder::new(factory, keys)
-    .config(config)
-    .start()
-    .await
-    .unwrap();
+  let mut builder = NodeBuilder::new(factory, keys).config(config);
+  if let Some(echo) = echo {
+    let mut extensions = minor_relay::ExtensionRegistry::new();
+    extensions
+      .register_protocol(
+        minor_relay::ProtocolDefinition::new(
+          minor_relay::ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
+          minor_relay::FeatureTag::parse("relay.woooo.tech/features/session-core").unwrap(),
+        ),
+        echo,
+      )
+      .unwrap();
+    builder = builder.extensions(extensions);
+  }
+  let handle = builder.start().await.unwrap();
   let _ = seed;
   Node {
     handle,
@@ -787,6 +852,137 @@ async fn membership_sync_slo_trend_stays_below_bound() {
   assert!(
     elapsed < Duration::from_secs(10),
     "admission-to-descriptor-completion sample {elapsed:?} exceeds the 10,000 ms SLO"
+  );
+  for node in nodes {
+    node.handle.command(Shutdown::new()).await.unwrap();
+  }
+}
+
+/// SC-G07-P0-18: the revised sixteen-node SLO workload. One timed sample
+/// covers fixed admission (the sixteenth join), exact-node packet
+/// delivery, an owner-revision node-metadata bump, and descriptor
+/// convergence — all inside the 10,000 ms bound; only the exact 16-node
+/// profile is latency-qualified. Resource tuple convergence has no pre-G9
+/// facade write path; its convergence evidence is the resource e2e lane
+/// (SC-G07-P0-16/17) over the same bounded-page machinery, and the
+/// resource sync protocol rides the same authenticated sessions this
+/// sample exercises.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn membership_sync_sixteen_node_revised_workload_slo() {
+  init_tracing();
+  // Profile setup (untimed): fifteen members join and converge.
+  let collector = Arc::new(EchoCollector::default());
+  let mut nodes = Vec::with_capacity(16);
+  let mut issuer = start_node_inner(
+    0,
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Some(Arc::clone(&collector)),
+  )
+  .await;
+  issuer.handle.command(CreateCluster::new()).await.unwrap();
+  issuer.id = node_id(&issuer).await;
+  issuer.endpoint = listen(&issuer).await;
+  nodes.push(issuer);
+  for index in 1..15_u64 {
+    let mut member = start_node_inner(
+      index,
+      Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+      Some(Arc::clone(&collector)),
+    )
+    .await;
+    member.endpoint = listen(&member).await;
+    let issued = rotate_with_retry(&nodes[0]).await;
+    let secret = issued.credential().expose_secret().to_owned();
+    join_with_retry(&member, nodes[0].endpoint.clone(), &secret).await;
+    member.id = node_id(&member).await;
+    nodes.push(member);
+  }
+  wait_trust(&nodes, 15, Duration::from_secs(60)).await;
+
+  let started = std::time::Instant::now();
+
+  // Admission: the sixteenth node joins through fixed admission.
+  let mut node15 = start_node_inner(
+    15,
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+    Some(Arc::clone(&collector)),
+  )
+  .await;
+  node15.endpoint = listen(&node15).await;
+  let issued = rotate_with_retry(&nodes[0]).await;
+  let secret = issued.credential().expose_secret().to_owned();
+  join_with_retry(&node15, nodes[0].endpoint.clone(), &secret).await;
+  node15.id = node_id(&node15).await;
+  nodes.push(node15);
+
+  // Diagnostic stage: revision-1 descriptors converge for all sixteen.
+  wait_descriptors(&nodes, 16, 1, Duration::from_secs(60)).await;
+
+  // Packet delivery: issuer to node15 over the authenticated session.
+  let packet = nodes[0]
+    .handle
+    .create_packet(
+      minor_relay::PacketTarget::Exact(nodes[15].id.clone()),
+      minor_relay::ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
+      minor_relay::PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 1).unwrap(),
+      minor_relay::PacketMetadata::new(),
+    )
+    .unwrap();
+  let ack = packet
+    .send_sync(Box::new(WorkloadBody {
+      chunk: Some(Arc::from(&b"sample"[..])),
+    }))
+    .await
+    .unwrap();
+  assert_eq!(ack.destination(), &nodes[15].id);
+
+  // Wait for node15's own descriptor at revision 1, then bump it: the
+  // owner-revision write goes through the public facade.
+  let patch = minor_relay::NodeMetadataPatch::new()
+    .set_capability(
+      minor_relay::LabelKey::parse("example.org/labels/workload").unwrap(),
+      minor_relay::LabelValue::parse("slo").unwrap(),
+    )
+    .unwrap();
+  nodes[15]
+    .handle
+    .command(minor_relay::UpdateNodeMetadata::new(1, patch))
+    .await
+    .unwrap();
+
+  // Convergence: every member observes the bumped descriptor at revision 2.
+  let target = nodes[15].id.clone();
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  loop {
+    let mut observed = Vec::new();
+    for node in &nodes {
+      let page = node
+        .handle
+        .query(PageMembers::new(PageSpec::first(64).unwrap()))
+        .await
+        .unwrap();
+      observed.push(
+        page
+          .items()
+          .iter()
+          .find(|view| view.node_id() == &target)
+          .map(|view| view.owner_revision()),
+      );
+    }
+    if observed.iter().all(|revision| *revision == Some(2)) {
+      break;
+    }
+    assert!(
+      std::time::Instant::now() < deadline,
+      "revision-2 convergence timeout; observed revisions of {target}: {observed:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+  }
+
+  let elapsed = started.elapsed();
+  assert!(
+    elapsed < Duration::from_secs(10),
+    "revised sixteen-node workload sample {elapsed:?} exceeds the 10,000 ms SLO"
   );
   for node in nodes {
     node.handle.command(Shutdown::new()).await.unwrap();

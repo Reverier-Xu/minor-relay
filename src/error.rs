@@ -164,6 +164,18 @@ impl Error {
     }
   }
 
+  /// The poisoned-lock mapper for the shared session table (one named
+  /// construction site per shared table, so lock-poison diagnostics stay
+  /// uniform and never panic).
+  pub(crate) fn session_table<T>(_: T) -> Self {
+    Self::internal("session table")
+  }
+
+  /// The poisoned-lock mapper for the shared extension registry.
+  pub(crate) fn extension_registry<T>(_: T) -> Self {
+    Self::internal("extension registry")
+  }
+
   pub(crate) const fn resource_exhausted(context: &'static str) -> Self {
     Self {
       kind: ErrorKind::ResourceExhausted,

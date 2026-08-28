@@ -118,6 +118,24 @@ pub(crate) async fn reconcile_recovered_journal(store: &MetadataStore) -> Result
   }
 }
 
+/// The shared journal-recovery prologue of every journaled identity
+/// mutation: a recovered pending journal for `purpose` reconciles and
+/// cleans up before classification (returns `true`); otherwise a frozen
+/// store reconciles before any new work (returns `false`). Single source
+/// for the prologue previously copy-pasted across genesis, admission,
+/// adoption, and key deletion.
+pub(crate) async fn recover_journal_prologue(
+  store: &MetadataStore, entropy: &dyn Entropy, purpose: &str, context: &'static str,
+) -> Result<bool> {
+  if store.recover_pending(purpose).await?.is_some() {
+    reconcile_recovered_journal(store).await?;
+    cleanup_pending_exact(store, entropy, purpose, context).await?;
+    return Ok(true);
+  }
+  store.reconcile_if_frozen().await?;
+  Ok(false)
+}
+
 /// Deletes a pending journal record exactly once, tolerating one proven
 /// abort with a fresh transaction ID.
 pub(crate) async fn cleanup_pending_exact(
@@ -277,7 +295,7 @@ async fn resume_identity_creation(
 ) -> Result<LocalIdentityContext> {
   let created = match keys.reconcile_create(intent.operation()).await? {
     KeyCreateState::Present(created) => {
-      verify_created_key(keys, &created).await?;
+      verify_provider_key(keys, created.handle(), created.public_key()).await?;
       created
     }
     KeyCreateState::Absent => create_key_exact(keys, intent.operation()).await?,
@@ -296,7 +314,7 @@ async fn create_key_exact(
 ) -> Result<CreatedKey> {
   match keys.create_ed25519(operation).await? {
     KeyCreateState::Present(created) => {
-      verify_created_key(keys, &created).await?;
+      verify_provider_key(keys, created.handle(), created.public_key()).await?;
       Ok(created)
     }
     KeyCreateState::Absent => Err(Error::not_ready("local identity key create")),
@@ -305,10 +323,6 @@ async fn create_key_exact(
       ProviderErrorContext::KeyCreate,
     )),
   }
-}
-
-async fn verify_created_key(keys: &Arc<dyn KeyProvider>, created: &CreatedKey) -> Result<()> {
-  verify_provider_key(keys, created.handle(), created.public_key()).await
 }
 
 /// Verifies that the provider returns exactly `expected` for `handle`.

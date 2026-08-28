@@ -363,8 +363,15 @@ impl MetadataStore {
     }
 
     let now = self.clock.now();
-    let operations = match anchor {
-      None => vec![
+    // The semantic outcome is decided by the branch, never inferred from
+    // the operation count: anchoring installs the eligibility anchor,
+    // forgetting retires the receipt past its retention deadline.
+    enum CleanupPlan {
+      Anchor(Vec<StoreOperation>),
+      Forget(Vec<StoreOperation>),
+    }
+    let plan = match anchor {
+      None => CleanupPlan::Anchor(vec![
         StoreOperation::Check {
           namespace: namespace.clone(),
           key: head_key,
@@ -376,7 +383,7 @@ impl MetadataStore {
           expected: StoreExpectation::Absent,
           value: StoreValue::new(Arc::from(encode_wall_time(now))),
         },
-      ],
+      ]),
       Some(anchor) => {
         let anchored_at = decode_wall_time(anchor.as_bytes())?;
         let Some(deadline) = anchored_at.checked_add(self.receipt_retention) else {
@@ -385,7 +392,7 @@ impl MetadataStore {
         if now < deadline {
           return Ok(ReceiptCleanupOutcome::Retained);
         }
-        vec![
+        CleanupPlan::Forget(vec![
           StoreOperation::Check {
             namespace: namespace.clone(),
             key: head_key,
@@ -406,10 +413,13 @@ impl MetadataStore {
             transaction: target.transaction().clone(),
             expected_operation_digest: target.operation_digest().clone(),
           },
-        ]
+        ])
       }
     };
-    let anchoring = operations.len() == 2;
+    let (anchoring, operations) = match plan {
+      CleanupPlan::Anchor(operations) => (true, operations),
+      CleanupPlan::Forget(operations) => (false, operations),
+    };
     let prepared =
       prepare_internal_transaction(operation_id, snapshot.revision().clone(), operations)?;
     match self.commit(prepared).await? {

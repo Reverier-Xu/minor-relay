@@ -241,14 +241,6 @@ struct TraceWire {
   updated_at_millis: u64,
 }
 
-fn millis(time: SystemTime) -> u64 {
-  crate::time::to_millis(time)
-}
-
-fn from_millis(value: u64) -> SystemTime {
-  crate::time::from_millis(value)
-}
-
 fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
   let (phase_code, failure) = match &record.phase {
     TracePhase::Failed(kind) => (
@@ -271,7 +263,7 @@ fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
       } else {
         Some(failure)
       },
-      updated_at_millis: millis(record.updated_at),
+      updated_at_millis: crate::time::to_millis(record.updated_at),
     },
     crate::protocol::offer::OFFER_CBOR_LIMITS,
   )
@@ -294,7 +286,7 @@ pub(crate) fn decode_trace_record(bytes: &[u8]) -> Result<TraceRecord> {
     destination: wire.destination.parse()?,
     attempts: wire.attempts,
     phase: TracePhase::from_code(wire.phase, wire.failure)?,
-    updated_at: from_millis(wire.updated_at_millis),
+    updated_at: crate::time::from_millis(wire.updated_at_millis),
   })
 }
 
@@ -318,10 +310,7 @@ pub(crate) async fn put_trace(
   let space = namespace()?;
   let key = key(&record.trace_id);
   let snapshot = store.snapshot().await?;
-  let expected = match snapshot.get(&space, &key).await? {
-    Some(current) => crate::StoreExpectation::Exact(current.digest().clone()),
-    None => crate::StoreExpectation::Absent,
-  };
+  let expected = crate::provider::snapshot_expectation(snapshot.as_ref(), &space, &key).await?;
   let transaction = store.prepare_transaction(
     crate::TransactionId::generate(entropy)?,
     snapshot.revision().clone(),

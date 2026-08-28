@@ -48,11 +48,11 @@ use crate::{
       responder_session_message,
     },
     offer::{FeatureOffer, OFFER_CBOR_LIMITS, Role},
-    wire::{self, BASE_SCHEMA_ID, HandshakeKind},
+    wire::{BASE_SCHEMA_ID, HandshakeKind},
   },
   provider::KeyProvider,
   transport::{
-    connection::{Connection, FrameRules, Message},
+    connection::{Connection, Message},
     ws::JoinHint,
   },
   view::AdmissionView,
@@ -99,19 +99,6 @@ fn established(handshake: &Handshake) -> Result<EstablishedSession> {
   Ok(EstablishedSession {
     peer: peer.clone(),
     selected_features,
-  })
-}
-
-/// The frame rules for the authentication phase: no flags, the ADR-0002
-/// handshake control body limit, and the closed base-schema kind registry.
-pub(crate) fn handshake_frame_rules() -> Result<FrameRules> {
-  let limit = u32::try_from(OFFER_CBOR_LIMITS.max_body_len())
-    .map_err(|_| Error::invalid_input("handshake frame limit"))?;
-  Ok(FrameRules {
-    allowed_flags: 0,
-    message_limit: limit,
-    receive_limit: limit,
-    is_declared: wire::is_declared,
   })
 }
 

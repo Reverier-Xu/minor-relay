@@ -423,9 +423,11 @@ pub(crate) mod store {
   use super::{
     TRUST_BINDING_NAMESPACE, TRUST_SNAPSHOT_NAMESPACE, TrustBinding, TrustPage, TrustSnapshotV1,
   };
+  #[cfg(test)]
+  use crate::provider::StorageFactory;
   use crate::{
     NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
-    StoreValue, TransactionId, api::Entropy, provider::StorageFactory, storage::MetadataStore,
+    StoreValue, TransactionId, api::Entropy, storage::MetadataStore,
   };
 
   fn snapshot_namespace() -> Result<StoreNamespace> {
@@ -719,7 +721,9 @@ pub(crate) mod store {
   }
 
   /// Persists one verified snapshot as a plain store value over a
-  /// standalone factory handle.
+  /// standalone factory handle (test-only restart harness; the runtime
+  /// path always goes through the `_ctx` variants on the open store).
+  #[cfg(test)]
   pub(crate) async fn persist_snapshot(
     factory: &Arc<dyn StorageFactory>, snapshot: &TrustSnapshotV1,
   ) -> Result<()> {
@@ -728,7 +732,8 @@ pub(crate) mod store {
   }
 
   /// The highest-revision snapshot for one issuer over a standalone
-  /// factory handle.
+  /// factory handle (test-only restart harness).
+  #[cfg(test)]
   pub(crate) async fn latest_snapshot(
     factory: &Arc<dyn StorageFactory>, trusted_issuer: &NodeId,
   ) -> Result<Option<TrustSnapshotV1>> {
@@ -737,7 +742,8 @@ pub(crate) mod store {
   }
 
   /// Persists one verified nonconflicting binding over a standalone
-  /// factory handle.
+  /// factory handle (test-only restart harness).
+  #[cfg(test)]
   pub(crate) async fn persist_binding(
     factory: &Arc<dyn StorageFactory>, node: &NodeId, key: &PublicKey,
   ) -> Result<()> {
@@ -745,7 +751,9 @@ pub(crate) mod store {
     persist_binding_ctx(&store, &crate::api::SystemEntropy, node, key).await
   }
 
-  /// Paged trust observations over a standalone factory handle.
+  /// Paged trust observations over a standalone factory handle (test-only
+  /// restart harness).
+  #[cfg(test)]
   pub(crate) async fn paged_trust(
     factory: &Arc<dyn StorageFactory>, offset: usize, limit: usize,
   ) -> Result<TrustPage> {

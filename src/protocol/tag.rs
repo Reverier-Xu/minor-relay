@@ -6,6 +6,20 @@ const MIN_TAG_LEN: usize = 5;
 pub(crate) const MAX_TAG_LEN: usize = 128;
 const MAX_COMPONENT_LEN: usize = 63;
 
+/// The builtin domain: its `crypto` category is reserved for signature
+/// domains and never available as a qualified tag (ADR-0001), and the
+/// feature registry independently rejects caller definitions under the
+/// whole domain. One constant so tag grammar and the registry cannot
+/// drift apart.
+pub(crate) const BUILTIN_DOMAIN: &str = "relay.woooo.tech";
+
+/// The closed tag categories the crate compares against (single source):
+/// protocol-fixed, so one constant table makes the set auditable and a
+/// typo in any comparison impossible to compile.
+pub(crate) const CATEGORY_CRYPTO: &str = "crypto";
+pub(crate) const CATEGORY_LIMITS: &str = "limits";
+pub(crate) const CATEGORY_METADATA: &str = "metadata";
+
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct QualifiedTag {
   value: String,
@@ -136,7 +150,7 @@ fn validate_tag(value: &str) -> Result<(usize, usize)> {
     || !valid_dns_hostname(domain)
     || !valid_name_component(category)
     || !valid_name_component(name)
-    || (domain == "relay.woooo.tech" && category == "crypto")
+    || (domain == BUILTIN_DOMAIN && category == CATEGORY_CRYPTO)
   {
     return Err(Error::invalid_input("qualified tag"));
   }

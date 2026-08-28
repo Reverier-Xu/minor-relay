@@ -10,15 +10,10 @@
 //! seeded-entropy dry run — as committed or aborted, consistent with the
 //! observed content.
 
-use std::{
-  process::{Command, Stdio},
-  sync::Arc,
-  time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use ed25519_dalek::SigningKey;
 use tempfile::TempDir;
-use wait_timeout::ChildExt as _;
 
 use super::{
   ResourceName, ResourceRecordV1,
@@ -35,7 +30,6 @@ use crate::{
 
 const CRASH_DIR_ENV: &str = "MINOR_RELAY_RESOURCE_CRASH_DIR";
 const CRASH_POINT_ENV: &str = "MINOR_RELAY_RESOURCE_CRASH_POINT";
-const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The child commits under this deterministic entropy so the parent can
 /// reproduce its exact pending-transaction identity.
@@ -51,15 +45,7 @@ const DELETE_ENTROPY_SEED: u8 = 9;
 const LAST_POINT: u8 = 13;
 
 fn requirements() -> StoreRequirements {
-  #[cfg(unix)]
-  {
-    StoreRequirements::metadata()
-  }
-  #[cfg(not(unix))]
-  {
-    StoreRequirements::metadata()
-      .with_required_durability(crate::DurabilityLevel::ProcessCrashAtomic)
-  }
+  crate::storage::test_util::crash_requirements()
 }
 
 fn name() -> ResourceName {
@@ -141,31 +127,13 @@ async fn child_identity() -> CommitReceipt {
 }
 
 fn run_child(dir: &TempDir, point: u8) {
-  let executable = std::env::current_exe().unwrap();
-  let mut child = Command::new(executable)
-    .args([
-      "--exact",
-      "resource::crash::resource_crash_child_entry",
-      "--ignored",
-      "--nocapture",
-    ])
-    .env(CRASH_DIR_ENV, dir.path())
-    .env(CRASH_POINT_ENV, point.to_string())
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn()
-    .unwrap();
-  let status = match child.wait_timeout(CHILD_TIMEOUT).unwrap() {
-    Some(status) => status,
-    None => {
-      child.kill().unwrap();
-      panic!("crash child at point {point} did not exit within {CHILD_TIMEOUT:?}");
-    }
-  };
-  assert!(
-    !status.success(),
-    "crash child at point {point} must terminate abnormally"
+  crate::storage::test_util::run_crash_child(
+    "resource::crash::resource_crash_child_entry",
+    CRASH_DIR_ENV,
+    CRASH_POINT_ENV,
+    dir.path(),
+    point,
+    "resource",
   );
 }
 
@@ -316,31 +284,13 @@ async fn delete_identity() -> CommitReceipt {
 }
 
 fn run_delete_child(dir: &TempDir, point: u8) {
-  let executable = std::env::current_exe().unwrap();
-  let mut child = Command::new(executable)
-    .args([
-      "--exact",
-      "resource::crash::resource_delete_child_entry",
-      "--ignored",
-      "--nocapture",
-    ])
-    .env(CRASH_DIR_ENV, dir.path())
-    .env(CRASH_POINT_ENV, point.to_string())
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn()
-    .unwrap();
-  let status = match child.wait_timeout(CHILD_TIMEOUT).unwrap() {
-    Some(status) => status,
-    None => {
-      child.kill().unwrap();
-      panic!("delete crash child at point {point} did not exit within {CHILD_TIMEOUT:?}");
-    }
-  };
-  assert!(
-    !status.success(),
-    "delete crash child at point {point} must terminate abnormally"
+  crate::storage::test_util::run_crash_child(
+    "resource::crash::resource_delete_child_entry",
+    CRASH_DIR_ENV,
+    CRASH_POINT_ENV,
+    dir.path(),
+    point,
+    "resource delete",
   );
 }
 

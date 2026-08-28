@@ -15,7 +15,7 @@ use std::sync::Arc;
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
 use crate::{
-  ClusterId, Error, IncomingPacket, NodeId, PacketBody, ProtocolTag, Result, TraceId,
+  ClusterId, Error, IncomingPacket, NodeId, ProtocolTag, Result,
   api::{BoxFuture, Entropy},
   extension_registry::{PacketConsumer, ProtocolDefinition},
   identity::{
@@ -39,13 +39,6 @@ const SYNC_PAYLOAD_SCHEMA: &str = "relay.woooo.tech/schemas/membership-sync-payl
 /// snapshot (grant set).
 pub(crate) const SYNC_KIND_PAGE: u8 = 1;
 pub(crate) const SYNC_KIND_SNAPSHOT: u8 = 2;
-
-/// The receiver-side body cap: one page is at most
-/// [`super::page::MAX_PAGE_DESCRIPTORS`] descriptors and one snapshot is
-/// a bounded binding list, so a generous but finite byte budget bounds a
-/// malicious stream (SC-G05-P0-09).
-const MAX_SYNC_BYTES: usize = 256 * 1_024;
-const MAX_SYNC_CHUNKS: usize = 4_096;
 
 /// One sync payload: an encoded membership page or an encoded issuer
 /// trust snapshot.
@@ -128,7 +121,7 @@ impl MembershipSyncConsumer {
 impl PacketConsumer for MembershipSyncConsumer {
   fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, Result<()>> {
     Box::pin(async move {
-      let bytes = drain_body(packet.body()).await?;
+      let bytes = crate::sync_common::drain_body(packet.body(), "membership sync body").await?;
       let payload = SyncPayload::decode(&bytes)?;
       let context = self
         .context
@@ -180,20 +173,6 @@ async fn accept_payload(
     }
   }
   Ok(())
-}
-
-/// Reads one complete bounded body from an admitted sync stream.
-async fn drain_body(body: &mut dyn PacketBody) -> Result<Vec<u8>> {
-  let mut bytes = Vec::new();
-  let mut chunks: usize = 0;
-  while let Some(chunk) = body.next_chunk().await? {
-    chunks = chunks.saturating_add(1);
-    if chunks > MAX_SYNC_CHUNKS || bytes.len().saturating_add(chunk.len()) > MAX_SYNC_BYTES {
-      return Err(Error::resource_exhausted("membership sync body"));
-    }
-    bytes.extend_from_slice(&chunk);
-  }
-  Ok(bytes)
 }
 
 /// The protocol definition that gates the sync stream on authenticated
@@ -407,8 +386,8 @@ pub(crate) async fn sync_tick(
     None => local_latest_snapshot(context).await?,
   };
   let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
-  let peers = alive_peers(sessions)?;
-  let peers_fp = peers_fingerprint(&peers);
+  let peers = crate::sync_common::alive_peers(sessions)?;
+  let peers_fp = crate::sync_common::peers_fingerprint(&peers);
   let page = page_sync::emit_page_ctx(
     store,
     cursor.page.as_deref(),
@@ -417,6 +396,7 @@ pub(crate) async fn sync_tick(
   .await?;
   cursor.page = page.cursor().map(|value| value.to_vec());
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
+  let page_bytes = page_payload.encode()?;
   // A page is sent when its content or the alive-peer set changed, and
   // retried on a slow cadence otherwise (lost-delivery healing,
   // SC-G05-P0-07); an unchanged steady state costs no sends at all.
@@ -445,72 +425,26 @@ pub(crate) async fn sync_tick(
     }
     None => None,
   };
+  let snapshot_bytes = match &snapshot_payload {
+    Some(payload) => Some(payload.encode()?),
+    None => None,
+  };
   if page_due {
     cursor.ticks_since_page_send = 0;
     for peer in &peers {
-      if let Some(payload) = &snapshot_payload {
-        let _ = send_payload(runtime, entropy, peer, &protocol, payload).await;
+      if let Some(bytes) = &snapshot_bytes {
+        let _ = crate::sync_common::send_payload(runtime, entropy, peer, &protocol, bytes).await;
       }
-      let _ = send_payload(runtime, entropy, peer, &protocol, &page_payload).await;
+      let _ =
+        crate::sync_common::send_payload(runtime, entropy, peer, &protocol, &page_bytes).await;
     }
     return Ok(());
   }
   cursor.ticks_since_page_send = cursor.ticks_since_page_send.saturating_add(1);
-  if let Some(payload) = &snapshot_payload {
+  if let Some(bytes) = &snapshot_bytes {
     for peer in &peers {
-      let _ = send_payload(runtime, entropy, peer, &protocol, payload).await;
+      let _ = crate::sync_common::send_payload(runtime, entropy, peer, &protocol, bytes).await;
     }
   }
   Ok(())
-}
-
-/// The alive-peer set of one node, in stable order.
-fn alive_peers(sessions: &SessionTable) -> Result<Vec<NodeId>> {
-  let guard = sessions
-    .lock()
-    .map_err(|_| Error::internal("session table"))?;
-  Ok(
-    guard
-      .iter()
-      .filter(|(_, entry)| entry.alive())
-      .map(|(peer, _)| peer.clone())
-      .collect(),
-  )
-}
-
-/// A stable order-independent fingerprint of the alive-peer set.
-fn peers_fingerprint(peers: &[NodeId]) -> u64 {
-  use std::hash::{Hash, Hasher};
-  let mut hasher = std::collections::hash_map::DefaultHasher::new();
-  peers.len().hash(&mut hasher);
-  for peer in peers {
-    peer.hash(&mut hasher);
-  }
-  hasher.finish()
-}
-
-/// Sends one sync payload to `peer` over its authenticated session with a
-/// fire-and-forget admission: routing failures are dropped (the next tick
-/// retries) and never stall the anti-entropy loop.
-async fn send_payload(
-  runtime: &RuntimeClient, entropy: &Arc<dyn Entropy>, peer: &NodeId, protocol: &ProtocolTag,
-  payload: &SyncPayload,
-) -> Result<()> {
-  let trace_id = TraceId::generate(entropy.as_ref())?;
-  let body = Box::new(crate::packet::StaticBody::new(Arc::from(payload.encode()?)));
-  let (ack_notify, _ack) = tokio::sync::oneshot::channel();
-  let request = crate::packet::OutboundRequest {
-    trace_id,
-    target: crate::PacketTarget::Exact(peer.clone()),
-    load_balancer: None,
-    max_hops: 1,
-    protocol: protocol.clone(),
-    metadata: crate::packet::PacketMetadata::new(),
-    body,
-    internal: true,
-    ack_notify,
-  };
-  // Fire-and-forget: the admission ack (or its absence) is retried by the
-  // next tick; a full routing queue drops the payload without blocking.
-  runtime.try_send_packet(request)
 }

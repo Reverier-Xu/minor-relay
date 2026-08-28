@@ -12,7 +12,7 @@ use std::sync::Arc;
 use super::{
   lifecycle::{
     CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt, reconcile_recovered_journal,
+    discover_local_identity, discovery_corrupt,
   },
   records::{
     ClusterGenesisV1, IdentityBindingV1, LocalClusterPointerV1, admission_grant_namespace,
@@ -39,22 +39,13 @@ pub(crate) async fn create_cluster(
   context: &LocalIdentityContext, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy,
 ) -> Result<ClusterGenesisV1> {
   let store = context.store();
-  if store
-    .recover_pending(CLUSTER_GENESIS_PURPOSE)
-    .await?
-    .is_some()
-  {
-    reconcile_recovered_journal(store).await?;
-    cleanup_pending_exact(
-      store,
-      entropy,
-      CLUSTER_GENESIS_PURPOSE,
-      "cluster genesis pending cleanup",
-    )
-    .await?;
-  } else {
-    store.reconcile_if_frozen().await?;
-  }
+  crate::identity::lifecycle::recover_journal_prologue(
+    store,
+    entropy,
+    CLUSTER_GENESIS_PURPOSE,
+    "cluster genesis pending cleanup",
+  )
+  .await?;
   if let Some(existing) = existing_cluster(context).await? {
     return Ok(existing);
   }

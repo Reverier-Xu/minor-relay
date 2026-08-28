@@ -16,23 +16,10 @@ pub(crate) const DEFAULT_PAGE_LIMIT: usize = 16;
 /// The maximum page size a receiver accepts, bounding one page's bytes.
 pub(crate) const MAX_PAGE_DESCRIPTORS: usize = 64;
 
-#[derive(Encode, Decode)]
-#[cbor(array)]
-struct PageWire {
-  #[n(0)]
-  schema: String,
-  #[n(1)]
-  descriptors: Vec<minicbor::bytes::ByteVec>,
-  #[n(2)]
-  cursor: Option<minicbor::bytes::ByteVec>,
-}
-
-use minicbor::{Decode, Encode};
-
 use super::{NodeDescriptorV1, store};
 use crate::{
   Error, LabelKey, LabelSet, LabelValue, NodeId, Result,
-  protocol::{decode_canonical, decode_canonical_strict, encode_canonical},
+  protocol::{decode_canonical, encode_canonical},
 };
 
 /// One bounded page of node descriptors plus a continuation cursor.
@@ -44,12 +31,12 @@ pub(crate) struct MembershipPage {
 
 impl MembershipPage {
   pub(crate) fn new(descriptors: Vec<NodeDescriptorV1>, cursor: Option<Vec<u8>>) -> Result<Self> {
-    if descriptors.len() > MAX_PAGE_DESCRIPTORS {
-      return Err(Error::resource_exhausted("membership page"));
-    }
-    if descriptors.is_empty() && cursor.is_some() {
-      return Err(Error::invalid_input("membership page"));
-    }
+    crate::paging::check_page_shape(
+      descriptors.len(),
+      MAX_PAGE_DESCRIPTORS,
+      &cursor,
+      "membership page",
+    )?;
     Ok(Self {
       descriptors,
       cursor,
@@ -67,46 +54,29 @@ impl MembershipPage {
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
     // A descriptor that cannot encode must fail the page: shipping empty
     // bytes would produce an entry every remote peer rejects.
-    let mut descriptors = Vec::with_capacity(self.descriptors.len());
+    let mut items = Vec::with_capacity(self.descriptors.len());
     for descriptor in &self.descriptors {
-      descriptors.push(minicbor::bytes::ByteVec::from(descriptor.encode()?));
+      items.push(descriptor.encode()?);
     }
-    encode_canonical(
-      &PageWire {
-        schema: MEMBERSHIP_PAGE_SCHEMA.to_owned(),
-        descriptors,
-        cursor: self.cursor.clone().map(minicbor::bytes::ByteVec::from),
-      },
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
-    )
+    crate::paging::encode_page(MEMBERSHIP_PAGE_SCHEMA, &items, self.cursor.as_deref())
   }
 
   /// Decodes one page. Entries are trusted through the authenticated
   /// session that delivered them (ADR-0008): decoding checks only the
   /// canonical wire rules and page capacity.
   pub(crate) fn decode(bytes: &[u8]) -> Result<MembershipPage> {
-    let wire: PageWire = decode_canonical_strict(
+    let (items, cursor) = crate::paging::decode_page(
       bytes,
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
-      "membership page canonical form",
+      MEMBERSHIP_PAGE_SCHEMA,
+      MAX_PAGE_DESCRIPTORS,
+      "membership page",
     )?;
-    if wire.schema != MEMBERSHIP_PAGE_SCHEMA {
-      return Err(Error::invalid_input("membership page schema"));
-    }
-    if wire.descriptors.len() > MAX_PAGE_DESCRIPTORS {
-      return Err(Error::resource_exhausted("membership page"));
-    }
-    let mut descriptors = Vec::with_capacity(wire.descriptors.len());
-    for encoded in &wire.descriptors {
-      let wire_bytes: &[u8] = encoded.as_ref();
-      let descriptor = decode_descriptor(wire_bytes)
+    let mut descriptors = Vec::with_capacity(items.len());
+    for encoded in &items {
+      let descriptor = decode_descriptor(encoded)
         .map_err(|_| Error::invalid_input("membership page descriptor"))?;
       descriptors.push(descriptor);
     }
-    let cursor: Option<Vec<u8>> = wire.cursor.map(|value| {
-      let bytes: &[u8] = value.as_ref();
-      bytes.to_vec()
-    });
     MembershipPage::new(descriptors, cursor)
   }
 
@@ -166,30 +136,13 @@ pub(crate) mod sync {
     )?)?;
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
-    let mut descriptors = Vec::new();
-    let mut last_key: Option<Vec<u8>> = None;
-    let mut reached_end = true;
-    while let Some(entry) = scan.next().await? {
-      let key = entry.key().as_bytes();
-      if let Some(cursor) = cursor
-        && key <= cursor
-      {
-        continue;
-      }
-      let bytes = entry.value().as_bytes();
+    let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {
       // The sender only pages its own stored records; entries are trusted
       // through the session that delivers them (ADR-0008).
-      let descriptor = super::decode_descriptor(bytes)?;
-      descriptors.push(descriptor);
-      last_key = Some(key.to_vec());
-      if descriptors.len() >= limit {
-        reached_end = false;
-        break;
-      }
-    }
-    // The cursor is meaningful only when more descriptors may follow; a
-    // page that exhausted the store ends the stream.
-    MembershipPage::new(descriptors, if reached_end { None } else { last_key })
+      super::decode_descriptor(bytes).map(Some)
+    })
+    .await?;
+    MembershipPage::new(paged.items, paged.next)
   }
 
   /// Applies one received page over the running node's metadata store:

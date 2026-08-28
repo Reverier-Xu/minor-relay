@@ -85,24 +85,9 @@ fn parse_embedded_provenance(
 }
 
 fn parse_lockfile_digest(value: &str) -> Result<LockfileDigest, FailureCaptureError> {
-  if value.len() != 64 {
-    return Err(FailureCaptureError::InvalidLockfile);
-  }
-  let mut bytes = [0_u8; 32];
-  for (destination, pair) in bytes.iter_mut().zip(value.as_bytes().as_chunks::<2>().0) {
-    let high = lower_hex_nibble(pair[0]).ok_or(FailureCaptureError::InvalidLockfile)?;
-    let low = lower_hex_nibble(pair[1]).ok_or(FailureCaptureError::InvalidLockfile)?;
-    *destination = (high << 4) | low;
-  }
+  let bytes = crate::hex::decode_array::<32>(value, "lockfile digest")
+    .map_err(|_| FailureCaptureError::InvalidLockfile)?;
   Ok(LockfileDigest::from_bytes(bytes))
-}
-
-const fn lower_hex_nibble(byte: u8) -> Option<u8> {
-  match byte {
-    b'0'..=b'9' => Some(byte - b'0'),
-    b'a'..=b'f' => Some(byte - b'a' + 10),
-    _ => None,
-  }
 }
 
 fn synthetic_fixture_provenance() -> Result<TrustedProvenance, FailureCaptureError> {

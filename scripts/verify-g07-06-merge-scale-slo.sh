@@ -33,4 +33,11 @@ cargo test --locked --lib resource::e2e -- --list > "$TMP/e2e.list"
 require_nonempty_tests resource_merge_e2e "$TMP/e2e.list"
 cargo test --locked --lib resource::e2e
 
+# Revised 16-node SLO lane (SC-G07-P0-18): one timed public-facade sample
+# covers fixed admission, exact-node packet delivery, an owner-revision
+# node-metadata bump, and descriptor convergence inside 10,000 ms.
+cargo test --locked --test membership_sync -- --list > "$TMP/slo.list"
+require_nonempty_tests revised_slo "$TMP/slo.list"
+cargo test --locked --test membership_sync membership_sync_sixteen_node_revised_workload_slo
+
 printf 'VERIFY-G07-06 PASS\n'

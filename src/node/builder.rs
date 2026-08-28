@@ -44,7 +44,11 @@ impl NodeBuilder {
   pub async fn start(self) -> Result<NodeHandle> {
     let mut extensions = self.extensions;
     // The built-in WSS transport is always available; a caller registration
-    // for the same tag is a conflict, so only add it when absent.
+    // for the same tag is a conflict, so only add it when absent. WSS is
+    // currently the only dial/listen transport the runtime resolves: the
+    // open registry accepts further transports for future milestones, but
+    // `spawn_runtime` is wired to the WSS tag until a config-selected
+    // transport tag exists (roadmap: transports open behind traits).
     let wss_tag = crate::transport::registry::WssTransport::tag()?;
     if extensions.transport(&wss_tag).is_none() {
       extensions.register_transport(

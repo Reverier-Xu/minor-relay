@@ -33,6 +33,9 @@ use tokio_tungstenite::{
 };
 
 use super::{ws, ws::JoinHint};
+/// The local policy applied to every sent and received wire message
+/// (defined in the protocol domain; re-exported for connection callers).
+pub(crate) use crate::protocol::wire::FrameRules;
 use crate::{
   Error, ProviderErrorContext, ProviderErrorKind, Result,
   protocol::{PRELUDE_LEN, Prelude, split_message, wire::BASE_SCHEMA_ID},
@@ -43,19 +46,6 @@ pub(crate) const EXPORTER_LABEL: &[u8] = b"EXPORTER-Channel-Binding";
 
 /// The channel binding length in bytes (ADR-0001).
 pub(crate) const CHANNEL_BINDING_LEN: usize = 32;
-
-/// The local policy applied to every sent and received wire message.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct FrameRules {
-  /// Flag bits permitted by the negotiated schema.
-  pub(crate) allowed_flags: u16,
-  /// The message class limit applied to the declared body length.
-  pub(crate) message_limit: u32,
-  /// The configured receive limit applied before any body allocation.
-  pub(crate) receive_limit: u32,
-  /// The closed registry check for `(schema_id, kind_id)` pairs.
-  pub(crate) is_declared: fn(u16, u16) -> bool,
-}
 
 /// One decoded wire message.
 #[derive(Clone, Debug, Eq, PartialEq)]

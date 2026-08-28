@@ -11,13 +11,8 @@
 //! idempotent, so duplicate, reordered, truncated, and changing pages all
 //! converge to one stable winner set.
 
-use minicbor::{Decode, Encode, bytes::ByteVec};
-
 use super::ResourceRecordV1;
-use crate::{
-  Error, Result,
-  protocol::{decode_canonical_strict, encode_canonical},
-};
+use crate::{Error, Result};
 
 pub(crate) const RESOURCE_PAGE_SCHEMA: &str = "relay.woooo.tech/schemas/resource-page-v1";
 
@@ -28,17 +23,6 @@ pub(crate) const DEFAULT_RESOURCE_PAGE_LIMIT: usize = 16;
 /// closed instead of being truncated.
 pub(crate) const MAX_PAGE_RECORDS: usize = 64;
 
-#[derive(Encode, Decode)]
-#[cbor(array)]
-struct ResourcePageWire {
-  #[n(0)]
-  schema: String,
-  #[n(1)]
-  records: Vec<ByteVec>,
-  #[n(2)]
-  cursor: Option<ByteVec>,
-}
-
 /// One bounded page of signed resource records plus a continuation cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResourcePage {
@@ -48,12 +32,7 @@ pub(crate) struct ResourcePage {
 
 impl ResourcePage {
   pub(crate) fn new(records: Vec<ResourceRecordV1>, cursor: Option<Vec<u8>>) -> Result<Self> {
-    if records.len() > MAX_PAGE_RECORDS {
-      return Err(Error::resource_exhausted("resource page"));
-    }
-    if records.is_empty() && cursor.is_some() {
-      return Err(Error::invalid_input("resource page"));
-    }
+    crate::paging::check_page_shape(records.len(), MAX_PAGE_RECORDS, &cursor, "resource page")?;
     Ok(Self { records, cursor })
   }
 
@@ -68,42 +47,29 @@ impl ResourcePage {
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
     // A record that cannot encode must fail the page: shipping empty bytes
     // would produce an entry every remote peer rejects.
-    let mut records = Vec::with_capacity(self.records.len());
+    let mut items = Vec::with_capacity(self.records.len());
     for record in &self.records {
-      records.push(ByteVec::from(record.encode()?));
+      items.push(record.encode()?);
     }
-    encode_canonical(
-      &ResourcePageWire {
-        schema: RESOURCE_PAGE_SCHEMA.to_owned(),
-        records,
-        cursor: self.cursor.clone().map(ByteVec::from),
-      },
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
-    )
+    crate::paging::encode_page(RESOURCE_PAGE_SCHEMA, &items, self.cursor.as_deref())
   }
 
   /// Decodes one page. Every entry is fully decoded and digest-checked
   /// here; writer-signature validation happens against the local trust
   /// anchors during application, before comparison.
   pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
-    let wire: ResourcePageWire = decode_canonical_strict(
+    let (items, cursor) = crate::paging::decode_page(
       bytes,
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
-      "resource page canonical form",
+      RESOURCE_PAGE_SCHEMA,
+      MAX_PAGE_RECORDS,
+      "resource page",
     )?;
-    if wire.schema != RESOURCE_PAGE_SCHEMA {
-      return Err(Error::invalid_input("resource page schema"));
-    }
-    if wire.records.len() > MAX_PAGE_RECORDS {
-      return Err(Error::resource_exhausted("resource page"));
-    }
-    let mut records = Vec::with_capacity(wire.records.len());
-    for encoded in &wire.records {
-      let record = ResourceRecordV1::decode(encoded.as_ref())
+    let mut records = Vec::with_capacity(items.len());
+    for encoded in &items {
+      let record = ResourceRecordV1::decode(encoded)
         .map_err(|_| Error::invalid_input("resource page record"))?;
       records.push(record);
     }
-    let cursor: Option<Vec<u8>> = wire.cursor.map(|value| value.to_vec());
     Self::new(records, cursor)
   }
 
@@ -143,27 +109,11 @@ pub(crate) mod sync {
     )?)?;
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
-    let mut records = Vec::new();
-    let mut last_key: Option<Vec<u8>> = None;
-    let mut reached_end = true;
-    while let Some(entry) = scan.next().await? {
-      let key_text = entry.key().as_bytes();
-      if let Some(cursor) = cursor
-        && key_text <= cursor
-      {
-        continue;
-      }
-      let record = ResourceRecordV1::decode(entry.value().as_bytes())?;
-      records.push(record);
-      last_key = Some(key_text.to_vec());
-      if records.len() >= limit {
-        reached_end = false;
-        break;
-      }
-    }
-    // The cursor is meaningful only when more records may follow; a page
-    // that exhausted the store ends the stream.
-    ResourcePage::new(records, if reached_end { None } else { last_key })
+    let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {
+      ResourceRecordV1::decode(bytes).map(Some)
+    })
+    .await?;
+    ResourcePage::new(paged.items, paged.next)
   }
 
   /// Applies one received page over the running node's metadata store.

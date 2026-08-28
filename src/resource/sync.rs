@@ -15,7 +15,7 @@ use minicbor::{Decode, Encode, bytes::ByteVec};
 
 use super::page::{ResourcePage, sync as page_sync};
 use crate::{
-  Error, IncomingPacket, NodeId, PacketBody, ProtocolTag, Result, TraceId,
+  Error, IncomingPacket, ProtocolTag, Result,
   api::BoxFuture,
   extension_registry::{PacketConsumer, ProtocolDefinition},
   identity::lifecycle::LocalIdentityContext,
@@ -29,12 +29,6 @@ pub(crate) const RESOURCE_SYNC_PROTOCOL: &str = "relay.woooo.tech/protocols/reso
 
 /// The wire schema of one resource sync payload.
 const RESOURCE_SYNC_PAYLOAD_SCHEMA: &str = "relay.woooo.tech/schemas/resource-sync-payload-v1";
-
-/// The receiver-side body cap: one page is at most
-/// [`super::page::MAX_PAGE_RECORDS`] whole records, so a generous but
-/// finite byte budget bounds a malicious stream.
-const MAX_SYNC_BYTES: usize = 256 * 1_024;
-const MAX_SYNC_CHUNKS: usize = 4_096;
 
 /// One resource sync payload: an encoded [`ResourcePage`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,7 +98,7 @@ impl ResourceSyncConsumer {
 impl PacketConsumer for ResourceSyncConsumer {
   fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, Result<()>> {
     Box::pin(async move {
-      let bytes = drain_body(packet.body()).await?;
+      let bytes = crate::sync_common::drain_body(packet.body(), "resource sync body").await?;
       let payload = ResourceSyncPayload::decode(&bytes)?;
       let context = self
         .context
@@ -115,20 +109,6 @@ impl PacketConsumer for ResourceSyncConsumer {
       Ok(())
     })
   }
-}
-
-/// Reads one complete bounded body from an admitted sync stream.
-async fn drain_body(body: &mut dyn PacketBody) -> Result<Vec<u8>> {
-  let mut bytes = Vec::new();
-  let mut chunks: usize = 0;
-  while let Some(chunk) = body.next_chunk().await? {
-    chunks = chunks.saturating_add(1);
-    if chunks > MAX_SYNC_CHUNKS || bytes.len().saturating_add(chunk.len()) > MAX_SYNC_BYTES {
-      return Err(Error::resource_exhausted("resource sync body"));
-    }
-    bytes.extend_from_slice(&chunk);
-  }
-  Ok(bytes)
 }
 
 /// The protocol definition that gates the resource sync stream on
@@ -171,12 +151,12 @@ pub(crate) async fn resource_sync_tick(
   sessions: &SessionTable, runtime: &RuntimeClient, cursor: &mut ResourceSyncCursor,
 ) -> Result<()> {
   let store = context.store();
-  let peers = alive_peers(sessions)?;
+  let peers = crate::sync_common::alive_peers(sessions)?;
   if peers.is_empty() {
     return Ok(());
   }
   let protocol = ProtocolTag::parse(RESOURCE_SYNC_PROTOCOL)?;
-  let peers_fp = peers_fingerprint(&peers);
+  let peers_fp = crate::sync_common::peers_fingerprint(&peers);
   let page = page_sync::emit_page_ctx(
     store,
     cursor.page.as_deref(),
@@ -198,58 +178,10 @@ pub(crate) async fn resource_sync_tick(
     return Ok(());
   }
   cursor.ticks_since_page_send = 0;
-  let payload = ResourceSyncPayload(ByteVec::from(page.encode()?));
+  let payload_bytes = ResourceSyncPayload(ByteVec::from(page.encode()?)).encode()?;
   for peer in &peers {
-    let _ = send_payload(runtime, entropy, peer, &protocol, &payload).await;
+    let _ =
+      crate::sync_common::send_payload(runtime, entropy, peer, &protocol, &payload_bytes).await;
   }
   Ok(())
-}
-
-/// The alive-peer set of one node, in stable order.
-fn alive_peers(sessions: &SessionTable) -> Result<Vec<NodeId>> {
-  let guard = sessions
-    .lock()
-    .map_err(|_| Error::internal("session table"))?;
-  Ok(
-    guard
-      .iter()
-      .filter(|(_, entry)| entry.alive())
-      .map(|(peer, _)| peer.clone())
-      .collect(),
-  )
-}
-
-/// A stable order-independent fingerprint of the alive-peer set.
-fn peers_fingerprint(peers: &[NodeId]) -> u64 {
-  use std::hash::{Hash, Hasher};
-  let mut hasher = std::collections::hash_map::DefaultHasher::new();
-  peers.len().hash(&mut hasher);
-  for peer in peers {
-    peer.hash(&mut hasher);
-  }
-  hasher.finish()
-}
-
-/// Sends one sync payload to `peer` with fire-and-forget admission:
-/// routing failures are dropped (the next tick retries) and never stall
-/// the anti-entropy loop.
-async fn send_payload(
-  runtime: &RuntimeClient, entropy: &Arc<dyn crate::api::Entropy>, peer: &NodeId,
-  protocol: &ProtocolTag, payload: &ResourceSyncPayload,
-) -> Result<()> {
-  let trace_id = TraceId::generate(entropy.as_ref())?;
-  let body = Box::new(crate::packet::StaticBody::new(Arc::from(payload.encode()?)));
-  let (ack_notify, _ack) = tokio::sync::oneshot::channel();
-  let request = crate::packet::OutboundRequest {
-    trace_id,
-    target: crate::PacketTarget::Exact(peer.clone()),
-    load_balancer: None,
-    max_hops: 1,
-    protocol: protocol.clone(),
-    metadata: crate::packet::PacketMetadata::new(),
-    body,
-    internal: true,
-    ack_notify,
-  };
-  runtime.try_send_packet(request)
 }

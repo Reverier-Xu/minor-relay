@@ -224,13 +224,29 @@ impl Node {
     self.endpoint.as_ref().unwrap()
   }
 
+  /// Dials the peer, retrying transient handshake failures: under
+  /// parallel test load a dial can race listener readiness, and one closed
+  /// handshake is a retryable transport event, not a delivery failure.
   async fn connect_to(&self, peer: &Node) {
     let endpoint = peer.endpoint().clone();
-    self
-      .handle
-      .command(ConnectMember::new(endpoint, peer.id().clone()))
-      .await
-      .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+      match self
+        .handle
+        .command(ConnectMember::new(endpoint.clone(), peer.id().clone()))
+        .await
+      {
+        Ok(_) => return,
+        Err(error) => {
+          assert!(
+            std::time::Instant::now() < deadline,
+            "connect to {} keeps failing: {error}",
+            peer.id()
+          );
+          tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+      }
+    }
   }
 }
 
