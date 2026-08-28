@@ -33,4 +33,10 @@ cargo test --locked --lib resource::page -- --list > "$TMP/page.list"
 require_nonempty_tests resource_pages "$TMP/page.list"
 cargo test --locked --lib resource::page
 
+# Ordinary-tick repair lane (SC-G07-P0-11): restart and readdress heal
+# through the same bounded pages, never reconnect-only logic.
+cargo test --locked --lib 'resource::e2e::restart_and_readdress' -- --list > "$TMP/repair.list"
+require_nonempty_tests resource_tick_repair "$TMP/repair.list"
+cargo test --locked --lib resource::e2e::restart_and_readdress
+
 printf 'VERIFY-G07-04 PASS\n'

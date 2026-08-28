@@ -383,7 +383,92 @@ async fn one_thousand_twenty_four_profile_converges_without_a_ceiling() {
     );
   }
   // Hygiene guard only: this layer makes no latency qualification claim —
-  // the qualified 16-node SLO workload runs in the dedicated G10 harness.
-  // The bound tolerates parallel-test contention on slow CI runners.
+  // the qualified 16-node SLO workload sample lives in the public-facade
+  // membership_sync lane (SC-G07-P0-18). The bound tolerates
+  // parallel-test contention on slow CI runners.
   assert!(started.elapsed() < std::time::Duration::from_secs(120));
+}
+
+/// SC-G07-P0-11: restart and readdress repair through the ordinary tick —
+/// never reconnect-only logic or false convergence acknowledgement. Side
+/// B loses and reopens its store handle (a process restart over durable
+/// storage) mid-convergence, and writer B's endpoint candidate changes at
+/// a strictly higher owner revision (readdress); the ordinary bounded
+/// pages converge both sides to the highest revision and the winning
+/// signed tuples.
+#[tokio::test]
+async fn restart_and_readdress_repair_through_ordinary_pages() {
+  let (_factory_a, side_a) = open_store().await;
+  let (factory_b, side_b) = open_store().await;
+
+  // Shared trust baseline: both writers are known members on both sides.
+  for side in [&side_a, &side_b] {
+    put_descriptor(side, &descriptor(&writer_a(), 1, RECORD_SEED)).await;
+    put_descriptor(side, &descriptor(&writer_b(), 1, SECOND_SEED)).await;
+  }
+  // Divergent resources: one contended name, one A-only name.
+  put_resource(
+    &side_a,
+    &resource(&name(1), 1_000, &writer_a(), "u://a1", RECORD_SEED),
+  )
+  .await;
+  put_resource(
+    &side_b,
+    &resource(&name(1), 2_000, &writer_b(), "u://b1", SECOND_SEED),
+  )
+  .await;
+  put_resource(
+    &side_a,
+    &resource(&name(2), 3_000, &writer_a(), "u://a2", RECORD_SEED),
+  )
+  .await;
+
+  // Side B restarts: the handle drops and reopens over the same durable
+  // factory; the metadata survives and the ordinary tick machinery
+  // reconciles without any reconnect-only repair path.
+  drop(side_b);
+  let side_b = MetadataStore::open(&factory_b, std::time::Duration::from_secs(10))
+    .await
+    .unwrap();
+
+  // Readdress: writer B's endpoint candidate changes at revision 2.
+  put_descriptor(&side_b, &descriptor(&writer_b(), 2, SECOND_SEED)).await;
+
+  // Ordinary bounded pages heal everything after the partition.
+  let applied = converge([&side_a, &side_b]).await;
+  assert!(
+    applied > 0,
+    "restart and readdress must repair through ordinary pages"
+  );
+
+  // The readdressed descriptor converges at revision 2 on side A.
+  let healed = descriptor_store::read_descriptor_ctx(&side_a, &writer_b())
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(
+    healed.revision(),
+    2,
+    "readdress converges at the higher owner revision"
+  );
+  // The restarted side gains A's resource through ordinary pages.
+  let gained = resource_store::read_record_ctx(&side_b, &name(2))
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(
+    gained.digest(),
+    resource(&name(2), 3_000, &writer_a(), "u://a2", RECORD_SEED).digest(),
+    "restart heals the missing resource"
+  );
+  // The tuple winner (lexicographic timestamp maximum) wins on side A.
+  let winner = resource_store::read_record_ctx(&side_a, &name(1))
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(
+    winner.digest(),
+    resource(&name(1), 2_000, &writer_b(), "u://b1", SECOND_SEED).digest(),
+    "the timestamp-maximum tuple wins on both sides"
+  );
 }
