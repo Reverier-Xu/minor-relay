@@ -13,7 +13,7 @@ if (($# != 0)); then
 fi
 
 MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == 9c2160ec2cbfa4939cdbdffef3f3e2181be5e48acfadf80a94e6a2723d626329 ]] || {
+[[ $MANIFEST_DIGEST == 820b5ad108995aec9eac3dfb266b88f44e1030c1b14030e151789868ec92ddac ]] || {
   printf 'workspace manifests or lockfile differ from the reviewed G2 json baseline\n' >&2
   exit 1
 }
@@ -35,7 +35,7 @@ bumpalo@3.20.3 source=registry+https://github.com/rust-lang/crates.io-index feat
 bytes@1.12.1 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
 cc@1.4.4 source=registry+https://github.com/rust-lang/crates.io-index features=
 cfg-if@1.0.4 source=registry+https://github.com/rust-lang/crates.io-index features=
-chacha20@0.10.1 source=registry+https://github.com/rust-lang/crates.io-index features=rng
+chacha20@0.10.2 source=registry+https://github.com/rust-lang/crates.io-index features=rng
 cmov@0.5.4 source=registry+https://github.com/rust-lang/crates.io-index features=
 const-oid@0.10.2 source=registry+https://github.com/rust-lang/crates.io-index features=
 cpufeatures@0.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=

@@ -18,8 +18,12 @@ use tempfile::TempDir;
 use wait_timeout::ChildExt as _;
 
 use super::{JsonStoreFactory, helpers};
+// The unix lock lane asserts the OS-crash durability claim; other platforms
+// never reference the level.
+#[cfg(unix)]
+use crate::DurabilityLevel;
 use crate::{
-  CommitOutcome, DurabilityLevel, ErrorKind, StoreRequirements,
+  CommitOutcome, ErrorKind, StoreRequirements,
   provider::{Storage, StorageFactory},
 };
 
