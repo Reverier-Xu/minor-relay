@@ -89,11 +89,12 @@ pub(crate) type RouteTable = Arc<Mutex<BTreeMap<TraceId, RouteRecord>>>;
 pub(crate) struct SessionPolicy {
   pub(crate) queue_messages: usize,
   pub(crate) queue_bytes: usize,
-  /// Concurrent packet streams awaiting admission per session, applied to
-  /// both the outbound pending-acknowledgement map and the inbound
-  /// admitted-stream table. An internal protection bound (like the trace
-  /// persistence semaphore), not a caller knob: it caps origin-side
-  /// memory against a peer that accepts opens without acknowledging them.
+  /// Concurrent outbound admissions awaiting their peer's ack per
+  /// session (the pending-acknowledgement map). An internal protection
+  /// bound (like the trace persistence semaphore), not a caller knob: it
+  /// caps origin-side memory against a peer that accepts opens without
+  /// acknowledging them. The inbound admitted-stream table instead shares
+  /// the caller-selected `queue_messages` budget (see `admit_open`).
   pub(crate) pending_admissions: usize,
   pub(crate) idle_timeout: Duration,
   pub(crate) keepalive_interval: Duration,
@@ -1001,9 +1002,11 @@ async fn admit_open(
         // identical duplicates were already answered above, conflicting
         // ones failed closed above, and only a new stream now receives
         // the typed backpressure (SC-G06-P0-15). The inbound admitted
-        // stream table shares the per-session admission bound with the
-        // outbound pending map: both are streams awaiting admission.
-        if incoming.len() >= context.policy.pending_admissions {
+        // stream table deliberately shares the caller-selected session
+        // queue message budget: every admitted stream occupies queue
+        // capacity, so one knob bounds both (T-G06 review: documented,
+        // no longer silent).
+        if incoming.len() >= context.policy.queue_messages {
           break 'status AckStatus::Overloaded;
         }
         let admitted_at = clock_millis(context.clock.as_ref());
