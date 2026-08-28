@@ -127,7 +127,7 @@ async fn child_identity() -> CommitReceipt {
 }
 
 fn run_child(dir: &TempDir, point: u8) {
-  minor_relay_test_support::run_crash_child(
+  crate::storage::test_util::run_crash_child(
     "resource::crash::resource_crash_child_entry",
     CRASH_DIR_ENV,
     CRASH_POINT_ENV,
@@ -284,7 +284,7 @@ async fn delete_identity() -> CommitReceipt {
 }
 
 fn run_delete_child(dir: &TempDir, point: u8) {
-  minor_relay_test_support::run_crash_child(
+  crate::storage::test_util::run_crash_child(
     "resource::crash::resource_delete_child_entry",
     CRASH_DIR_ENV,
     CRASH_POINT_ENV,

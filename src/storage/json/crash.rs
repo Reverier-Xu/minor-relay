@@ -69,7 +69,7 @@ async fn json_crash_child_entry() {
 
 /// Spawns the child at one crash point and returns once it died.
 fn run_child(dir: &TempDir, point: u8) {
-  minor_relay_test_support::run_crash_child(
+  crate::storage::test_util::run_crash_child(
     "storage::json::crash::json_crash_child_entry",
     CRASH_DIR_ENV,
     CRASH_POINT_ENV,
