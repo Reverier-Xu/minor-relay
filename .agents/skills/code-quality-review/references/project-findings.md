@@ -7,6 +7,15 @@
 > closed`, 3/3 green in isolation — harness lacks connect retry).
 > All P0/P1 findings spot-checked against source.
 >
+> **Remediated 2026-08-28 (branch fix-g7-review-findings, 10 commits):**
+> both P1s, all P2 hotspots below, and the evidence gaps (P0-18 sample
+> + P0-11 restart/readdress lane, wired into verify-g07-04/06).
+> Residual decisions: E2E-06 real-session resource writes need the G9
+> facade (no pre-G9 write path exists); stream.rs clock_second/millis
+> aliases kept (single-file readability, no longer duplicated); member
+> first-seen descriptor must be revision 1 — the SLO sample waits for
+> rev1 convergence before bumping.
+>
 > ### P1 — verified
 > 1. session/stream.rs:1118 unbounded `pending_acks` HashMap; entries
 >    removed only on ack/session end; liveness_observer (:613) exempts
