@@ -333,6 +333,51 @@ async fn start_with_protocol(
     .unwrap()
 }
 
+/// Restarts a node over a just-shut-down storage directory: under CI load
+/// the previous handle's exclusive lock can linger briefly past the
+/// shutdown reply, so the reopen retries with a bound instead of failing
+/// the sample (same pattern as the join retries).
+async fn restart_with_protocol(
+  storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, tag: &str, consumer: Arc<Collector>,
+) -> NodeHandle {
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+  loop {
+    match start_with_protocol_result(
+      Arc::clone(&storage),
+      Arc::clone(&keys),
+      protocol(tag),
+      Arc::clone(&consumer),
+    )
+    .await
+    {
+      Ok(handle) => return handle,
+      Err(error) if error.kind() == minor_relay::ErrorKind::StorageLocked => {
+        assert!(
+          std::time::Instant::now() < deadline,
+          "restarted storage stays locked: {error}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("node restart failed: {error}"),
+    }
+  }
+}
+
+/// The fallible inner start shared by the harness helpers.
+async fn start_with_protocol_result(
+  storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
+  consumer: Arc<Collector>,
+) -> Result<NodeHandle, minor_relay::Error> {
+  init_tracing();
+  let mut extensions = ExtensionRegistry::new();
+  extensions.register_protocol(definition, consumer)?;
+  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  NodeBuilder::new(factory, keys)
+    .extensions(extensions)
+    .start()
+    .await
+}
+
 fn protocol(tag: &str) -> ProtocolDefinition {
   ProtocolDefinition::new(
     ProtocolTag::parse(&format!("relay.woooo.tech/protocols/{tag}")).unwrap(),
@@ -627,10 +672,10 @@ async fn secure_join_rotation_keeps_members_and_reconnect_is_credential_free() {
   // handshake, and packets flow again.
   joiner.handle.command(Shutdown::new()).await.unwrap();
   let restarted = Node {
-    handle: start_with_protocol(
+    handle: restart_with_protocol(
       joiner_storage,
       joiner_keys.clone(),
-      protocol("test-echo"),
+      "test-echo",
       Arc::clone(&joiner_collector),
     )
     .await,
