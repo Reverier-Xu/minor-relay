@@ -46,7 +46,7 @@ pub(crate) const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-i
 pub(crate) const SCHEMA_NAMESPACE: &str = "relay.woooo.tech/metadata/store-schema-v1";
 
 #[cfg(test)]
-pub(crate) use catalog::metadata_families;
+pub(crate) use catalog::{MetadataDomain, MetadataFamily, metadata_families};
 
 #[cfg(test)]
 mod catalog {
