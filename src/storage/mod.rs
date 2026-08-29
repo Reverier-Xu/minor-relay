@@ -394,7 +394,7 @@ pub(crate) mod json;
 #[allow(dead_code)]
 pub(crate) mod migration;
 
-#[cfg(all(test, feature = "json", feature = "redb"))]
+#[cfg(all(test, unix, feature = "json", feature = "redb"))]
 pub(crate) mod mixed_e2e;
 #[allow(dead_code)]
 pub(crate) mod pending;

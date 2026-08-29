@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "json", feature = "redb"))]
+#![cfg(all(test, unix, feature = "json", feature = "redb"))]
 //! Mixed-backend metadata E2E (T-G08-05, E2E-07).
 //!
 //! One metadata side runs on the JSON adapter and the other on the redb

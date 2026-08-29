@@ -442,7 +442,7 @@ mod tests {
     MigrationRegistry::new(BASE_VERSION, vec![edge_one(), edge_two()]).unwrap()
   }
 
-  #[cfg(feature = "json")]
+  #[cfg(all(feature = "json", unix))]
   fn json_factory() -> (Option<tempfile::TempDir>, Arc<dyn StorageFactory>) {
     let dir = tempfile::tempdir().unwrap();
     (
@@ -626,7 +626,7 @@ mod tests {
     );
   }
 
-  #[cfg(feature = "json")]
+  #[cfg(all(feature = "json", unix))]
   #[tokio::test]
   async fn migration_edges_apply_atomically_and_replay_idempotently_json() {
     let (_dir, factory) = json_factory();
@@ -640,7 +640,7 @@ mod tests {
     edges_apply_atomically_and_replay_idempotently(factory).await;
   }
 
-  #[cfg(feature = "json")]
+  #[cfg(all(feature = "json", unix))]
   #[tokio::test]
   async fn migration_older_reader_and_digest_mismatch_fail_closed_json() {
     let (_dir, factory) = json_factory();
