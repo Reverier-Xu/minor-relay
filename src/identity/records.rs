@@ -87,15 +87,11 @@ const ADMISSION_GRANT_SCHEMA: &str = "relay.woooo.tech/schemas/admission-grant-v
 const KEY_DELETION_INTENT_SCHEMA: &str = "relay.woooo.tech/schemas/key-deletion-intent-v1";
 const KEY_DELETED_SCHEMA: &str = "relay.woooo.tech/schemas/key-deleted-v1";
 
-pub(crate) const LOCAL_IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
-const KEY_CREATION_INTENT_NAMESPACE: &str = "relay.woooo.tech/metadata/key-creation-intent-v1";
-const IDENTITY_BINDING_NAMESPACE: &str = "relay.woooo.tech/metadata/identity-binding-v1";
-pub(crate) const CLUSTER_GENESIS_NAMESPACE: &str = "relay.woooo.tech/metadata/cluster-genesis-v1";
-const LOCAL_CLUSTER_POINTER_NAMESPACE: &str = "relay.woooo.tech/metadata/local-cluster-pointer-v1";
-const CREDENTIAL_USE_NAMESPACE: &str = "relay.woooo.tech/metadata/credential-use-v1";
-const ADMISSION_GRANT_NAMESPACE: &str = "relay.woooo.tech/metadata/admission-grant-v1";
-const KEY_DELETION_INTENT_NAMESPACE: &str = "relay.woooo.tech/metadata/key-deletion-intent-v1";
-const KEY_DELETED_NAMESPACE: &str = "relay.woooo.tech/metadata/key-deleted-v1";
+pub(crate) use crate::storage::families::{
+  ADMISSION_GRANT_NAMESPACE, CLUSTER_GENESIS_NAMESPACE, CREDENTIAL_USE_NAMESPACE,
+  IDENTITY_BINDING_NAMESPACE, KEY_CREATION_INTENT_NAMESPACE, KEY_DELETED_NAMESPACE,
+  KEY_DELETION_INTENT_NAMESPACE, LOCAL_CLUSTER_POINTER_NAMESPACE, LOCAL_IDENTITY_NAMESPACE,
+};
 
 const SINGLETON_KEY: &[u8] = b"self";
 const RECORD_LIMITS: CborLimits = CborLimits::new(1, 16, 1_024);

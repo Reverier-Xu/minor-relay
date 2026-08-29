@@ -15,7 +15,7 @@ use crate::{Endpoint, LabelSet, NodeId, PublicKey, Result, protocol::encode_cano
 
 /// The durable schema, namespace, and key of one node descriptor record.
 pub(crate) const NODE_DESCRIPTOR_SCHEMA: &str = "relay.woooo.tech/schemas/node-descriptor-v1";
-pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "relay.woooo.tech/metadata/node-descriptor-v1";
+pub(crate) use crate::storage::families::NODE_DESCRIPTOR_NAMESPACE;
 
 /// One owner-marked node descriptor.
 ///

@@ -33,7 +33,7 @@ use crate::{
 
 /// The durable schema and namespace of one route-trace record.
 pub(crate) const TRACE_SCHEMA: &str = "relay.woooo.tech/schemas/route-trace-v1";
-pub(crate) const TRACE_NAMESPACE: &str = "relay.woooo.tech/metadata/route-trace-v1";
+pub(crate) use crate::storage::families::TRACE_NAMESPACE;
 
 /// Maximum operations per retention transaction batch, bounding one
 /// sweep's work per commit.

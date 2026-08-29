@@ -14,13 +14,12 @@
 use std::sync::Arc;
 
 use super::{ResourceName, ResourceRecordV1};
+/// The durable namespace holding one register per resource name.
+pub(crate) use crate::storage::families::RESOURCE_RECORD_NAMESPACE;
 use crate::{
   CommitReceipt, Digest, Error, Result, StoreKey, StoreNamespace, StoreOperation, StoreValue,
   TransactionId, api::Entropy, storage::MetadataStore,
 };
-
-/// The durable namespace holding one register per resource name.
-pub(crate) const RESOURCE_RECORD_NAMESPACE: &str = "relay.woooo.tech/metadata/resource-record-v1";
 
 fn namespace() -> Result<StoreNamespace> {
   StoreNamespace::new(crate::QualifiedTag::parse(RESOURCE_RECORD_NAMESPACE)?)

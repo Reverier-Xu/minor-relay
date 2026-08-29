@@ -7,6 +7,7 @@
 //! references, [`journal`] the journaled pending transactions, and
 //! [`helpers`] the shared test fixtures.
 
+pub(crate) mod all_family;
 pub(crate) mod engine;
 pub(crate) mod helpers;
 pub(crate) mod journal;

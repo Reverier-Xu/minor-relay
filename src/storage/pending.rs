@@ -29,6 +29,7 @@ use super::{
     storage_corrupt,
   },
 };
+pub(crate) use crate::storage::families::PENDING_NAMESPACE;
 use crate::{
   CommitOutcome, CommitReceipt, Digest, Error, ProviderErrorContext, ProviderErrorKind,
   QualifiedTag, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
@@ -36,8 +37,6 @@ use crate::{
   protocol::{CborLimits, decode_canonical_strict, encode_canonical},
   provider::{StorageFactory, StoreSnapshot},
 };
-
-pub(crate) const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
 const PENDING_SCHEMA: &str = "relay.woooo.tech/schemas/pending-transaction-v1";
 const RECORD_VERSION: u64 = 1;
 const MAX_PURPOSE_LEN: usize = 128;

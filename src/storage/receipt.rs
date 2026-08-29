@@ -8,13 +8,12 @@ use std::{
 use sha2::{Digest as ShaDigest, Sha256};
 
 use super::MetadataStore;
+pub(crate) use crate::storage::families::INTERNAL_NAMESPACE;
 use crate::{
   CommitOutcome, CommitReceipt, Digest, Error, ProviderErrorContext, ProviderErrorKind,
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRevision, StoreTransaction,
   StoreValue, TransactionId, provider::StoreSnapshot,
 };
-
-const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-internal-v1";
 const USED_ID_TAG: &[u8] = b"\x01used-id\0";
 pub(crate) const ACTIVE_MARKER_VALUE: &[u8] = b"";
 pub(super) const FORGOTTEN_MARKER_VALUE: &[u8] = b"\x01forgotten\0";

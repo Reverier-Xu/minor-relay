@@ -20,7 +20,7 @@ use crate::{
 
 /// The durable schema and namespace of one trust snapshot record.
 pub(crate) const TRUST_SNAPSHOT_SCHEMA: &str = "relay.woooo.tech/schemas/trust-snapshot-v1";
-pub(crate) const TRUST_SNAPSHOT_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-snapshot-v1";
+pub(crate) use crate::storage::families::TRUST_SNAPSHOT_NAMESPACE;
 
 /// One ordered `(node, key)` binding inside a snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -763,4 +763,4 @@ pub(crate) mod store {
 }
 
 /// The durable namespace of one snapshot binding observation.
-pub(crate) const TRUST_BINDING_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-binding-v1";
+pub(crate) use crate::storage::families::TRUST_BINDING_NAMESPACE;

@@ -363,4 +363,6 @@ where
   F: Fn() -> Arc<dyn StorageFactory>, {
   storage_contract_snapshot_lookup_and_ordering(fresh()).await;
   storage_contract_conflicts_atomicity_and_idempotence(fresh()).await;
+  super::all_family::storage_contract_all_family_roundtrip(fresh()).await;
+  super::all_family::storage_contract_cross_family_atomicity(fresh()).await;
 }
