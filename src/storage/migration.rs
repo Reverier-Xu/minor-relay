@@ -751,6 +751,7 @@ mod crash_tests {
     );
   }
 
+  #[cfg(feature = "redb")]
   fn child_body_redb(directory: std::ffi::OsString, point: u8) {
     let factory: Arc<dyn StorageFactory> = Arc::new(crate::storage::redb::RedbStoreFactory::new(
       directory.into(),
