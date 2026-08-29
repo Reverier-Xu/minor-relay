@@ -46,7 +46,10 @@ pub(crate) const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-i
 pub(crate) const SCHEMA_NAMESPACE: &str = "relay.woooo.tech/metadata/store-schema-v1";
 
 #[cfg(test)]
-#[cfg_attr(not(all(feature = "json", feature = "redb")), allow(unused_imports))]
+#[cfg_attr(
+  not(all(test, unix, feature = "json", feature = "redb")),
+  allow(unused_imports)
+)]
 pub(crate) use catalog::{MetadataDomain, MetadataFamily, metadata_families};
 
 #[cfg(test)]

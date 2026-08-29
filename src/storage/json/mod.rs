@@ -10,7 +10,7 @@ mod document;
 mod store;
 
 pub(crate) use store::JsonStoreFactory;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use store::select_crash_point;
 
 #[cfg(test)]
