@@ -98,3 +98,190 @@ async fn redb_adapter_reopen_preserves_entries_receipts_and_revision() {
     .unwrap();
   assert!(matches!(outcome, crate::ReconcileOutcome::DigestConflict));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redb_adapter_concurrent_same_generation_commits_exactly_once() {
+  let directory = TempDir::new().unwrap();
+  let factory = factory(&directory);
+  let storage = Arc::new(factory.open(StoreRequirements::metadata()).await.unwrap());
+  let base = storage.snapshot().await.unwrap().revision().clone();
+  let namespace = crate::storage::test_util::namespace("redb-race");
+
+  let make = |id: u64, value: &'static [u8]| {
+    StoreTransaction::new(
+      TransactionId::parse(&format!("txn_{id:021}")).unwrap(),
+      base.clone(),
+      vec![StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: crate::storage::test_util::key(b"contended"),
+        expected: StoreExpectation::Absent,
+        value: StoreValue::new(Arc::from(value)),
+      }],
+    )
+    .unwrap()
+  };
+  let first = make(31, b"first");
+  let second = make(32, b"second");
+
+  let storage_a = Arc::clone(&storage);
+  let storage_b = Arc::clone(&storage);
+  let (outcome_a, outcome_b) =
+    tokio::join!(async move { storage_a.commit(first).await }, async move {
+      storage_b.commit(second).await
+    },);
+  let committed = [outcome_a.unwrap(), outcome_b.unwrap()]
+    .into_iter()
+    .filter(|outcome| matches!(outcome, CommitOutcome::Committed(_)))
+    .count();
+  assert_eq!(committed, 1, "exactly one contending transaction commits");
+
+  let snapshot = storage.snapshot().await.unwrap();
+  let stored = snapshot
+    .get(&namespace, &crate::storage::test_util::key(b"contended"))
+    .await
+    .unwrap()
+    .unwrap();
+  assert!(
+    stored.as_bytes() == b"first" || stored.as_bytes() == b"second",
+    "the surviving value must come from the committed transaction"
+  );
+}
+
+#[tokio::test]
+async fn redb_adapter_transaction_digest_conflicts_fail_closed() {
+  let directory = TempDir::new().unwrap();
+  let factory = factory(&directory);
+  let storage = factory.open(StoreRequirements::metadata()).await.unwrap();
+  let base = storage.snapshot().await.unwrap().revision().clone();
+  let namespace = crate::storage::test_util::namespace("redb-digest");
+
+  let original = StoreTransaction::new(
+    TransactionId::parse("txn_000000000000000000041").unwrap(),
+    base,
+    vec![StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: crate::storage::test_util::key(b"bound"),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(b"original".as_slice())),
+    }],
+  )
+  .unwrap();
+  let receipt = match storage.commit(original.clone()).await.unwrap() {
+    CommitOutcome::Committed(receipt) => receipt,
+    outcome => panic!("unexpected outcome: {outcome:?}"),
+  };
+
+  // The same transaction identity with a different operation digest must
+  // fail closed instead of recommitting.
+  let forged = StoreTransaction::new(
+    TransactionId::parse("txn_000000000000000000041").unwrap(),
+    receipt.committed_revision().clone(),
+    vec![StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: crate::storage::test_util::key(b"other"),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(b"forged".as_slice())),
+    }],
+  )
+  .unwrap();
+  assert!(matches!(
+    storage.commit(forged).await.unwrap(),
+    CommitOutcome::Conflict
+  ));
+
+  // Reconciliation of the exact identity stays authoritative, and a wrong
+  // digest reports DigestConflict rather than deleting the receipt.
+  assert!(matches!(
+    storage
+      .reconcile(receipt.transaction(), receipt.operation_digest())
+      .await
+      .unwrap(),
+    crate::ReconcileOutcome::Committed(_)
+  ));
+  assert!(matches!(
+    storage
+      .reconcile(receipt.transaction(), &Digest::from_bytes([3; 32]))
+      .await
+      .unwrap(),
+    crate::ReconcileOutcome::DigestConflict
+  ));
+
+  // Receipt cleanup removes only the exactly matching receipt and leaves
+  // every other receipt intact.
+  let other_base = storage.snapshot().await.unwrap().revision().clone();
+  let other = StoreTransaction::new(
+    TransactionId::parse("txn_000000000000000000042").unwrap(),
+    other_base,
+    vec![StoreOperation::Put {
+      namespace: namespace.clone(),
+      key: crate::storage::test_util::key(b"other"),
+      expected: StoreExpectation::Absent,
+      value: StoreValue::new(Arc::from(b"other".as_slice())),
+    }],
+  )
+  .unwrap();
+  let other_receipt = match storage.commit(other).await.unwrap() {
+    CommitOutcome::Committed(receipt) => receipt,
+    outcome => panic!("unexpected outcome: {outcome:?}"),
+  };
+  let forget_base = storage.snapshot().await.unwrap().revision().clone();
+  let wrong_forget = StoreTransaction::new(
+    TransactionId::parse("txn_000000000000000000043").unwrap(),
+    forget_base,
+    vec![
+      StoreOperation::ForgetReceipt {
+        transaction: receipt.transaction().clone(),
+        expected_operation_digest: Digest::from_bytes([4; 32]),
+      },
+      StoreOperation::Put {
+        namespace: namespace.clone(),
+        key: crate::storage::test_util::key(b"must-not-commit"),
+        expected: StoreExpectation::Absent,
+        value: StoreValue::new(Arc::from(b"x".as_slice())),
+      },
+    ],
+  )
+  .unwrap();
+  assert!(matches!(
+    storage.commit(wrong_forget).await.unwrap(),
+    CommitOutcome::Conflict
+  ));
+  assert!(matches!(
+    storage
+      .reconcile(receipt.transaction(), receipt.operation_digest())
+      .await
+      .unwrap(),
+    crate::ReconcileOutcome::Committed(_)
+  ));
+
+  let exact_forget = StoreTransaction::new(
+    TransactionId::parse("txn_000000000000000000044").unwrap(),
+    storage.snapshot().await.unwrap().revision().clone(),
+    vec![StoreOperation::ForgetReceipt {
+      transaction: receipt.transaction().clone(),
+      expected_operation_digest: receipt.operation_digest().clone(),
+    }],
+  )
+  .unwrap();
+  assert!(matches!(
+    storage.commit(exact_forget).await.unwrap(),
+    CommitOutcome::Committed(_)
+  ));
+  assert!(matches!(
+    storage
+      .reconcile(receipt.transaction(), receipt.operation_digest())
+      .await
+      .unwrap(),
+    crate::ReconcileOutcome::Aborted
+  ));
+  assert!(matches!(
+    storage
+      .reconcile(
+        other_receipt.transaction(),
+        other_receipt.operation_digest()
+      )
+      .await
+      .unwrap(),
+    crate::ReconcileOutcome::Committed(_)
+  ));
+}

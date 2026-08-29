@@ -27,6 +27,30 @@ const META_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("relay-me
 const REVISION_META_KEY: &[u8] = b"revision";
 const RECEIPT_VALUE_BYTES: usize = 40;
 
+/// Test-only crash injection for the subprocess durability matrix.
+///
+/// The hook table is compiled only into test builds; production code carries
+/// an empty inlined stub. A child test process selects one commit boundary
+/// through the environment and aborts when execution reaches it.
+#[cfg(test)]
+static CRASH_POINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(test)]
+pub(crate) fn select_crash_point(point: u8) {
+  CRASH_POINT.store(point, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn crash_hook(point: u8) {
+  if CRASH_POINT.load(std::sync::atomic::Ordering::SeqCst) == point {
+    std::process::abort();
+  }
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn crash_hook(_point: u8) {}
+
 /// A factory for redb stores rooted at one database file.
 pub(crate) struct RedbStoreFactory {
   path: PathBuf,
@@ -388,6 +412,7 @@ fn commit_blocking(database: &Database, transaction: StoreTransaction) -> Result
   let mut write = database
     .begin_write()
     .map_err(|error| map_transaction_error(error, ProviderErrorContext::StorageCommit))?;
+  crash_hook(1);
   write
     .set_durability(Durability::Immediate)
     .map_err(|error| map_durability_error(error, ProviderErrorContext::StorageCommit))?;
@@ -460,6 +485,7 @@ fn commit_blocking(database: &Database, transaction: StoreTransaction) -> Result
         ProviderErrorContext::StorageCommit,
       )
     })?;
+    crash_hook(2);
     for operation in transaction.operations() {
       match operation {
         StoreOperation::Check { .. } => {}
@@ -490,9 +516,11 @@ fn commit_blocking(database: &Database, transaction: StoreTransaction) -> Result
         }
       }
     }
+    crash_hook(3);
     meta
       .insert(REVISION_META_KEY, next_generation.to_be_bytes().as_slice())
       .map_err(|error| map_storage_error(error, ProviderErrorContext::StorageCommit))?;
+    crash_hook(4);
     let receipt = CommitReceipt::new(
       transaction.id().clone(),
       transaction.operation_digest().clone(),
@@ -504,11 +532,13 @@ fn commit_blocking(database: &Database, transaction: StoreTransaction) -> Result
         encode_receipt(transaction.operation_digest(), next_generation).as_slice(),
       )
       .map_err(|error| map_storage_error(error, ProviderErrorContext::StorageCommit))?;
+    crash_hook(5);
     receipt
   };
   write
     .commit()
     .map_err(|error| map_commit_error(error, ProviderErrorContext::StorageCommit))?;
+  crash_hook(6);
   Ok(CommitOutcome::Committed(receipt))
 }
 

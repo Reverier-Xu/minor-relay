@@ -11,4 +11,6 @@ mod store;
 pub(crate) use store::RedbStoreFactory;
 
 #[cfg(test)]
+mod crash;
+#[cfg(test)]
 mod tests;
