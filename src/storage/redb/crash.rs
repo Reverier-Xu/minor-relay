@@ -35,7 +35,7 @@ fn requirements() -> StoreRequirements {
 }
 
 fn namespace() -> StoreNamespace {
-  StoreNamespace::new(crate::QualifiedTag::parse("relay.woooo.tech/metadata/crash-v1").unwrap())
+  StoreNamespace::new(crate::QualifiedTag::parse("relay.woooo.tech/crash/redb-v1").unwrap())
     .unwrap()
 }
 
