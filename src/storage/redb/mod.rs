@@ -9,6 +9,8 @@
 mod store;
 
 pub(crate) use store::RedbStoreFactory;
+#[cfg(test)]
+pub(crate) use store::select_crash_point;
 
 #[cfg(test)]
 mod crash;

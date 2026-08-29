@@ -17,7 +17,7 @@ const fn base62_suffix_space() -> u128 {
   space
 }
 
-fn encode_base62_suffix(mut value: u128) -> Result<String> {
+pub(crate) fn encode_base62_suffix(mut value: u128) -> Result<String> {
   let mut suffix = [0_u8; RANDOM_SUFFIX_LEN];
   let mut index = RANDOM_SUFFIX_LEN;
   while index > 0 {

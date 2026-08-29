@@ -671,14 +671,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G08-04"
 verification_id = "VERIFY-G08-04"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G08-04"
 owner_task = "T-G08-04"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g08-04-migration-graph.sh"]
 timeout_seconds = 1800
 
 [[task]]

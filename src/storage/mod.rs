@@ -392,6 +392,8 @@ pub(crate) mod families;
 #[cfg(feature = "json")]
 pub(crate) mod json;
 #[allow(dead_code)]
+pub(crate) mod migration;
+#[allow(dead_code)]
 pub(crate) mod pending;
 #[allow(dead_code)]
 pub(crate) mod receipt;

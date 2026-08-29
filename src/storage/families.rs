@@ -5,8 +5,7 @@
 //! all-family storage contract lane iterates this catalog, so a family
 //! added anywhere in the crate is pulled into the shared snapshot, scan,
 //! transaction, reconcile, and capability contract as soon as its
-//! namespace appears here (T-G08-01). The schema metadata family joins the
-//! catalog with the transactional migration graph (T-G08-04).
+//! namespace appears here (T-G08-01).
 
 /// Local identity singleton record.
 pub(crate) const LOCAL_IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
@@ -43,6 +42,8 @@ pub(crate) const TRACE_NAMESPACE: &str = "relay.woooo.tech/metadata/route-trace-
 pub(crate) const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
 /// Storage-internal receipt markers and reference anchors.
 pub(crate) const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-internal-v1";
+/// The store's current logical schema version record.
+pub(crate) const SCHEMA_NAMESPACE: &str = "relay.woooo.tech/metadata/store-schema-v1";
 
 #[cfg(test)]
 pub(crate) use catalog::metadata_families;
@@ -67,6 +68,8 @@ mod catalog {
     Route,
     /// Storage-internal pending transactions and receipts.
     Receipt,
+    /// The store's logical schema version.
+    Schema,
   }
 
   /// One persisted metadata family: the owning domain and its namespace tag.
@@ -102,7 +105,8 @@ mod catalog {
     IDENTITY_BINDING_NAMESPACE, INTERNAL_NAMESPACE, KEY_CREATION_INTENT_NAMESPACE,
     KEY_DELETED_NAMESPACE, KEY_DELETION_INTENT_NAMESPACE, LOCAL_CLUSTER_POINTER_NAMESPACE,
     LOCAL_IDENTITY_NAMESPACE, NODE_DESCRIPTOR_NAMESPACE, PENDING_NAMESPACE,
-    RESOURCE_RECORD_NAMESPACE, TRACE_NAMESPACE, TRUST_BINDING_NAMESPACE, TRUST_SNAPSHOT_NAMESPACE,
+    RESOURCE_RECORD_NAMESPACE, SCHEMA_NAMESPACE, TRACE_NAMESPACE, TRUST_BINDING_NAMESPACE,
+    TRUST_SNAPSHOT_NAMESPACE,
   };
 
   /// Every core metadata family, in domain order and then declaration order.
@@ -124,6 +128,7 @@ mod catalog {
       MetadataFamily::new(MetadataDomain::Route, TRACE_NAMESPACE),
       MetadataFamily::new(MetadataDomain::Receipt, PENDING_NAMESPACE),
       MetadataFamily::new(MetadataDomain::Receipt, INTERNAL_NAMESPACE),
+      MetadataFamily::new(MetadataDomain::Schema, SCHEMA_NAMESPACE),
     ]
   }
 
