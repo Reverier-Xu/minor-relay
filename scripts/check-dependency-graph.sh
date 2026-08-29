@@ -13,7 +13,7 @@ if (($# != 0)); then
 fi
 
 MANIFEST_DIGEST=$(sha256sum Cargo.toml test-support/Cargo.toml Cargo.lock | sha256sum | awk '{ print $1 }')
-[[ $MANIFEST_DIGEST == 820b5ad108995aec9eac3dfb266b88f44e1030c1b14030e151789868ec92ddac ]] || {
+[[ $MANIFEST_DIGEST == 814d0a3fe648e5defba13b8b6594ecaf0f2fcdf79a66ccbdcecca782126999a6 ]] || {
   printf 'workspace manifests or lockfile differ from the reviewed G2 json baseline\n' >&2
   exit 1
 }
@@ -82,7 +82,7 @@ minicbor-derive@0.19.5 source=registry+https://github.com/rust-lang/crates.io-in
 minicbor@2.3.0 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,derive,minicbor-derive,std
 minimal-lexical@0.2.1 source=registry+https://github.com/rust-lang/crates.io-index features=std
 minor-relay-test-support@0.1.0 source=workspace features=
-minor-relay@0.1.0 source=workspace features=default,json
+minor-relay@0.1.0 source=workspace features=default,json,redb
 mio@1.2.2 source=registry+https://github.com/rust-lang/crates.io-index features=net,os-ext,os-poll
 nom@7.1.3 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,std
 nu-ansi-term@0.50.3 source=registry+https://github.com/rust-lang/crates.io-index features=default,std
@@ -109,6 +109,7 @@ rand_core@0.10.1 source=registry+https://github.com/rust-lang/crates.io-index fe
 rand_core@0.9.5 source=registry+https://github.com/rust-lang/crates.io-index features=os_rng,std
 rand_xorshift@0.4.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 rcgen@0.14.9 source=registry+https://github.com/rust-lang/crates.io-index features=crypto,ring
+redb@4.1.0 source=registry+https://github.com/rust-lang/crates.io-index features=
 regex-automata@0.4.18 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,dfa-build,dfa-search,nfa-thompson,std,syntax
 regex-syntax@0.8.11 source=registry+https://github.com/rust-lang/crates.io-index features=default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
 ring@0.17.14 source=registry+https://github.com/rust-lang/crates.io-index features=alloc,default,dev_urandom_fallback

@@ -442,6 +442,7 @@ mod tests {
     MigrationRegistry::new(BASE_VERSION, vec![edge_one(), edge_two()]).unwrap()
   }
 
+  #[cfg(feature = "json")]
   fn json_factory() -> (Option<tempfile::TempDir>, Arc<dyn StorageFactory>) {
     let dir = tempfile::tempdir().unwrap();
     (
@@ -625,6 +626,7 @@ mod tests {
     );
   }
 
+  #[cfg(feature = "json")]
   #[tokio::test]
   async fn migration_edges_apply_atomically_and_replay_idempotently_json() {
     let (_dir, factory) = json_factory();
@@ -638,6 +640,7 @@ mod tests {
     edges_apply_atomically_and_replay_idempotently(factory).await;
   }
 
+  #[cfg(feature = "json")]
   #[tokio::test]
   async fn migration_older_reader_and_digest_mismatch_fail_closed_json() {
     let (_dir, factory) = json_factory();
@@ -652,7 +655,7 @@ mod tests {
   }
 }
 
-#[cfg(test)]
+#[cfg(any(all(test, feature = "json", unix), all(test, feature = "redb")))]
 mod crash_tests {
   use std::sync::Arc;
 
@@ -661,17 +664,26 @@ mod crash_tests {
     *,
   };
   use crate::{
-    CommitOutcome, StoreRequirements, provider::StorageFactory, storage::test_util as util,
+    CommitOutcome, StoreRequirements, StoreRevision, provider::StorageFactory,
+    storage::test_util as util,
   };
 
+  #[cfg(all(feature = "json", unix))]
   const JSON_CRASH_DIR_ENV: &str = "MINOR_RELAY_JSON_MIGRATION_CRASH_DIR";
+  #[cfg(all(feature = "json", unix))]
   const JSON_CRASH_POINT_ENV: &str = "MINOR_RELAY_JSON_MIGRATION_CRASH_POINT";
+  #[cfg(all(feature = "json", unix))]
   const JSON_FIRST_COMMITTED_POINT: u8 = 8;
+  #[cfg(all(feature = "json", unix))]
   const JSON_LAST_POINT: u8 = 13;
 
+  #[cfg(feature = "redb")]
   const REDB_CRASH_DIR_ENV: &str = "MINOR_RELAY_REDB_MIGRATION_CRASH_DIR";
+  #[cfg(feature = "redb")]
   const REDB_CRASH_POINT_ENV: &str = "MINOR_RELAY_REDB_MIGRATION_CRASH_POINT";
+  #[cfg(feature = "redb")]
   const REDB_FIRST_COMMITTED_POINT: u8 = 6;
+  #[cfg(feature = "redb")]
   const REDB_LAST_POINT: u8 = 6;
 
   async fn seed_base_and_legacy(storage: &dyn Storage) {
@@ -702,6 +714,7 @@ mod crash_tests {
     }
   }
 
+  #[cfg(all(feature = "json", unix))]
   async fn child_body(directory: std::ffi::OsString, point: u8) {
     let factory: Arc<dyn StorageFactory> = Arc::new(crate::storage::json::JsonStoreFactory::new(
       directory.into(),
@@ -807,29 +820,38 @@ mod crash_tests {
     );
   }
 
-  async fn deterministic_edge_operation_digest(edge: &MigrationEdge) -> Digest {
-    let dir = tempfile::tempdir().unwrap();
-    let factory: Arc<dyn StorageFactory> = Arc::new(crate::storage::json::JsonStoreFactory::new(
-      dir.path().to_path_buf(),
-    ));
-    let storage: Arc<dyn Storage> =
-      Arc::from(factory.open(StoreRequirements::metadata()).await.unwrap());
-    seed_base_and_legacy(&*storage).await;
-    let snapshot = storage.snapshot().await.unwrap();
-    let mut operations = (edge.transform.unwrap())(&*snapshot).await.unwrap();
-    operations.push(
-      MigrationRegistry::schema_record_operation(
-        &*snapshot,
-        EDGE_RECORD_KIND,
-        edge.to,
-        Some(&edge.digest),
-      )
-      .await
-      .unwrap(),
-    );
+  /// The operation digest of the deterministic edge transaction, computed
+  /// by reconstructing the exact planned operations: the legacy fixture
+  /// holds exactly one record at the seeded revision, so the transform
+  /// plan, the schema record rewrite, and the base revision are all fixed.
+  fn deterministic_edge_operation_digest(edge: &MigrationEdge) -> Digest {
+    let modern = StoreNamespace::new(
+      crate::QualifiedTag::parse("relay.woooo.tech/migration/modern-v1").unwrap(),
+    )
+    .unwrap();
+    let base_record = encode_schema_record(BASE_RECORD_KIND, BASE_VERSION, None);
+    let operations = vec![
+      StoreOperation::Put {
+        namespace: modern,
+        key: util::key(b"record"),
+        expected: crate::StoreExpectation::Absent,
+        value: util::value(b"v2:payload"),
+      },
+      StoreOperation::Delete {
+        namespace: util::namespace("migration-legacy"),
+        key: util::key(b"record"),
+        expected: util::value(b"payload").digest().clone(),
+      },
+      StoreOperation::Put {
+        namespace: schema_namespace().unwrap(),
+        key: schema_key(),
+        expected: crate::StoreExpectation::Exact(base_record.digest().clone()),
+        value: encode_schema_record(EDGE_RECORD_KIND, edge.to, Some(&edge.digest)),
+      },
+    ];
     let transaction = StoreTransaction::new(
       MigrationRegistry::edge_transaction_id(edge).unwrap(),
-      snapshot.revision().clone(),
+      StoreRevision::new(Arc::from(1_u64.to_be_bytes())).unwrap(),
       operations,
     )
     .unwrap();
@@ -898,7 +920,7 @@ mod crash_tests {
       Some(plan_edge_one),
     );
     let transaction_id = MigrationRegistry::edge_transaction_id(&edge).unwrap();
-    let operation_digest = deterministic_edge_operation_digest(&edge).await;
+    let operation_digest = deterministic_edge_operation_digest(&edge);
     let outcome = storage
       .reconcile(&transaction_id, &operation_digest)
       .await

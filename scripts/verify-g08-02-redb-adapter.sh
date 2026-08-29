@@ -61,6 +61,10 @@ RUSTFLAGS="-D warnings" cargo hack check --each-feature --locked > "$TMP/hack.lo
   tail -20 "$TMP/hack.log"
   exit 1
 }
+RUSTFLAGS="-D warnings" cargo hack test --each-feature --locked > "$TMP/hack-test.log" 2>&1 || {
+  tail -20 "$TMP/hack-test.log"
+  exit 1
+}
 grep -c "Finished" "$TMP/hack.log" >/dev/null
 
 printf 'VERIFY-G08-02 PASS\n'

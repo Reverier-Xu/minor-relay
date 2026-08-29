@@ -295,10 +295,12 @@ fn owned_value(bytes: &[u8]) -> StoreValue {
   StoreValue::new(Arc::from(bytes))
 }
 
-fn current_generation(meta: &impl ReadableTable<&'static [u8], &'static [u8]>) -> Result<u64> {
+fn current_generation(
+  meta: &impl ReadableTable<&'static [u8], &'static [u8]>, context: ProviderErrorContext,
+) -> Result<u64> {
   let stored = meta
     .get(REVISION_META_KEY)
-    .map_err(|error| map_storage_error(error, ProviderErrorContext::StorageCommit))?;
+    .map_err(|error| map_storage_error(error, context))?;
   Ok(match stored {
     Some(guard) => decode_revision(guard.value())?,
     None => 0,
@@ -357,7 +359,7 @@ fn snapshot_revision(transaction: &redb::ReadTransaction) -> Result<StoreRevisio
   let meta = transaction
     .open_table(META_TABLE)
     .map_err(|error| map_table_error(error, ProviderErrorContext::StorageSnapshot))?;
-  let generation = current_generation(&meta)?;
+  let generation = current_generation(&meta, ProviderErrorContext::StorageSnapshot)?;
   StoreRevision::new(Arc::from(generation.to_be_bytes()))
 }
 
@@ -442,7 +444,7 @@ fn commit_blocking(database: &Database, transaction: StoreTransaction) -> Result
     if transaction.operation_digest() != &transaction.computed_operation_digest() {
       return Ok(CommitOutcome::Conflict);
     }
-    let generation = current_generation(&meta)?;
+    let generation = current_generation(&meta, ProviderErrorContext::StorageCommit)?;
     if transaction.base_revision().as_bytes() != generation.to_be_bytes() {
       return Ok(CommitOutcome::Conflict);
     }
