@@ -395,6 +395,8 @@ pub(crate) mod json;
 pub(crate) mod pending;
 #[allow(dead_code)]
 pub(crate) mod receipt;
+#[cfg(feature = "redb")]
+pub(crate) mod redb;
 
 #[cfg(test)]
 pub(crate) mod contract;

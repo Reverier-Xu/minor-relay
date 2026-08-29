@@ -106,10 +106,10 @@ pub mod adapters {
   //! Adapter selection is always an explicit caller choice; no feature
   //! selects a backend implicitly.
 
-  #[cfg(feature = "json")]
+  #[cfg(any(feature = "json", feature = "redb"))]
   use std::{path::PathBuf, sync::Arc};
 
-  #[cfg(feature = "json")]
+  #[cfg(any(feature = "json", feature = "redb"))]
   use crate::extension::StorageFactory;
 
   /// Creates a test-only immutable JSON generation store factory rooted at
@@ -120,5 +120,16 @@ pub mod adapters {
   #[cfg(feature = "json")]
   pub fn json_store(path: PathBuf) -> Arc<dyn StorageFactory> {
     Arc::new(crate::storage::json::JsonStoreFactory::new(path))
+  }
+
+  /// Creates a production redb store factory rooted at the database file
+  /// `path`.
+  ///
+  /// The file is created when missing and holds one exclusive lifetime
+  /// lock per open store; a second concurrent open fails typed instead of
+  /// aliasing the store. Every commit is fsynced.
+  #[cfg(feature = "redb")]
+  pub fn redb_store(path: PathBuf) -> Arc<dyn StorageFactory> {
+    Arc::new(crate::storage::redb::RedbStoreFactory::new(path))
   }
 }

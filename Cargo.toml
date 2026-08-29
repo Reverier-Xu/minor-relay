@@ -12,6 +12,7 @@ version      = "0.1.0"
 [features]
 default = ["json"]
 json    = ["dep:fs4", "dep:rustix", "dep:serde", "dep:serde_json"]
+redb    = ["dep:redb"]
 
 [dependencies]
 base64 = { version = "0.23", default-features = false, features = ["std"] }
@@ -35,6 +36,7 @@ rcgen = { version = "0.14", default-features = false, features = [
   "crypto",
   "ring",
 ] }
+redb = { version = "4.1.0", optional = true }
 rustls = { version = "0.23", default-features = false, features = [
   "std",
   "ring",
