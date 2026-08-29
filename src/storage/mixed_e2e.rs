@@ -362,7 +362,6 @@ mod killed_restart_json {
     seed_local_families(&store, b"killed-marker").await;
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn mixed_storage_json_killed_restart_reopens_old_or_new_atomically() {
     let empty_dir = TempDir::new().unwrap();
