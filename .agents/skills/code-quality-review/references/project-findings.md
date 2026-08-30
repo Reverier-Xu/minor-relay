@@ -1,5 +1,115 @@
 # minor-relay Verified Findings (G3-era review, 2026-08)
 
+> **G8 review 2026-08-30 (main @ a6f9b3e, four fresh reviewer lanes +
+> orchestrator):** G8 verdict **PASS**. All five verify-g08-\* lanes PASS;
+> every SC-G08 acceptance phrase mapped to a concrete test (no unmapped
+> phrases). Zero P0, zero P1 across all four lanes. All cited P2s
+> spot-checked.
+>
+> **Remediated 2026-08-30 (same-day pass, all batches + full gates):**
+> fixed: trust-cursor fail-open (strict parse, typed InvalidInput) +
+> clamp(1,64)→MAX_VIEW_PAGE_ITEMS; receipt.rs reference-state read +
+> audit preamble ×4 → load_reference_state; migration domain strings
+> + modern-v1 literal ×5 → consts, stamp_base/edge_transaction_id
+> share migration_transaction_value; txn-id helper ×6 → test_util;
+> complete_capabilities → helpers::required_capabilities;
+> StoreNamespace::new made infallible (api-manifest amended + hashes
+> re-pinned by explicit decision); CleanupPlan enum → (bool, ops);
+> json needs_commit_barrier precomputed + hex::decode_array;
+> resource record/live alias collapse + async factory;
+> alive-peers ×4 → sync_common::alive_peers; join/member session-
+> registration tail → keep_outbound_session; _runtime_seed deleted;
+> packet channel built at the builder (no Option/unreachable);
+> SessionPacketContext built via one supervisor helper;
+> apply_metadata_patch moved to membership.rs; PatchParts struct;
+> PageSpec::build; fixed_bytes shared in error.rs; golden() → hex::decode;
+> OFFER_CBOR_LIMITS/ADR0002_BODY_BYTES → protocol::CONTROL_CBOR_LIMITS
+> + protocol::ADR0002_BODY_BYTES; TagText trait deleted; FeatureTag::domain()
+> replaces tag_domain text-splitting; builtin_definitions hoisted out of
+> the reserved-namespace loop; extension test fixtures shared via
+> offer::fixtures; trust snapshot key width single-sourced
+> (REVISION_KEY_DIGITS + strict length check); decode_grant_payload →
+> decode_canonical_strict; GenerationId::from_bytes; registry dup cfg
+> removed + BUILTIN_TRANSPORT_WSS const; retire_session doc fragment
+> fixed; read_descriptor_ctx delegates; ack_error catch-all → internal
+> fail-closed.
+>
+> Deferred (architectural, own tickets): session/stream.rs file split
+> (TODO M6 routing), RouteState/TracePhase merge, dual-shape decode
+> helper, builder WSS→NodeConfig selection, driver clock injection,
+> ws.rs Option SPKI, Discovery trait gating, engine.rs test split,
+> membership/sync trust logic move, trace.rs code tables, trust keyset
+> cursor, records.rs canonical_record! macro.
+>
+> **Delivered in G8 (verified from evidence, not commits):** all-family
+> metadata storage contract driven unchanged across JSON/redb/reference
+> providers (`contract/reference.rs::run_storage_contract`); namespace
+> literals single-sourced in `families.rs` and statically enforced by
+> verify-g08-01's rg+diff guard; redb adapter feature-gated with static
+> isolation checks (cfg gate, api-manifest redb-type grep, powerset via
+> pinned cargo-hack 0.6.45); redb crash matrix at 6 commit-path points
+> (begin→conditions→mutations→revision→receipt→durable-commit) with
+> parent reopen asserting exact old-or-new; migration graph validation
+> + JSON/redb interruption + replay idempotence + older-reader/digest
+> fail-closed lanes; mixed JSON/redb convergence + graceful/killed
+> restart E2E (mixed_e2e.rs) = E2E-07.
+>
+> ### G8 P2 hotspots (verified, none block the gate)
+> - storage/receipt.rs:212-224/280-292/341-352/592-612 — live-marker +
+>   head/edge/anchor read + audit preamble repeated 4×; extract one
+>   load_reference_state helper.
+> - Test txn-id helper `txn_{index:021}` duplicated 6× (test_util.rs:26,
+>   contract/helpers.rs:99 AND :128 same-module, tests.rs:538,
+>   redb/crash.rs:44, redb/tests.rs:112); complete_capabilities
+>   byte-duplicates contract/helpers required_capabilities.
+> - storage/migration.rs:199/:299 inline `migration-transaction-v1`
+>   domain string ×2 and `migration/modern-v1` literal ×5 in tests —
+>   must stay byte-identical forever; promote consts.
+> - provider.rs:364 `StoreNamespace::new` returns Result that can never
+>   fail — vestigial `?` at every caller.
+> - MetadataStore god-type across mod.rs/receipt.rs/pending.rs sibling
+>   impl blocks reaching each other's private helpers; split state.rs
+>   next time storage grows.
+> - json vs redb adapters necessarily duplicate commit check ordering
+>   (receipt replay→digest→base→conditions→apply→bump); parity held
+>   only by shared contract + crash matrices — document the order in
+>   the Storage trait docs.
+> - runtime/supervisor.rs:1131 `clamp(1, 64)` ignores
+>   paging::MAX_VIEW_PAGE_ITEMS (drift already happened); :1135-1139
+>   trust cursor `unwrap_or(0)` fails OPEN (silently restarts page at
+>   offset 0 on a malformed cursor — public-behavior item, fix first).
+> - supervisor.rs:84 `_runtime_seed` consumes 32 entropy bytes per
+>   startup, stored, never read; packet_tx Option forces an unreachable
+>   internal-error path.
+> - Carried from earlier gates, still open: OFFER_CBOR_LIMITS is the
+>   de-facto crate-wide control CBOR limit but lives in offer.rs
+>   (identity/trust.rs + 6 more modules reach into protocol::offer);
+>   fixed_bytes::<N> helper triplicated (handshake.rs:839,
+>   records.rs:126, storage/pending.rs:775); identity/records.rs
+>   (2228 ln) nine record types repeat Wire/encode/decode scaffolding
+>   (canonical_record! macro candidate); node/builder.rs:52-71 WSS
+>   hardcoded as sole transport (registry decorative at node level);
+>   session/stream.rs (2068 ln) queue/lifecycle/pump/route in one file
+>   with TODO(M6) routing debt; alive-peer enumeration 4× (sync_common
+>   :37 declared single-source, forward.rs:298, supervisor :941/:1268);
+>   trace.rs:70-139 hand-maintained 22-entry ErrorKind↔code tables
+>   with lying `Option<u8>` signature; membership/sync.rs holds trust
+>   refresh/anchor logic; supervisor.rs:1185-1236 descriptor patch
+>   merge rules inline instead of membership.rs.
+>
+> ### G8 gate record
+> - verify-g08-01..05: PASS (ran locally 2026-08-30).
+> - SC mapping: P0-01/02 contract+unknown.rs tests; P1-03 capability
+>   refusal (contract unknown.rs:80 + redb tests.rs:43); P0-04 redb
+>   contract parity; P0-05 static isolation checks in script; P1-06
+>   cargo-hack each-feature pinned 0.6.45 (also CI); P0-07 crash
+>   matrix 6 points; P0-08 concurrent-commit-once + digest fail-closed;
+>   P0-09 receipt_refs.rs owner/intent/cleanup lanes; P0-10..12
+>   migration registry/interruption/replay/reader lanes; P0-13/14
+>   mixed_e2e convergence + graceful/killed restarts; P1-15 powerset
+>   + CI lanes in verify-g08-05; E2E-07 = mixed_e2e lanes.
+>
+
 > **G7 re-review 2026-08-25 (main, four fresh reviewer lanes +
 > orchestrator):** G7 verdict **PASS-WITH-GAPS**; all six verify-g07-\*
 > lanes PASS; Q suite green on rerun (first run had one parallel-load
