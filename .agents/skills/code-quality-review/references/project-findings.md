@@ -18,8 +18,9 @@
 > json needs_commit_barrier precomputed + hex::decode_array;
 > resource record/live alias collapse + async factory;
 > alive-peers ×4 → sync_common::alive_peers; join/member session-
-> registration tail → keep_outbound_session; _runtime_seed deleted;
-> packet channel built at the builder (no Option/unreachable);
+> registration tail → keep_outbound_session; _runtime_seed kept (the
+> G1 lifecycle test pins the startup entropy budget — deliberate, not
+> dead); packet channel built at the builder (no Option/unreachable);
 > SessionPacketContext built via one supervisor helper;
 > apply_metadata_patch moved to membership.rs; PatchParts struct;
 > PageSpec::build; fixed_bytes shared in error.rs; golden() → hex::decode;
@@ -78,9 +79,13 @@
 >   paging::MAX_VIEW_PAGE_ITEMS (drift already happened); :1135-1139
 >   trust cursor `unwrap_or(0)` fails OPEN (silently restarts page at
 >   offset 0 on a malformed cursor — public-behavior item, fix first).
-> - supervisor.rs:84 `_runtime_seed` consumes 32 entropy bytes per
->   startup, stored, never read; packet_tx Option forces an unreachable
->   internal-error path.
+> - supervisor.rs:84 `_runtime_seed` — RESOLVED as deliberate: the G1
+>   lifecycle test pins the 32-byte startup seed draw; packet_tx Option
+>   fixed by building the channel in the builder.
+> - LESSON: storage read order is OBSERVABLE (fault-injecting providers
+>   pin exact per-site read sequences, incl. interleavings). Read-path
+>   dedup must preserve per-site order: load_reference_state takes an
+>   edge-token mode; the read_descriptor_ctx delegation was reverted.
 > - Carried from earlier gates, still open: OFFER_CBOR_LIMITS is the
 >   de-facto crate-wide control CBOR limit but lives in offer.rs
 >   (identity/trust.rs + 6 more modules reach into protocol::offer);
