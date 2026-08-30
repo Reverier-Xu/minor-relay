@@ -88,6 +88,11 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) transport: Arc<dyn Transport>,
   pub(crate) sessions: SessionTable,
   pub(crate) routes: RouteTable,
+  /// The 32-byte runtime seed drawn once at startup, before identity
+  /// provisioning. Deliberately reserved and pinned by the G1 lifecycle
+  /// entropy-sequence test; future runtime lanes consume it from here
+  /// instead of re-drawing.
+  pub(crate) runtime_seed: Option<[u8; 32]>,
 }
 
 /// Spawns the anti-entropy membership-sync driver: it pages descriptors
@@ -161,6 +166,11 @@ pub(crate) async fn spawn_runtime(
   ),
 ) -> Result<RuntimeClient> {
   let runtime = Handle::try_current().map_err(|_| Error::not_ready("Tokio runtime"))?;
+  // The runtime seed is drawn before anything else so the startup entropy
+  // budget stays exactly the sequence the lifecycle test pins.
+  let mut runtime_seed = [0; 32];
+  dependencies.entropy.fill(&mut runtime_seed)?;
+  dependencies.runtime_seed = Some(runtime_seed);
   // `dependencies.transport` is resolved once in the builder from the
   // extension registry, so every dial and listen flows through the
   // registered transport (a counting wrapper registered under the WSS tag

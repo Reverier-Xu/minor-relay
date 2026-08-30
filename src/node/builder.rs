@@ -74,6 +74,7 @@ impl NodeBuilder {
           extensions: extensions.clone(),
           sessions: Default::default(),
           routes: Default::default(),
+          runtime_seed: None,
         },
         (packet_tx, packet_rx),
       )
