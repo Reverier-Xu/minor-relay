@@ -666,7 +666,8 @@ mod tests {
     assert_eq!(all_records(&store).await.len(), 1);
   }
 
-  // ---- SC-G06-P0-07: active streams survive retention; restart terminates ----
+  // ---- SC-G06-P0-07: active streams survive retention; restart terminates
+  // ----
 
   /// Retention never removes active records; a restart terminates them
   /// explicitly with `StreamInterrupted`, and no reopen path continues.

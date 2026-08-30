@@ -213,11 +213,16 @@ impl MetadataStore {
       LiveMarker::Active(_) => {}
       LiveMarker::Forgotten => return Ok(ReceiptReferenceOutcome::Conflict),
     };
-    let state = load_reference_state(snapshot.as_ref(), &namespace, target.transaction()).await?;
-    let edge_key = reference_edge_key(target.transaction(), token)?;
-    let edge = snapshot.get(&namespace, &edge_key).await?;
+    let state = load_reference_state(
+      snapshot.as_ref(),
+      &namespace,
+      target.transaction(),
+      Some(token),
+    )
+    .await?;
+    let edge_key = state.edge_key.ok_or_else(storage_corrupt)?;
 
-    if edge.is_some() {
+    if state.edge.is_some() {
       return Ok(ReceiptReferenceOutcome::Conflict);
     }
 
@@ -269,9 +274,15 @@ impl MetadataStore {
       LiveMarker::Active(_) => {}
       LiveMarker::Forgotten => return Ok(ReceiptReferenceOutcome::Conflict),
     }
-    let state = load_reference_state(snapshot.as_ref(), &namespace, target.transaction()).await?;
-    let edge_key = reference_edge_key(target.transaction(), token)?;
-    let edge = snapshot.get(&namespace, &edge_key).await?;
+    let state = load_reference_state(
+      snapshot.as_ref(),
+      &namespace,
+      target.transaction(),
+      Some(token),
+    )
+    .await?;
+    let edge_key = state.edge_key.ok_or_else(storage_corrupt)?;
+    let edge = state.edge;
 
     let Some(edge) = edge else {
       return Ok(ReceiptReferenceOutcome::Conflict);
@@ -319,7 +330,8 @@ impl MetadataStore {
         LiveMarker::Forgotten => return Ok(ReceiptCleanupOutcome::Conflict),
       };
 
-    let state = load_reference_state(snapshot.as_ref(), &namespace, target.transaction()).await?;
+    let state =
+      load_reference_state(snapshot.as_ref(), &namespace, target.transaction(), None).await?;
     let marker_key = used_id_key(target.transaction())?;
 
     if state.audited_count > 0 {
@@ -558,7 +570,15 @@ pub(super) async fn build_receipt_change_operations(
     LiveMarker::Forgotten => return Err(Error::conflict("receipt reference target")),
   }
 
-  let state = load_reference_state(snapshot, namespace, target.transaction()).await?;
+  // The multi-token change group keeps its historical read order (head,
+  // anchor, every edge, then the audit): the read sequence is observable
+  // to fault-injecting providers and pinned by tests, and it differs from
+  // the single-edge order inside `load_reference_state`, so this site
+  // cannot share that helper without a mode flag.
+  let head_key = reference_head_key(target.transaction())?;
+  let anchor_key = eligibility_anchor_key(target.transaction())?;
+  let head = snapshot.get(namespace, &head_key).await?;
+  let anchor = snapshot.get(namespace, &anchor_key).await?;
   let mut edges = Vec::new();
   edges
     .try_reserve_exact(group.tokens.len())
@@ -570,7 +590,14 @@ pub(super) async fn build_receipt_change_operations(
         .await?,
     );
   }
-  let count = state.audited_count;
+  let count = audit_reference_index(
+    snapshot,
+    namespace,
+    target.transaction(),
+    head.as_ref(),
+    anchor.as_ref(),
+  )
+  .await?;
 
   let mut operations = Vec::new();
   if group.remove {
@@ -579,7 +606,7 @@ pub(super) async fn build_receipt_change_operations(
         return Err(Error::conflict("receipt reference token"));
       }
     }
-    let head = state.head.ok_or_else(storage_corrupt)?;
+    let head = head.ok_or_else(storage_corrupt)?;
     let remaining = count.checked_sub(additional).ok_or_else(storage_corrupt)?;
     operations
       .try_reserve_exact(group.tokens.len() + 1)
@@ -597,13 +624,13 @@ pub(super) async fn build_receipt_change_operations(
     if remaining == 0 {
       operations.push(StoreOperation::Delete {
         namespace: namespace.clone(),
-        key: state.head_key,
+        key: head_key,
         expected: head.digest().clone(),
       });
     } else {
       operations.push(StoreOperation::Put {
         namespace: namespace.clone(),
-        key: state.head_key,
+        key: head_key,
         expected: StoreExpectation::Exact(head.digest().clone()),
         value: encode_reference_count(remaining),
       });
@@ -615,15 +642,15 @@ pub(super) async fn build_receipt_change_operations(
     .checked_add(additional)
     .ok_or_else(|| Error::resource_exhausted("receipt reference count"))?;
   operations
-    .try_reserve_exact(1 + group.tokens.len() + usize::from(state.anchor.is_some()))
+    .try_reserve_exact(1 + group.tokens.len() + usize::from(anchor.is_some()))
     .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
-  let head_expectation = match &state.head {
+  let head_expectation = match &head {
     Some(value) => StoreExpectation::Exact(value.digest().clone()),
     None => StoreExpectation::Absent,
   };
   operations.push(StoreOperation::Put {
     namespace: namespace.clone(),
-    key: state.head_key,
+    key: head_key,
     expected: head_expectation,
     value: encode_reference_count(next),
   });
@@ -638,11 +665,11 @@ pub(super) async fn build_receipt_change_operations(
       value: StoreValue::new(Arc::from([])),
     });
   }
-  if let Some(anchor) = state.anchor {
+  if let Some(anchor) = anchor {
     decode_wall_time(anchor.as_bytes())?;
     operations.push(StoreOperation::Delete {
       namespace: namespace.clone(),
-      key: state.anchor_key,
+      key: anchor_key,
       expected: anchor.digest().clone(),
     });
   }
@@ -693,23 +720,37 @@ async fn build_self_reference_operations(
 /// the head and eligibility-anchor keys with their current values, plus
 /// the audited live reference count. Every reference mutation and
 /// cleanup path funnels through this read so the key layout, read
-/// order, and index audit cannot drift between sites. Token edges are
-/// read by the caller (single-token add/remove paths and multi-token
-/// change groups need different edge shapes).
+/// order, and index audit cannot drift between sites. The optional
+/// single-token edge (add/remove paths) is read between the head and
+/// anchor reads, exactly as the pre-dedup sites did: the read order is
+/// observable to fault-injecting providers and pinned by tests.
 struct ReceiptReferenceState {
   head_key: StoreKey,
   anchor_key: StoreKey,
+  edge_key: Option<StoreKey>,
   head: Option<StoreValue>,
+  /// The edge value when a token was given: `Some` when the edge exists,
+  /// `None` when absent (or no token was requested).
+  edge: Option<StoreValue>,
   anchor: Option<StoreValue>,
   audited_count: u64,
 }
 
 async fn load_reference_state(
   snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, transaction: &TransactionId,
+  edge_token: Option<&ReceiptReferenceToken>,
 ) -> crate::Result<ReceiptReferenceState> {
   let head_key = reference_head_key(transaction)?;
-  let anchor_key = eligibility_anchor_key(transaction)?;
   let head = snapshot.get(namespace, &head_key).await?;
+  let edge_key = match edge_token {
+    Some(token) => Some(reference_edge_key(transaction, token)?),
+    None => None,
+  };
+  let edge = match &edge_key {
+    Some(key) => snapshot.get(namespace, key).await?,
+    None => None,
+  };
+  let anchor_key = eligibility_anchor_key(transaction)?;
   let anchor = snapshot.get(namespace, &anchor_key).await?;
   let audited_count = audit_reference_index(
     snapshot,
@@ -725,6 +766,8 @@ async fn load_reference_state(
     head,
     anchor,
     audited_count,
+    edge_key,
+    edge,
   })
 }
 

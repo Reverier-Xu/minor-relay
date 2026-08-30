@@ -280,8 +280,15 @@ pub(crate) mod store {
   pub(crate) async fn read_descriptor_ctx(
     store: &MetadataStore, node: &NodeId,
   ) -> Result<Option<NodeDescriptorV1>> {
-    let snapshot = store.snapshot().await?;
-    read_descriptor_snapshot(snapshot.as_ref(), node).await
+    let namespace = namespace()?;
+    let key = descriptor_key(node);
+    let value = store.snapshot().await?.get(&namespace, &key).await?;
+    let Some(value) = value else {
+      return Ok(None);
+    };
+    Ok(Some(crate::membership::page::decode_descriptor(
+      value.as_bytes(),
+    )?))
   }
 
   /// Stores one descriptor over the running node's metadata store. A
