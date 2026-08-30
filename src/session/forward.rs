@@ -75,7 +75,10 @@ pub(crate) async fn open(
     open.destination.clone(),
     open.route.clone(),
   );
-  let peers = live_peers(sessions);
+  // A poisoned table lock yields an empty set: `open` reports boolean
+  // handling and surfaces the empty set as a typed route rejection
+  // downstream instead of propagating an error.
+  let peers = crate::sync_common::alive_peers(sessions).unwrap_or_default();
   let mut chosen = if open.destination != *local {
     Some(select_next_hop(registry, route_policy, &open.destination, local, &peers).await)
   } else {
@@ -292,17 +295,6 @@ async fn relay_open(
   }
 }
 
-fn live_peers(sessions: &SessionTable) -> Vec<NodeId> {
-  match sessions.lock() {
-    Ok(guard) => guard
-      .iter()
-      .filter(|(_, entry)| entry.alive())
-      .map(|(peer, _)| peer.clone())
-      .collect(),
-    Err(_) => Vec::new(),
-  }
-}
-
 async fn select_next_hop(
   registry: &ExtensionRegistry, route_policy: Option<&crate::QualifiedTag>, destination: &NodeId,
   local: &NodeId, peers: &[NodeId],
@@ -447,11 +439,9 @@ mod tests {
       let frame = downstream_drain.recv().await.unwrap();
       match frame.kind {
         PacketKind::Chunk => {
-          let decoded = crate::packet::wire::decode_chunk(
-            &frame.body,
-            crate::protocol::offer::OFFER_CBOR_LIMITS,
-          )
-          .unwrap();
+          let decoded =
+            crate::packet::wire::decode_chunk(&frame.body, crate::protocol::CONTROL_CBOR_LIMITS)
+              .unwrap();
           assert_eq!(decoded.sequence, seen.len() as u64);
           assert_eq!(decoded.bytes[0], payload_byte(decoded.sequence));
           seen.push(decoded.sequence);
@@ -551,8 +541,7 @@ mod tests {
     let frame = upstream_rx.recv().await.unwrap();
     assert_eq!(frame.kind, PacketKind::Ack);
     let ack =
-      crate::packet::wire::decode_ack(&frame.body, crate::protocol::offer::OFFER_CBOR_LIMITS)
-        .unwrap();
+      crate::packet::wire::decode_ack(&frame.body, crate::protocol::CONTROL_CBOR_LIMITS).unwrap();
     assert_eq!(ack.trace_id, trace(3));
     assert_eq!(ack.status, AckStatus::Failed);
     drop(upstream_keep);
@@ -652,8 +641,7 @@ mod tests {
     let frame = downstream_drain.recv().await.unwrap();
     assert_eq!(frame.kind, PacketKind::Chunk);
     let decoded =
-      crate::packet::wire::decode_chunk(&frame.body, crate::protocol::offer::OFFER_CBOR_LIMITS)
-        .unwrap();
+      crate::packet::wire::decode_chunk(&frame.body, crate::protocol::CONTROL_CBOR_LIMITS).unwrap();
     assert_eq!(decoded.sequence, 1);
     let frame = downstream_drain.recv().await.unwrap();
     assert_eq!(frame.kind, PacketKind::End);

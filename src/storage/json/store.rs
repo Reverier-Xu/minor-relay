@@ -238,6 +238,10 @@ struct Head {
 pub(crate) struct JsonStorage {
   _guard: StoreGuard,
   capabilities: StoreCapabilities,
+  /// Whether every durable commit must run a directory barrier: the
+  /// capability set is fixed at open, so the commit path reads one
+  /// precomputed flag instead of re-evaluating the durability level.
+  needs_commit_barrier: bool,
   max_generations: u64,
   max_total_bytes: u64,
   state: Mutex<Head>,
@@ -284,13 +288,15 @@ impl JsonStorage {
           ProviderErrorContext::StorageOpen,
         )
       })?;
-      let uuid = hex_decode_bytes(&header.store_uuid, "json store uuid")?;
-      <[u8; 16]>::try_from(uuid.as_slice()).map_err(|_| {
-        Error::provider(
-          ProviderErrorKind::StorageCorrupt,
-          ProviderErrorContext::StorageOpen,
-        )
-      })?
+      match crate::hex::decode_array::<16>(&header.store_uuid, "json store uuid") {
+        Ok(uuid) => uuid,
+        Err(_) => {
+          return Err(Error::provider(
+            ProviderErrorKind::StorageCorrupt,
+            ProviderErrorContext::StorageOpen,
+          ));
+        }
+      }
     };
 
     let head = load_chain(&canonical, &store_uuid)?;
@@ -301,6 +307,7 @@ impl JsonStorage {
     Ok(Self {
       _guard: guard,
       capabilities,
+      needs_commit_barrier: os_crash,
       max_generations,
       max_total_bytes,
       state: Mutex::new(head),
@@ -443,7 +450,7 @@ impl JsonStorage {
     crash_hook(1);
     write_and_rename(&temp_path, &final_path, &document_bytes).map_err(map_commit_io_error)?;
     crash_hook(9);
-    let barrier_result = if self.capabilities.durability() == DurabilityLevel::OsCrashDurable {
+    let barrier_result = if self.needs_commit_barrier {
       directory_barrier(&self._guard.canonical)
     } else {
       Ok(())
@@ -465,7 +472,7 @@ impl JsonStorage {
       )
     })?;
     crash_hook(12);
-    if self.capabilities.durability() == DurabilityLevel::OsCrashDurable {
+    if self.needs_commit_barrier {
       // The commit durability point already passed, so a cleanup barrier
       // failure is maintenance-only and never changes the outcome.
       let _ = directory_barrier(&self._guard.canonical);
@@ -684,9 +691,10 @@ fn load_chain(directory: &Path, store_uuid: &[u8; 16]) -> Result<Head> {
     // state is exactly the newest generation's map, never a union.
     let mut generation_entries = BTreeMap::new();
     for (namespace, key, value) in &document.entries {
-      let namespace =
-        StoreNamespace::new(crate::QualifiedTag::parse(namespace).map_err(|_| corrupt_open())?)
-          .map_err(|_| corrupt_open())?;
+      let namespace = match crate::QualifiedTag::parse(namespace) {
+        Ok(tag) => StoreNamespace::new(tag),
+        Err(_) => return Err(corrupt_open()),
+      };
       let key = StoreKey::new(Arc::from(
         hex_decode_bytes(key, "json entry key").map_err(|_| corrupt_open())?,
       ));

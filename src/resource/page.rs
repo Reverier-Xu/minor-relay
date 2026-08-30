@@ -106,7 +106,7 @@ pub(crate) mod sync {
     let limit = limit.clamp(1, MAX_PAGE_RECORDS);
     let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
       super::super::store::RESOURCE_RECORD_NAMESPACE,
-    )?)?;
+    )?);
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
     let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {

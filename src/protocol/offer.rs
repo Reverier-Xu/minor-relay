@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use minicbor::{Decode, Encode};
 
 use super::{
-  CborLimits, FeatureTag, QualifiedTag, decode_canonical_strict, encode_canonical,
+  CONTROL_CBOR_LIMITS, FeatureTag, QualifiedTag, decode_canonical_strict, encode_canonical,
   feature::{FeatureRegistry, LimitDefinition, required_session_features},
 };
 use crate::{Digest, Error, Result};
@@ -21,13 +21,6 @@ use crate::{Digest, Error, Result};
 pub(crate) const MAX_SUPPORTED_LABELS: usize = 128;
 pub(crate) const MAX_REQUIRED_LABELS: usize = 128;
 pub(crate) const MAX_NEGOTIATED_LIMITS: usize = 128;
-pub(crate) const OFFER_CBOR_LIMITS: CborLimits = CborLimits::new(16, 1_024, ADR0002_BODY_BYTES);
-
-/// ADR-0002's handshake/control body ceiling: one wire body never exceeds
-/// it, and every derived limit (parser defaults, aggregate WebSocket
-/// messages) derives from this constant instead of restating the number.
-pub(crate) const ADR0002_BODY_BYTES: usize = 65_536;
-
 /// The fixed authentication role of one handshake endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Role {
@@ -165,14 +158,14 @@ impl FeatureOffer {
   }
 
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
-    encode_canonical(&self.wire(), OFFER_CBOR_LIMITS)
+    encode_canonical(&self.wire(), CONTROL_CBOR_LIMITS)
   }
 
   /// Decodes canonical offer bytes and validates them against the local
   /// registry, including the exact mandatory limit set and legal ranges.
   pub(crate) fn decode(bytes: &[u8], registry: &FeatureRegistry) -> Result<Self> {
     let wire: FeatureOfferWire =
-      decode_canonical_strict(bytes, OFFER_CBOR_LIMITS, "feature offer canonical form")?;
+      decode_canonical_strict(bytes, CONTROL_CBOR_LIMITS, "feature offer canonical form")?;
     let offer = Self::from_wire(wire)?;
     offer.validate_limits(registry)?;
     Ok(offer)
@@ -359,6 +352,23 @@ pub(crate) mod fixtures {
 
   pub(crate) fn limit(name: &str) -> QualifiedTag {
     QualifiedTag::parse(&format!("relay.woooo.tech/limits/{name}")).unwrap()
+  }
+
+  /// An extension-domain feature tag (`testing.example/features/…`) for
+  /// tests that register non-built-in definitions.
+  pub(crate) fn extension_tag(name: &str) -> FeatureTag {
+    FeatureTag::parse(&format!("testing.example/features/{name}")).unwrap()
+  }
+
+  /// One registered extension feature with a fixed fingerprint byte.
+  pub(crate) fn extension_feature(
+    name: &str, fingerprint_byte: u8,
+  ) -> crate::protocol::feature::FeatureDefinition {
+    crate::protocol::feature::FeatureDefinition::new(
+      extension_tag(name),
+      Digest::from_bytes([fingerprint_byte; 32]),
+    )
+    .unwrap()
   }
 
   fn supported(registry: &FeatureRegistry, names: &[&str]) -> Vec<(FeatureTag, Digest)> {
@@ -577,14 +587,14 @@ mod tests {
     // Out-of-order supported entries on the wire.
     let mut wire = initiator.wire();
     wire.supported.swap(0, 1);
-    let bytes = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let bytes = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     assert!(FeatureOffer::decode(&bytes, &registry).is_err());
 
     // Duplicated supported entry on the wire.
     let mut wire = initiator.wire();
     let entry = wire.supported[0].clone();
     wire.supported.insert(1, entry);
-    let bytes = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let bytes = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     assert!(FeatureOffer::decode(&bytes, &registry).is_err());
 
     // Truncated and trailing wire bytes.
@@ -607,12 +617,12 @@ mod tests {
     let mut wire = initiator.wire();
     let entry = wire.limits[0].clone();
     wire.limits.push(entry);
-    let bytes = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let bytes = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     assert!(FeatureOffer::decode(&bytes, &registry).is_err());
 
     let mut unsorted = initiator.wire();
     unsorted.limits.reverse();
-    let bytes = encode_canonical(&unsorted, OFFER_CBOR_LIMITS).unwrap();
+    let bytes = encode_canonical(&unsorted, CONTROL_CBOR_LIMITS).unwrap();
     assert!(FeatureOffer::decode(&bytes, &registry).is_err());
   }
 }

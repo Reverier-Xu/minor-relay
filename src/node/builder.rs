@@ -57,23 +57,28 @@ impl NodeBuilder {
       )?;
     }
     let extensions = Arc::new(extensions);
-    let client = spawn_runtime(RuntimeDependencies {
-      transport: extensions
-        .transport(&crate::transport::registry::WssTransport::tag()?)
-        .cloned()
-        .ok_or_else(|| crate::Error::internal("built-in transport"))?,
-      storage_factory: self.storage,
-      context: None,
-      keys: self.keys,
-      config: self.config,
-      entropy: self.entropy.clone(),
-      extensions: extensions.clone(),
-      sessions: Default::default(),
-      routes: Default::default(),
-      packet_tx: None,
-      _runtime_seed: None,
-    })
-    .await?;
+    let client = {
+      let (packet_tx, packet_rx) =
+        tokio::sync::mpsc::channel(crate::runtime::PACKET_CHANNEL_CAPACITY);
+      spawn_runtime(
+        RuntimeDependencies {
+          transport: extensions
+            .transport(&crate::transport::registry::WssTransport::tag()?)
+            .cloned()
+            .ok_or_else(|| crate::Error::internal("built-in transport"))?,
+          storage_factory: self.storage,
+          context: None,
+          keys: self.keys,
+          config: self.config,
+          entropy: self.entropy.clone(),
+          extensions: extensions.clone(),
+          sessions: Default::default(),
+          routes: Default::default(),
+        },
+        (packet_tx, packet_rx),
+      )
+      .await?
+    };
     Ok(NodeHandle::new(client, self.entropy, extensions))
   }
 }

@@ -8,14 +8,16 @@ use std::{
 };
 
 use crate::{
-  BoxFuture, CommitOutcome, CommitReceipt, Digest, DurabilityLevel, Error, ErrorKind,
-  ProviderErrorContext, ProviderErrorKind, QualifiedTag, ReconcileOutcome, Result,
-  StoreCapabilities, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements,
-  StoreRevision, StoreTransaction, StoreValue, TransactionId,
+  BoxFuture, CommitOutcome, CommitReceipt, Digest, Error, ErrorKind, ProviderErrorContext,
+  ProviderErrorKind, QualifiedTag, ReconcileOutcome, Result, StoreCapabilities, StoreExpectation,
+  StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision, StoreTransaction,
+  StoreValue, TransactionId,
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
   storage::{
     MetadataStore,
+    contract::helpers,
     receipt::{PreparedTransaction, prepare_internal_transaction},
+    test_util::transaction_id,
   },
 };
 
@@ -510,19 +512,14 @@ async fn scripted(
 }
 
 fn complete_capabilities() -> StoreCapabilities {
-  StoreCapabilities::new(DurabilityLevel::OsCrashDurable)
-    .conditional_batch(true)
-    .ordered_scan(true)
-    .reconciliation(true)
-    .exclusive_lifetime_lock(true)
+  helpers::required_capabilities()
 }
 
 fn transaction(index: u8) -> PreparedTransaction {
   let namespace =
-    StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/engine-test").unwrap())
-      .unwrap();
+    StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/engine-test").unwrap());
   prepare_internal_transaction(
-    transaction_id(index),
+    transaction_id(u64::from(index)),
     revision(1),
     vec![StoreOperation::Put {
       namespace,
@@ -532,10 +529,6 @@ fn transaction(index: u8) -> PreparedTransaction {
     }],
   )
   .unwrap()
-}
-
-fn transaction_id(index: u8) -> TransactionId {
-  TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }
 
 fn revision(index: u8) -> StoreRevision {

@@ -265,7 +265,7 @@ fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
       },
       updated_at_millis: crate::time::to_millis(record.updated_at),
     },
-    crate::protocol::offer::OFFER_CBOR_LIMITS,
+    crate::protocol::CONTROL_CBOR_LIMITS,
   )
 }
 
@@ -274,7 +274,7 @@ fn encode_canonical_record(record: &TraceRecord) -> Result<Vec<u8>> {
 pub(crate) fn decode_trace_record(bytes: &[u8]) -> Result<TraceRecord> {
   let wire: TraceWire = decode_canonical_strict(
     bytes,
-    crate::protocol::offer::OFFER_CBOR_LIMITS,
+    crate::protocol::CONTROL_CBOR_LIMITS,
     "route trace canonical",
   )?;
   if wire.schema != TRACE_SCHEMA || wire.record_version != 1 {
@@ -291,7 +291,9 @@ pub(crate) fn decode_trace_record(bytes: &[u8]) -> Result<TraceRecord> {
 }
 
 fn namespace() -> Result<crate::StoreNamespace> {
-  crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE)?)
+  Ok(crate::StoreNamespace::new(crate::QualifiedTag::parse(
+    TRACE_NAMESPACE,
+  )?))
 }
 
 fn key(trace_id: &TraceId) -> crate::StoreKey {
@@ -512,8 +514,7 @@ mod tests {
   }
 
   async fn all_records(store: &MetadataStore) -> Vec<TraceRecord> {
-    let space =
-      crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap()).unwrap();
+    let space = crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap());
     let snapshot = store.snapshot().await.unwrap();
     let mut scan = snapshot.scan(&space, &[]).await.unwrap();
     let mut records = Vec::new();
@@ -603,8 +604,7 @@ mod tests {
     assert_eq!(record.destination(), &node(2));
     assert_eq!(record.phase(), &TracePhase::Delivered);
 
-    let space =
-      crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap()).unwrap();
+    let space = crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap());
     let snapshot = store.snapshot().await.unwrap();
     let mut scan = snapshot.scan(&space, &[]).await.unwrap();
     while let Some(entry) = scan.next().await.unwrap() {
@@ -633,8 +633,7 @@ mod tests {
 
     // A stale-expectation write (prepared against an absent key) must
     // conflict deterministically rather than clobber the record.
-    let space =
-      crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap()).unwrap();
+    let space = crate::StoreNamespace::new(crate::QualifiedTag::parse(TRACE_NAMESPACE).unwrap());
     let encoded = record.encode().unwrap();
     let snapshot = store.snapshot().await.unwrap();
     let transaction = store

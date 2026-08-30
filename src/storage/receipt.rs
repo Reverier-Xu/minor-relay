@@ -213,27 +213,15 @@ impl MetadataStore {
       LiveMarker::Active(_) => {}
       LiveMarker::Forgotten => return Ok(ReceiptReferenceOutcome::Conflict),
     };
-
-    let head_key = reference_head_key(target.transaction())?;
+    let state = load_reference_state(snapshot.as_ref(), &namespace, target.transaction()).await?;
     let edge_key = reference_edge_key(target.transaction(), token)?;
-    let anchor_key = eligibility_anchor_key(target.transaction())?;
-    let head = snapshot.get(&namespace, &head_key).await?;
     let edge = snapshot.get(&namespace, &edge_key).await?;
-    let anchor = snapshot.get(&namespace, &anchor_key).await?;
-    audit_reference_index(
-      snapshot.as_ref(),
-      &namespace,
-      target.transaction(),
-      head.as_ref(),
-      anchor.as_ref(),
-    )
-    .await?;
 
     if edge.is_some() {
       return Ok(ReceiptReferenceOutcome::Conflict);
     }
 
-    let (head_expectation, next_count) = match head.as_ref() {
+    let (head_expectation, next_count) = match state.head.as_ref() {
       Some(value) => {
         let count = decode_reference_count(value)?;
         let next = increment_reference_count(count)?;
@@ -244,11 +232,11 @@ impl MetadataStore {
 
     let mut operations = Vec::new();
     operations
-      .try_reserve_exact(2 + usize::from(anchor.is_some()))
+      .try_reserve_exact(2 + usize::from(state.anchor.is_some()))
       .map_err(|_| Error::resource_exhausted("receipt reference transaction"))?;
     operations.push(StoreOperation::Put {
       namespace: namespace.clone(),
-      key: head_key,
+      key: state.head_key,
       expected: head_expectation,
       value: encode_reference_count(next_count),
     });
@@ -258,11 +246,11 @@ impl MetadataStore {
       expected: StoreExpectation::Absent,
       value: StoreValue::new(Arc::from([])),
     });
-    if let Some(anchor) = anchor {
+    if let Some(anchor) = state.anchor {
       decode_wall_time(anchor.as_bytes())?;
       operations.push(StoreOperation::Delete {
         namespace,
-        key: anchor_key,
+        key: state.anchor_key,
         expected: anchor.digest().clone(),
       });
     }
@@ -281,26 +269,14 @@ impl MetadataStore {
       LiveMarker::Active(_) => {}
       LiveMarker::Forgotten => return Ok(ReceiptReferenceOutcome::Conflict),
     }
-
-    let head_key = reference_head_key(target.transaction())?;
+    let state = load_reference_state(snapshot.as_ref(), &namespace, target.transaction()).await?;
     let edge_key = reference_edge_key(target.transaction(), token)?;
-    let anchor_key = eligibility_anchor_key(target.transaction())?;
-    let head = snapshot.get(&namespace, &head_key).await?;
     let edge = snapshot.get(&namespace, &edge_key).await?;
-    let anchor = snapshot.get(&namespace, &anchor_key).await?;
-    audit_reference_index(
-      snapshot.as_ref(),
-      &namespace,
-      target.transaction(),
-      head.as_ref(),
-      anchor.as_ref(),
-    )
-    .await?;
 
     let Some(edge) = edge else {
       return Ok(ReceiptReferenceOutcome::Conflict);
     };
-    let head = head.ok_or_else(storage_corrupt)?;
+    let head = state.head.ok_or_else(storage_corrupt)?;
     let count = decode_reference_count(&head)?;
 
     let mut operations = Vec::new();
@@ -315,13 +291,13 @@ impl MetadataStore {
     if count == 1 {
       operations.push(StoreOperation::Delete {
         namespace,
-        key: head_key,
+        key: state.head_key,
         expected: head.digest().clone(),
       });
     } else {
       operations.push(StoreOperation::Put {
         namespace,
-        key: head_key,
+        key: state.head_key,
         expected: StoreExpectation::Exact(head.digest().clone()),
         value: encode_reference_count(count - 1),
       });
@@ -343,46 +319,35 @@ impl MetadataStore {
         LiveMarker::Forgotten => return Ok(ReceiptCleanupOutcome::Conflict),
       };
 
-    let head_key = reference_head_key(target.transaction())?;
-    let anchor_key = eligibility_anchor_key(target.transaction())?;
+    let state = load_reference_state(snapshot.as_ref(), &namespace, target.transaction()).await?;
     let marker_key = used_id_key(target.transaction())?;
-    let head = snapshot.get(&namespace, &head_key).await?;
-    let anchor = snapshot.get(&namespace, &anchor_key).await?;
-    let reference_count = audit_reference_index(
-      snapshot.as_ref(),
-      &namespace,
-      target.transaction(),
-      head.as_ref(),
-      anchor.as_ref(),
-    )
-    .await?;
 
-    if reference_count > 0 {
+    if state.audited_count > 0 {
       return Ok(ReceiptCleanupOutcome::Referenced);
     }
 
     let now = self.clock.now();
     // The semantic outcome is decided by the branch, never inferred from
     // the operation count: anchoring installs the eligibility anchor,
-    // forgetting retires the receipt past its retention deadline.
-    enum CleanupPlan {
-      Anchor(Vec<StoreOperation>),
-      Forget(Vec<StoreOperation>),
-    }
-    let plan = match anchor {
-      None => CleanupPlan::Anchor(vec![
-        StoreOperation::Check {
-          namespace: namespace.clone(),
-          key: head_key,
-          expected: StoreExpectation::Absent,
-        },
-        StoreOperation::Put {
-          namespace,
-          key: anchor_key,
-          expected: StoreExpectation::Absent,
-          value: StoreValue::new(Arc::from(encode_wall_time(now))),
-        },
-      ]),
+    // forgetting retires the receipt past its retention deadline. Each
+    // arm carries its anchoring flag alongside its operations.
+    let (anchoring, operations) = match state.anchor {
+      None => (
+        true,
+        vec![
+          StoreOperation::Check {
+            namespace: namespace.clone(),
+            key: state.head_key,
+            expected: StoreExpectation::Absent,
+          },
+          StoreOperation::Put {
+            namespace,
+            key: state.anchor_key,
+            expected: StoreExpectation::Absent,
+            value: StoreValue::new(Arc::from(encode_wall_time(now))),
+          },
+        ],
+      ),
       Some(anchor) => {
         let anchored_at = decode_wall_time(anchor.as_bytes())?;
         let Some(deadline) = anchored_at.checked_add(self.receipt_retention) else {
@@ -391,33 +356,32 @@ impl MetadataStore {
         if now < deadline {
           return Ok(ReceiptCleanupOutcome::Retained);
         }
-        CleanupPlan::Forget(vec![
-          StoreOperation::Check {
-            namespace: namespace.clone(),
-            key: head_key,
-            expected: StoreExpectation::Absent,
-          },
-          StoreOperation::Delete {
-            namespace: namespace.clone(),
-            key: anchor_key,
-            expected: anchor.digest().clone(),
-          },
-          StoreOperation::Put {
-            namespace,
-            key: marker_key,
-            expected: StoreExpectation::Exact(active_marker.digest().clone()),
-            value: marker_value(FORGOTTEN_MARKER_VALUE),
-          },
-          StoreOperation::ForgetReceipt {
-            transaction: target.transaction().clone(),
-            expected_operation_digest: target.operation_digest().clone(),
-          },
-        ])
+        (
+          false,
+          vec![
+            StoreOperation::Check {
+              namespace: namespace.clone(),
+              key: state.head_key,
+              expected: StoreExpectation::Absent,
+            },
+            StoreOperation::Delete {
+              namespace: namespace.clone(),
+              key: state.anchor_key,
+              expected: anchor.digest().clone(),
+            },
+            StoreOperation::Put {
+              namespace,
+              key: marker_key,
+              expected: StoreExpectation::Exact(active_marker.digest().clone()),
+              value: marker_value(FORGOTTEN_MARKER_VALUE),
+            },
+            StoreOperation::ForgetReceipt {
+              transaction: target.transaction().clone(),
+              expected_operation_digest: target.operation_digest().clone(),
+            },
+          ],
+        )
       }
-    };
-    let (anchoring, operations) = match plan {
-      CleanupPlan::Anchor(operations) => (true, operations),
-      CleanupPlan::Forget(operations) => (false, operations),
     };
     let prepared =
       prepare_internal_transaction(operation_id, snapshot.revision().clone(), operations)?;
@@ -594,10 +558,7 @@ pub(super) async fn build_receipt_change_operations(
     LiveMarker::Forgotten => return Err(Error::conflict("receipt reference target")),
   }
 
-  let head_key = reference_head_key(target.transaction())?;
-  let anchor_key = eligibility_anchor_key(target.transaction())?;
-  let head = snapshot.get(namespace, &head_key).await?;
-  let anchor = snapshot.get(namespace, &anchor_key).await?;
+  let state = load_reference_state(snapshot, namespace, target.transaction()).await?;
   let mut edges = Vec::new();
   edges
     .try_reserve_exact(group.tokens.len())
@@ -609,14 +570,7 @@ pub(super) async fn build_receipt_change_operations(
         .await?,
     );
   }
-  let count = audit_reference_index(
-    snapshot,
-    namespace,
-    target.transaction(),
-    head.as_ref(),
-    anchor.as_ref(),
-  )
-  .await?;
+  let count = state.audited_count;
 
   let mut operations = Vec::new();
   if group.remove {
@@ -625,7 +579,7 @@ pub(super) async fn build_receipt_change_operations(
         return Err(Error::conflict("receipt reference token"));
       }
     }
-    let head = head.ok_or_else(storage_corrupt)?;
+    let head = state.head.ok_or_else(storage_corrupt)?;
     let remaining = count.checked_sub(additional).ok_or_else(storage_corrupt)?;
     operations
       .try_reserve_exact(group.tokens.len() + 1)
@@ -643,13 +597,13 @@ pub(super) async fn build_receipt_change_operations(
     if remaining == 0 {
       operations.push(StoreOperation::Delete {
         namespace: namespace.clone(),
-        key: head_key,
+        key: state.head_key,
         expected: head.digest().clone(),
       });
     } else {
       operations.push(StoreOperation::Put {
         namespace: namespace.clone(),
-        key: head_key,
+        key: state.head_key,
         expected: StoreExpectation::Exact(head.digest().clone()),
         value: encode_reference_count(remaining),
       });
@@ -661,15 +615,15 @@ pub(super) async fn build_receipt_change_operations(
     .checked_add(additional)
     .ok_or_else(|| Error::resource_exhausted("receipt reference count"))?;
   operations
-    .try_reserve_exact(1 + group.tokens.len() + usize::from(anchor.is_some()))
+    .try_reserve_exact(1 + group.tokens.len() + usize::from(state.anchor.is_some()))
     .map_err(|_| Error::resource_exhausted("receipt reference change"))?;
-  let head_expectation = match &head {
+  let head_expectation = match &state.head {
     Some(value) => StoreExpectation::Exact(value.digest().clone()),
     None => StoreExpectation::Absent,
   };
   operations.push(StoreOperation::Put {
     namespace: namespace.clone(),
-    key: head_key,
+    key: state.head_key,
     expected: head_expectation,
     value: encode_reference_count(next),
   });
@@ -684,11 +638,11 @@ pub(super) async fn build_receipt_change_operations(
       value: StoreValue::new(Arc::from([])),
     });
   }
-  if let Some(anchor) = anchor {
+  if let Some(anchor) = state.anchor {
     decode_wall_time(anchor.as_bytes())?;
     operations.push(StoreOperation::Delete {
       namespace: namespace.clone(),
-      key: anchor_key,
+      key: state.anchor_key,
       expected: anchor.digest().clone(),
     });
   }
@@ -733,6 +687,45 @@ async fn build_self_reference_operations(
     });
   }
   Ok(operations)
+}
+
+/// One read of the receipt-reference bookkeeping for a target receipt:
+/// the head and eligibility-anchor keys with their current values, plus
+/// the audited live reference count. Every reference mutation and
+/// cleanup path funnels through this read so the key layout, read
+/// order, and index audit cannot drift between sites. Token edges are
+/// read by the caller (single-token add/remove paths and multi-token
+/// change groups need different edge shapes).
+struct ReceiptReferenceState {
+  head_key: StoreKey,
+  anchor_key: StoreKey,
+  head: Option<StoreValue>,
+  anchor: Option<StoreValue>,
+  audited_count: u64,
+}
+
+async fn load_reference_state(
+  snapshot: &dyn StoreSnapshot, namespace: &StoreNamespace, transaction: &TransactionId,
+) -> crate::Result<ReceiptReferenceState> {
+  let head_key = reference_head_key(transaction)?;
+  let anchor_key = eligibility_anchor_key(transaction)?;
+  let head = snapshot.get(namespace, &head_key).await?;
+  let anchor = snapshot.get(namespace, &anchor_key).await?;
+  let audited_count = audit_reference_index(
+    snapshot,
+    namespace,
+    transaction,
+    head.as_ref(),
+    anchor.as_ref(),
+  )
+  .await?;
+  Ok(ReceiptReferenceState {
+    head_key,
+    anchor_key,
+    head,
+    anchor,
+    audited_count,
+  })
 }
 
 async fn verify_live_marker(
@@ -800,7 +793,9 @@ pub(super) fn operation_uses_reserved_namespace(operation: &StoreOperation) -> b
 }
 
 pub(crate) fn internal_namespace() -> crate::Result<StoreNamespace> {
-  StoreNamespace::new(crate::QualifiedTag::parse(INTERNAL_NAMESPACE)?)
+  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+    INTERNAL_NAMESPACE,
+  )?))
 }
 
 pub(crate) fn used_id_key(transaction: &TransactionId) -> crate::Result<StoreKey> {

@@ -503,44 +503,10 @@ mod tests {
       .unwrap()
   }
 
+  /// Builds one live (non-removed) signed record at the fixed test cluster.
   #[allow(clippy::too_many_arguments)]
   fn record(
     name: &ResourceName, timestamp_millis: u64, writer: &NodeId, removal_rank: u64,
-    labels: &LabelSet, resource_type: &str, uri: &str, seed: [u8; 32],
-  ) -> ResourceRecordV1 {
-    live(
-      name,
-      timestamp_millis,
-      writer,
-      removal_rank,
-      labels,
-      resource_type,
-      uri,
-      seed,
-    )
-  }
-
-  #[allow(clippy::too_many_arguments)]
-  fn live(
-    name: &ResourceName, timestamp_millis: u64, writer: &NodeId, removal_rank: u64,
-    labels: &LabelSet, resource_type: &str, uri: &str, seed: [u8; 32],
-  ) -> ResourceRecordV1 {
-    signed_variant(
-      name,
-      timestamp_millis,
-      writer,
-      removal_rank,
-      false,
-      labels,
-      resource_type,
-      uri,
-      seed,
-    )
-  }
-
-  #[allow(clippy::too_many_arguments)]
-  fn signed_variant(
-    name: &ResourceName, timestamp_millis: u64, writer: &NodeId, removal_rank: u64, removed: bool,
     labels: &LabelSet, resource_type: &str, uri: &str, seed: [u8; 32],
   ) -> ResourceRecordV1 {
     ResourceRecordV1::sign(
@@ -552,7 +518,7 @@ mod tests {
       timestamp_millis,
       writer.clone(),
       removal_rank,
-      removed,
+      false,
       &SigningKey::from_bytes(&seed),
     )
     .unwrap()

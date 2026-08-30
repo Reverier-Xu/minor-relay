@@ -9,7 +9,7 @@ mod driver;
 pub(crate) mod forward;
 pub(crate) mod stream;
 
-pub(crate) use driver::SessionDriver;
+pub(crate) use driver::{EstablishedSession, SessionDriver};
 
 // The handshake frame rules live in the protocol domain; re-exported for
 // the session test harness.

@@ -664,7 +664,7 @@ pub(crate) fn transaction(value: u128) -> TransactionId {
 }
 
 pub(crate) fn namespace(tag: &str) -> StoreNamespace {
-  StoreNamespace::new(QualifiedTag::parse(tag).unwrap()).unwrap()
+  StoreNamespace::new(QualifiedTag::parse(tag).unwrap())
 }
 
 pub(crate) fn entry(

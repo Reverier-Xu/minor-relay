@@ -22,7 +22,9 @@ use crate::{
 };
 
 fn namespace() -> Result<StoreNamespace> {
-  StoreNamespace::new(crate::QualifiedTag::parse(RESOURCE_RECORD_NAMESPACE)?)
+  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+    RESOURCE_RECORD_NAMESPACE,
+  )?))
 }
 
 fn record_key(name: &ResourceName) -> StoreKey {
@@ -295,8 +297,7 @@ mod tests {
     let (_factory, store) = open_store().await;
     let namespace = crate::StoreNamespace::new(
       crate::QualifiedTag::parse(super::RESOURCE_RECORD_NAMESPACE).unwrap(),
-    )
-    .unwrap();
+    );
     let key = crate::StoreKey::new(Arc::from(name().as_str().as_bytes().to_vec()));
 
     let snapshot = store.snapshot().await.unwrap();

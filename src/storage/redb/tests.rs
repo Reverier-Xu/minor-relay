@@ -109,7 +109,7 @@ async fn redb_adapter_concurrent_same_generation_commits_exactly_once() {
 
   let make = |id: u64, value: &'static [u8]| {
     StoreTransaction::new(
-      TransactionId::parse(&format!("txn_{id:021}")).unwrap(),
+      crate::storage::test_util::transaction_id(id),
       base.clone(),
       vec![StoreOperation::Put {
         namespace: namespace.clone(),

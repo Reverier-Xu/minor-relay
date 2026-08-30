@@ -133,7 +133,7 @@ pub(crate) mod sync {
     let limit = limit.clamp(1, MAX_PAGE_DESCRIPTORS);
     let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
       super::super::NODE_DESCRIPTOR_NAMESPACE,
-    )?)?;
+    )?);
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
     let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {
@@ -200,8 +200,8 @@ pub(crate) mod sync {
 pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
   // The current record shape (version 2) carries capability labels.
   if let Ok(wire) =
-    decode_canonical::<super::DescriptorWire>(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-    && encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
+    decode_canonical::<super::DescriptorWire>(bytes, crate::protocol::CONTROL_CBOR_LIMITS)
+    && encode_canonical(&wire, crate::protocol::CONTROL_CBOR_LIMITS)
       .is_ok_and(|encoded| encoded == bytes)
   {
     return decode_wire(
@@ -221,10 +221,9 @@ pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<NodeDescriptorV1> {
   // The previous fixture shape (record version 1) ends at the `version`
   // element; a strict version 2 decode fails on the missing labels and
   // the record falls back to this shape.
-  let wire: super::DescriptorWireV1 =
-    decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
-      .map_err(|_| Error::invalid_input("node descriptor decode"))?;
-  if !encode_canonical(&wire, crate::protocol::offer::OFFER_CBOR_LIMITS)
+  let wire: super::DescriptorWireV1 = decode_canonical(bytes, crate::protocol::CONTROL_CBOR_LIMITS)
+    .map_err(|_| Error::invalid_input("node descriptor decode"))?;
+  if !encode_canonical(&wire, crate::protocol::CONTROL_CBOR_LIMITS)
     .is_ok_and(|encoded| encoded == bytes)
   {
     return Err(Error::invalid_input("node descriptor canonical"));
@@ -428,7 +427,7 @@ mod label_fixture_tests {
   use crate::{
     Endpoint, LabelKey, LabelSet, LabelValue, NodeId,
     membership::DescriptorWire,
-    protocol::{decode_canonical, encode_canonical, offer::OFFER_CBOR_LIMITS},
+    protocol::{CONTROL_CBOR_LIMITS, decode_canonical, encode_canonical},
   };
 
   fn node(value: u8) -> NodeId {
@@ -491,7 +490,7 @@ mod label_fixture_tests {
       removed: previous.removed(),
       version: 1,
     };
-    let bytes = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let bytes = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let decoded = decode_descriptor(&bytes).unwrap();
     assert_eq!(decoded.labels().entries().count(), 0);
     assert_eq!(decoded.node(), previous.node());
@@ -513,9 +512,9 @@ mod label_fixture_tests {
 
     // Swap the two entries on the wire.
     let mut tampered: DescriptorWire =
-      decode_canonical(&descriptor.encode().unwrap(), OFFER_CBOR_LIMITS).unwrap();
+      decode_canonical(&descriptor.encode().unwrap(), CONTROL_CBOR_LIMITS).unwrap();
     tampered.labels.reverse();
-    let bytes = encode_canonical(&tampered, OFFER_CBOR_LIMITS).unwrap();
+    let bytes = encode_canonical(&tampered, CONTROL_CBOR_LIMITS).unwrap();
     assert!(decode_descriptor(&bytes).is_err());
     let _ = good;
   }

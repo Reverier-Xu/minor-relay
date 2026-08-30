@@ -10,7 +10,6 @@ use crate::{QualifiedTag, StoreKey, StoreNamespace, StoreValue, TransactionId};
 
 pub(crate) fn namespace(name: &str) -> StoreNamespace {
   StoreNamespace::new(QualifiedTag::parse(&format!("relay.woooo.tech/metadata/{name}")).unwrap())
-    .unwrap()
 }
 
 pub(crate) fn key(bytes: &[u8]) -> StoreKey {
@@ -21,7 +20,6 @@ pub(crate) fn value(bytes: &[u8]) -> StoreValue {
   StoreValue::new(Arc::from(bytes))
 }
 
-#[cfg_attr(not(feature = "json"), allow(dead_code))]
 pub(crate) fn transaction_id(index: u64) -> TransactionId {
   TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }

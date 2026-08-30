@@ -49,12 +49,13 @@
 use minicbor::{Decode, Decoder, Encode, bytes::ByteVec};
 
 use super::{
+  CONTROL_CBOR_LIMITS,
   credential::{
     CredentialProof, CredentialSecret, PROOF_LEN, ProofRole, derive_proof, verify_proof,
   },
   encode_canonical,
   feature::FeatureRegistry,
-  offer::{FeatureOffer, OFFER_CBOR_LIMITS, Role},
+  offer::{FeatureOffer, Role},
   selection::{Selection, select},
   validate_canonical,
   wire::HandshakeKind,
@@ -459,7 +460,7 @@ impl Handshake {
       grant: ByteVec::from(grant.to_vec()),
     };
     let bytes =
-      encode_canonical(&wire, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
+      encode_canonical(&wire, CONTROL_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
         context: "handshake encode",
       })?;
     self.grant_sent = true;
@@ -484,7 +485,7 @@ impl Handshake {
   /// collisions, cluster or key conflicts, proof or signature mismatches, and
   /// selection divergence before the machine advances.
   pub(crate) fn receive(&mut self, bytes: &[u8]) -> Result<(), HandshakeError> {
-    validate_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
+    validate_canonical(bytes, CONTROL_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
     let (arity, kind) = probe(bytes)?;
     if arity != u64::from(kind.arity()) {
       return Err(HandshakeError::UnknownField);
@@ -541,7 +542,7 @@ impl Handshake {
   where
     T: Encode<()>, {
     let bytes =
-      encode_canonical(&wire, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
+      encode_canonical(&wire, CONTROL_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
         context: "handshake encode",
       })?;
     self.completed += 1;
@@ -759,7 +760,7 @@ pub(crate) struct InitiatorHelloPeek {
 
 /// Decodes a position-1 initiator hello for pre-configuration inspection.
 pub(crate) fn peek_initiator_hello(bytes: &[u8]) -> Result<InitiatorHelloPeek, HandshakeError> {
-  validate_canonical(bytes, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
+  validate_canonical(bytes, CONTROL_CBOR_LIMITS).map_err(|_| HandshakeError::NonCanonical)?;
   let wire: InitiatorHelloWire = decode_wire(bytes)?;
   if wire.kind != KIND_INITIATOR_HELLO {
     return Err(HandshakeError::Malformed {
@@ -828,7 +829,7 @@ const fn position_sender(kind: HandshakeKind) -> Role {
 fn decode_wire<T>(bytes: &[u8]) -> Result<T, HandshakeError>
 where
   T: for<'bytes> Decode<'bytes, ()> + Encode<()>, {
-  super::decode_canonical_strict_or(bytes, OFFER_CBOR_LIMITS).map_err(|failure| match failure {
+  super::decode_canonical_strict_or(bytes, CONTROL_CBOR_LIMITS).map_err(|failure| match failure {
     super::StrictDecodeFailure::Decode(_) => HandshakeError::Malformed {
       context: "handshake message decode",
     },
@@ -839,7 +840,8 @@ where
 fn fixed_bytes<const LENGTH: usize>(
   bytes: &ByteVec, context: &'static str,
 ) -> Result<[u8; LENGTH], HandshakeError> {
-  <[u8; LENGTH]>::try_from(bytes.as_slice()).map_err(|_| HandshakeError::Malformed { context })
+  crate::error::fixed_bytes(bytes.as_slice(), context)
+    .map_err(|_| HandshakeError::Malformed { context })
 }
 
 fn optional_bytes<const LENGTH: usize>(
@@ -880,7 +882,7 @@ fn assemble_transcript(
     selection: ByteVec::from(selection.to_vec()),
     channel_binding: ByteVec::from(channel_binding.to_vec()),
   };
-  encode_canonical(&wire, OFFER_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
+  encode_canonical(&wire, CONTROL_CBOR_LIMITS).map_err(|_| HandshakeError::Malformed {
     context: "handshake transcript",
   })
 }
@@ -1309,7 +1311,7 @@ mod tests {
         proof: Some(ByteVec::from([0x55; PROOF_LEN].to_vec())),
         signature: ByteVec::from([0x00; SIGNATURE_LEN].to_vec()),
       },
-      OFFER_CBOR_LIMITS,
+      CONTROL_CBOR_LIMITS,
     )
     .unwrap();
     assert_eq!(
@@ -1413,7 +1415,7 @@ mod tests {
         kind: KIND_ADMISSION_GRANT_DELIVERY,
         grant: ByteVec::from(Vec::new()),
       },
-      OFFER_CBOR_LIMITS,
+      CONTROL_CBOR_LIMITS,
     )
     .unwrap();
     assert_eq!(
@@ -1450,7 +1452,7 @@ mod tests {
       offer: ByteVec::from(wire.offer.to_vec()),
       extra: 0,
     };
-    let extra = encode_canonical(&extra, OFFER_CBOR_LIMITS).unwrap();
+    let extra = encode_canonical(&extra, CONTROL_CBOR_LIMITS).unwrap();
     assert_eq!(
       fresh(&pair.responder).receive(&extra),
       Err(HandshakeError::UnknownField)
@@ -1464,7 +1466,7 @@ mod tests {
       public_key: ByteVec::from(wire.public_key.to_vec()),
       nonce: ByteVec::from(wire.nonce.to_vec()),
     };
-    let truncated = encode_canonical(&truncated, OFFER_CBOR_LIMITS).unwrap();
+    let truncated = encode_canonical(&truncated, CONTROL_CBOR_LIMITS).unwrap();
     assert_eq!(
       fresh(&pair.responder).receive(&truncated),
       Err(HandshakeError::UnknownField)
@@ -1611,7 +1613,7 @@ mod tests {
       nonce: wire.nonce,
       offer: wire.offer,
     };
-    let missing_generation = encode_canonical(&missing_generation, OFFER_CBOR_LIMITS).unwrap();
+    let missing_generation = encode_canonical(&missing_generation, CONTROL_CBOR_LIMITS).unwrap();
     assert_eq!(
       fresh(&pair.responder).receive(&missing_generation),
       Err(HandshakeError::Malformed {

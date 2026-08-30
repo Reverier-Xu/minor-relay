@@ -225,12 +225,12 @@ pub struct NodeMetadataPatch {
 }
 
 /// The validated edits carried by one [`NodeMetadataPatch`].
-pub(crate) type PatchParts = (
-  Vec<Endpoint>,
-  Vec<Endpoint>,
-  Vec<(crate::LabelKey, crate::LabelValue)>,
-  Vec<crate::LabelKey>,
-);
+pub(crate) struct PatchParts {
+  pub(crate) add_endpoints: Vec<Endpoint>,
+  pub(crate) remove_endpoints: Vec<Endpoint>,
+  pub(crate) set_labels: Vec<(crate::LabelKey, crate::LabelValue)>,
+  pub(crate) remove_labels: Vec<crate::LabelKey>,
+}
 
 impl NodeMetadataPatch {
   pub fn new() -> Self {
@@ -274,12 +274,12 @@ impl NodeMetadataPatch {
   }
 
   pub(crate) fn into_parts(self) -> PatchParts {
-    (
-      self.add_endpoints,
-      self.remove_endpoints,
-      self.set_labels,
-      self.remove_labels,
-    )
+    PatchParts {
+      add_endpoints: self.add_endpoints,
+      remove_endpoints: self.remove_endpoints,
+      set_labels: self.set_labels,
+      remove_labels: self.remove_labels,
+    }
   }
 }
 
@@ -373,23 +373,20 @@ pub struct PageSpec {
 
 impl PageSpec {
   pub fn first(limit: usize) -> crate::Result<Self> {
-    if limit == 0 {
-      return Err(crate::Error::invalid_input("page limit"));
-    }
-    Ok(Self {
-      cursor: None,
-      limit,
-    })
+    Self::build(None, limit)
   }
 
   pub fn after(cursor: crate::PageCursor, limit: usize) -> crate::Result<Self> {
+    Self::build(Some(cursor), limit)
+  }
+
+  /// The single limit check behind both constructors: a first page and a
+  /// continuation differ only in their cursor.
+  fn build(cursor: Option<crate::PageCursor>, limit: usize) -> crate::Result<Self> {
     if limit == 0 {
       return Err(crate::Error::invalid_input("page limit"));
     }
-    Ok(Self {
-      cursor: Some(cursor),
-      limit,
-    })
+    Ok(Self { cursor, limit })
   }
 
   pub(crate) const fn cursor(&self) -> Option<&crate::PageCursor> {

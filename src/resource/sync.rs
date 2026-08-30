@@ -50,7 +50,7 @@ impl ResourceSyncPayload {
         schema: RESOURCE_SYNC_PAYLOAD_SCHEMA.to_owned(),
         payload: self.0.clone(),
       },
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
+      crate::protocol::CONTROL_CBOR_LIMITS,
     )
   }
 
@@ -60,7 +60,7 @@ impl ResourceSyncPayload {
   pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
     let wire: SyncPayloadWire = decode_canonical_strict(
       bytes,
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
+      crate::protocol::CONTROL_CBOR_LIMITS,
       "resource sync payload canonical form",
     )?;
     if wire.schema != RESOURCE_SYNC_PAYLOAD_SCHEMA {

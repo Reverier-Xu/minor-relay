@@ -287,3 +287,12 @@ const fn provider_error_context(context: ProviderErrorContext) -> &'static str {
     ProviderErrorContext::RoutingPolicy => "routing policy",
   }
 }
+
+/// The shared fixed-width byte-slice conversion: every wire decoder that
+/// pulls an exact-length id/key/digest field converts through this one
+/// helper so the length-mismatch error path cannot drift between sites.
+pub(crate) fn fixed_bytes<const LENGTH: usize>(
+  bytes: &[u8], context: &'static str,
+) -> Result<[u8; LENGTH]> {
+  <[u8; LENGTH]>::try_from(bytes).map_err(|_| Error::invalid_input(context))
+}

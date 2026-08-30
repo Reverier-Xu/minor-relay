@@ -161,7 +161,7 @@ pub trait Discovery: fmt::Debug + Send + Sync + 'static {
 }
 /// The built-in WSS transport: TLS 1.3 WebSocket over TCP, carrying the
 /// crate's prelude frames. Registered by default under
-/// `relay.woooo.tech/transports/wss`; the session driver and the G4
+/// [`BUILTIN_TRANSPORT_WSS`]; the session driver and the G4
 /// regressions use it through the registry.
 pub(crate) struct WssTransport;
 
@@ -172,6 +172,10 @@ impl fmt::Debug for WssTransport {
       .finish_non_exhaustive()
   }
 }
+
+/// The built-in WebSocket transport tag: the only dial/listen transport
+/// until the G4-06 candidate wiring consumes more registry entries.
+pub(crate) const BUILTIN_TRANSPORT_WSS: &str = "relay.woooo.tech/transports/wss";
 
 impl WssTransport {
   pub(crate) fn new() -> Self {
@@ -185,7 +189,7 @@ impl WssTransport {
     static TAG: std::sync::OnceLock<std::result::Result<TransportTag, ()>> =
       std::sync::OnceLock::new();
     TAG
-      .get_or_init(|| TransportTag::parse("relay.woooo.tech/transports/wss").map_err(|_| ()))
+      .get_or_init(|| TransportTag::parse(BUILTIN_TRANSPORT_WSS).map_err(|_| ()))
       .clone()
       .map_err(|_| crate::Error::internal("built-in transport tag"))
   }
@@ -461,7 +465,6 @@ mod tests {
 /// A transport wrapper that counts dial attempts at the registry boundary:
 /// the observation seam SC-G05-P0-22 requires (bounded configured attempts
 /// are visible to a caller without touching the session layer).
-#[cfg(test)]
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct CountingTransport {

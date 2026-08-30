@@ -34,6 +34,7 @@ use crate::{
   CommitOutcome, CommitReceipt, Digest, Error, ProviderErrorContext, ProviderErrorKind,
   QualifiedTag, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
   StoreRequirements, StoreRevision, StoreValue, TransactionId,
+  error::fixed_bytes,
   protocol::{CborLimits, decode_canonical_strict, encode_canonical},
   provider::{StorageFactory, StoreSnapshot},
 };
@@ -761,7 +762,7 @@ pub(super) fn pending_namespace() -> Result<StoreNamespace> {
   if tag.category() != crate::protocol::tag::CATEGORY_METADATA {
     return Err(Error::invalid_input("pending transaction namespace"));
   }
-  StoreNamespace::new(tag)
+  Ok(StoreNamespace::new(tag))
 }
 
 pub(super) fn pending_key(purpose: &str) -> StoreKey {
@@ -769,11 +770,7 @@ pub(super) fn pending_key(purpose: &str) -> StoreKey {
 }
 
 fn planned_namespace(value: &str) -> Result<StoreNamespace> {
-  QualifiedTag::parse(value).and_then(StoreNamespace::new)
-}
-
-fn fixed_bytes<const LENGTH: usize>(bytes: &[u8], context: &'static str) -> Result<[u8; LENGTH]> {
-  <[u8; LENGTH]>::try_from(bytes).map_err(|_| Error::invalid_input(context))
+  Ok(StoreNamespace::new(QualifiedTag::parse(value)?))
 }
 
 #[cfg(test)]
@@ -788,7 +785,7 @@ mod tests {
   };
 
   fn namespace(value: &str) -> StoreNamespace {
-    StoreNamespace::new(QualifiedTag::parse(value).unwrap()).unwrap()
+    StoreNamespace::new(QualifiedTag::parse(value).unwrap())
   }
 
   fn transaction() -> TransactionId {
@@ -829,10 +826,7 @@ mod tests {
   }
 
   fn golden(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-      .step_by(2)
-      .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
-      .collect()
+    crate::hex::decode(hex, "golden").unwrap()
   }
 
   use crate::hex::encode as hex;

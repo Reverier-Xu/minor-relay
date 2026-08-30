@@ -73,7 +73,7 @@ impl SyncPayload {
         kind,
         payload,
       },
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
+      crate::protocol::CONTROL_CBOR_LIMITS,
     )
   }
 
@@ -82,7 +82,7 @@ impl SyncPayload {
   pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
     let wire: SyncPayloadWire = decode_canonical_strict(
       bytes,
-      crate::protocol::offer::OFFER_CBOR_LIMITS,
+      crate::protocol::CONTROL_CBOR_LIMITS,
       "membership sync payload canonical form",
     )?;
     if wire.schema != SYNC_PAYLOAD_SCHEMA {

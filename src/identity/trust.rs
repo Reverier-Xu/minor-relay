@@ -117,7 +117,7 @@ impl TrustSnapshotV1 {
 
   /// Encodes the full wire record.
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
-    encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
+    encode_canonical(&self.wire(), crate::protocol::CONTROL_CBOR_LIMITS)
   }
 
   fn wire(&self) -> SnapshotWire {
@@ -145,7 +145,7 @@ impl TrustSnapshotV1 {
   /// that delivered them (ADR-0008); the caller compares the cluster and
   /// issuer markings against its local view where that matters.
   pub(crate) fn decode(bytes: &[u8]) -> Result<TrustSnapshotV1> {
-    let wire: SnapshotWire = decode_canonical(bytes, crate::protocol::offer::OFFER_CBOR_LIMITS)
+    let wire: SnapshotWire = decode_canonical(bytes, crate::protocol::CONTROL_CBOR_LIMITS)
       .map_err(|_| crate::Error::invalid_input("trust snapshot decode"))?;
     if wire.schema != TRUST_SNAPSHOT_SCHEMA || wire.record_version != 1 {
       return Err(crate::Error::invalid_input("trust snapshot schema"));
@@ -430,19 +430,28 @@ pub(crate) mod store {
     StoreValue, TransactionId, api::Entropy, storage::MetadataStore,
   };
 
+  /// The zero-padded revision width in snapshot store keys. Single-sourced
+  /// so the writer and the parse-back cannot drift: lexicographic key
+  /// order must equal revision order, which requires a fixed width.
+  const REVISION_KEY_DIGITS: usize = 20;
+
   fn snapshot_namespace() -> Result<StoreNamespace> {
-    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_SNAPSHOT_NAMESPACE)?)
+    Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+      TRUST_SNAPSHOT_NAMESPACE,
+    )?))
   }
 
   fn binding_namespace() -> Result<StoreNamespace> {
-    StoreNamespace::new(crate::QualifiedTag::parse(TRUST_BINDING_NAMESPACE)?)
+    Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+      TRUST_BINDING_NAMESPACE,
+    )?))
   }
 
   fn snapshot_key(issuer: &NodeId, revision: u64) -> StoreKey {
-    let mut bytes = Vec::with_capacity(issuer.as_str().len() + 21);
+    let mut bytes = Vec::with_capacity(issuer.as_str().len() + 1 + REVISION_KEY_DIGITS);
     bytes.extend_from_slice(issuer.as_str().as_bytes());
     bytes.push(b'/');
-    bytes.extend_from_slice(format!("{revision:020}").as_bytes());
+    bytes.extend_from_slice(format!("{revision:0width$}", width = REVISION_KEY_DIGITS).as_bytes());
     StoreKey::new(Arc::from(bytes))
   }
 
@@ -540,10 +549,14 @@ pub(crate) mod store {
   fn revision_from_key(key: &StoreKey) -> Result<u64> {
     let text = std::str::from_utf8(key.as_bytes())
       .map_err(|_| crate::Error::invalid_input("trust snapshot key"))?;
-    text
+    let revision = text
       .rsplit('/')
       .next()
-      .ok_or_else(|| crate::Error::invalid_input("trust snapshot key"))?
+      .ok_or_else(|| crate::Error::invalid_input("trust snapshot key"))?;
+    if revision.len() != REVISION_KEY_DIGITS {
+      return Err(crate::Error::invalid_input("trust snapshot key"));
+    }
+    revision
       .parse::<u64>()
       .map_err(|_| crate::Error::invalid_input("trust snapshot revision"))
   }

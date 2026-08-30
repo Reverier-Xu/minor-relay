@@ -35,7 +35,9 @@ fn schema_key() -> StoreKey {
 }
 
 fn schema_namespace() -> Result<StoreNamespace> {
-  StoreNamespace::new(crate::QualifiedTag::parse(SCHEMA_NAMESPACE)?)
+  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+    SCHEMA_NAMESPACE,
+  )?))
 }
 
 fn encode_schema_record(kind: u8, tag: &str, digest: Option<&Digest>) -> StoreValue {
@@ -170,10 +172,10 @@ impl MigrationRegistry {
   pub(super) fn edge_transaction_id(edge: &MigrationEdge) -> Result<TransactionId> {
     TransactionId::parse(&format!(
       "txn_{}",
-      encode_base62_suffix(migration_transaction_value(
+      encode_base62_suffix(migration_transaction_value(&[
         edge.tag.as_bytes(),
-        &edge.digest
-      )?)?
+        edge.digest.as_bytes()
+      ])?)?
     ))
   }
 
@@ -195,15 +197,7 @@ impl MigrationRegistry {
     let snapshot = storage.snapshot().await?;
     let operation =
       Self::schema_record_operation(&*snapshot, BASE_RECORD_KIND, self.base, None).await?;
-    let mut hasher = Sha256::new();
-    hasher.update(b"relay.woooo.tech/migration-transaction-v1");
-    hasher.update(self.base.as_bytes());
-    let digest = hasher.finalize();
-    let value = u128::from_be_bytes(
-      digest[..16]
-        .try_into()
-        .map_err(|_| Error::internal("migration transaction value"))?,
-    );
+    let value = migration_transaction_value(&[self.base.as_bytes()])?;
     let transaction = StoreTransaction::new(
       TransactionId::parse(&format!("txn_{}", encode_base62_suffix(value)?))?,
       snapshot.revision().clone(),
@@ -294,11 +288,27 @@ pub(crate) enum SchemaOutcome {
   Migrated { edges: u32 },
 }
 
-fn migration_transaction_value(tag: &[u8], digest: &Digest) -> Result<u128> {
+/// The domain-separation string anchoring every migration transaction id
+/// derivation. It must stay byte-identical forever: transaction ids are
+/// deterministic across releases and re-derivation is what makes replay
+/// idempotent.
+const MIGRATION_TRANSACTION_DOMAIN: &[u8] = b"relay.woooo.tech/migration-transaction-v1";
+
+/// The domain-separation string for the migration implementation digest.
+/// Must stay byte-identical forever (it anchors edge identity).
+const MIGRATION_IMPLEMENTATION_DOMAIN: &[u8] = b"relay.woooo.tech/migration-implementation-v1";
+
+/// Derives a deterministic migration transaction-id value: the
+/// domain-separated SHA-256 over the ordered parts, truncated to the
+/// first 16 bytes and read big-endian. The base stamp passes its schema
+/// id bytes; every edge passes its tag and implementation digest, so all
+/// sites share one derivation and cannot drift.
+fn migration_transaction_value(parts: &[&[u8]]) -> Result<u128> {
   let mut hasher = Sha256::new();
-  hasher.update(b"relay.woooo.tech/migration-transaction-v1");
-  hasher.update(tag);
-  hasher.update(digest.as_bytes());
+  hasher.update(MIGRATION_TRANSACTION_DOMAIN);
+  for part in parts {
+    hasher.update(part);
+  }
   let hashed = hasher.finalize();
   let bytes: [u8; 16] = hashed[..16]
     .try_into()
@@ -320,10 +330,14 @@ mod tests {
   pub(super) const V3: &str = "relay.woooo.tech/schemas/metadata-test-v3";
   pub(super) const EDGE_ONE_TAG: &str = "relay.woooo.tech/schemas/migration-edge-one-v1";
   pub(super) const EDGE_TWO_TAG: &str = "relay.woooo.tech/schemas/migration-edge-two-v1";
+  /// The edge fixtures migrate records into this namespace; single-sourced
+  /// because the digest-reconstruction tests must agree with the edge
+  /// transforms on the exact namespace text.
+  pub(super) const MODERN_NAMESPACE: &str = "relay.woooo.tech/migration/modern-v1";
 
   pub(super) fn fixture_digest(tag: &str) -> Digest {
     let mut hasher = Sha256::new();
-    hasher.update(b"relay.woooo.tech/migration-implementation-v1");
+    hasher.update(MIGRATION_IMPLEMENTATION_DOMAIN);
     hasher.update(tag.as_bytes());
     Digest::from_bytes(hasher.finalize().into())
   }
@@ -335,10 +349,7 @@ mod tests {
   ) -> BoxFuture<'_, Result<Vec<StoreOperation>>> {
     Box::pin(async move {
       let legacy = util::namespace("migration-legacy");
-      let modern = StoreNamespace::new(
-        crate::QualifiedTag::parse("relay.woooo.tech/migration/modern-v1").unwrap(),
-      )
-      .unwrap();
+      let modern = StoreNamespace::new(crate::QualifiedTag::parse(MODERN_NAMESPACE).unwrap());
       let mut operations = Vec::new();
       let mut scan = snapshot.scan(&legacy, &[]).await?;
       while let Some(entry) = scan.next().await? {
@@ -366,10 +377,7 @@ mod tests {
     snapshot: &dyn StoreSnapshot,
   ) -> BoxFuture<'_, Result<Vec<StoreOperation>>> {
     Box::pin(async move {
-      let modern = StoreNamespace::new(
-        crate::QualifiedTag::parse("relay.woooo.tech/migration/modern-v1").unwrap(),
-      )
-      .unwrap();
+      let modern = StoreNamespace::new(crate::QualifiedTag::parse(MODERN_NAMESPACE).unwrap());
       let mut operations = Vec::new();
       let mut scan = snapshot.scan(&modern, &[]).await?;
       while let Some(entry) = scan.next().await? {
@@ -557,10 +565,7 @@ mod tests {
     // state exists.
     let snapshot = storage.snapshot().await.unwrap();
     let legacy = util::namespace("migration-legacy");
-    let modern = StoreNamespace::new(
-      crate::QualifiedTag::parse("relay.woooo.tech/migration/modern-v1").unwrap(),
-    )
-    .unwrap();
+    let modern = StoreNamespace::new(crate::QualifiedTag::parse(MODERN_NAMESPACE).unwrap());
     assert!(
       snapshot
         .get(&legacy, &util::key(b"record"))
@@ -660,7 +665,10 @@ mod crash_tests {
   use std::sync::Arc;
 
   use super::{
-    tests::{BASE_VERSION, EDGE_ONE_TAG, V2, fixture_digest, plan_edge_one, registry_one_edge},
+    tests::{
+      BASE_VERSION, EDGE_ONE_TAG, MODERN_NAMESPACE, V2, fixture_digest, plan_edge_one,
+      registry_one_edge,
+    },
     *,
   };
   use crate::{
@@ -825,10 +833,7 @@ mod crash_tests {
   /// holds exactly one record at the seeded revision, so the transform
   /// plan, the schema record rewrite, and the base revision are all fixed.
   fn deterministic_edge_operation_digest(edge: &MigrationEdge) -> Digest {
-    let modern = StoreNamespace::new(
-      crate::QualifiedTag::parse("relay.woooo.tech/migration/modern-v1").unwrap(),
-    )
-    .unwrap();
+    let modern = StoreNamespace::new(crate::QualifiedTag::parse(MODERN_NAMESPACE).unwrap());
     let base_record = encode_schema_record(BASE_RECORD_KIND, BASE_VERSION, None);
     let operations = vec![
       StoreOperation::Put {
@@ -861,10 +866,7 @@ mod crash_tests {
   async fn assert_migration_old_or_new(storage: &dyn Storage, old: bool, point: u8) {
     let snapshot = storage.snapshot().await.unwrap();
     let legacy = util::namespace("migration-legacy");
-    let modern = StoreNamespace::new(
-      crate::QualifiedTag::parse("relay.woooo.tech/migration/modern-v1").unwrap(),
-    )
-    .unwrap();
+    let modern = StoreNamespace::new(crate::QualifiedTag::parse(MODERN_NAMESPACE).unwrap());
     let legacy_value = snapshot.get(&legacy, &util::key(b"record")).await.unwrap();
     let modern_value = snapshot.get(&modern, &util::key(b"record")).await.unwrap();
     let schema = snapshot

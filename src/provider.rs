@@ -362,8 +362,12 @@ impl fmt::Debug for StoreRevision {
 pub struct StoreNamespace(QualifiedTag);
 
 impl StoreNamespace {
-  pub fn new(value: QualifiedTag) -> Result<Self> {
-    Ok(Self(value))
+  /// The namespace is a plain wrapper over an already-validated
+  /// [`QualifiedTag`]; unlike the parse-side constructors it cannot fail,
+  /// so the old vestigial `Result` (which forced a `?` on every caller
+  /// for validation that never happened) is gone.
+  pub const fn new(value: QualifiedTag) -> Self {
+    Self(value)
   }
 
   pub fn as_str(&self) -> &str {
@@ -862,8 +866,7 @@ mod tests {
   #[test]
   fn g1_core_store_transaction_rejects_duplicate_identities_across_variants() {
     let namespace =
-      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/duplicates").unwrap())
-        .unwrap();
+      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/duplicates").unwrap());
     let key = StoreKey::new(Arc::from(b"same-key".as_slice()));
     let revision = StoreRevision::new(Arc::from([1])).unwrap();
     let operations = [
@@ -921,7 +924,7 @@ mod tests {
   fn g1_core_store_transaction_accepts_large_unique_operation_set() {
     const OPERATION_COUNT: usize = 16_384;
     let namespace =
-      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/large").unwrap()).unwrap();
+      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/large").unwrap());
     let operations = (0..OPERATION_COUNT)
       .map(|index| StoreOperation::Check {
         namespace: namespace.clone(),
@@ -941,8 +944,7 @@ mod tests {
 
   fn transaction_fixture(revision: u8, value: &[u8]) -> StoreTransaction {
     let namespace =
-      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap())
-        .unwrap();
+      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap());
     let operations = Arc::from([StoreOperation::Put {
       namespace,
       key: StoreKey::new(Arc::from(b"secret-key".as_slice())),

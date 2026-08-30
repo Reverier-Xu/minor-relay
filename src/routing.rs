@@ -381,7 +381,7 @@ impl CandidateNodeReader for StoreCandidateReader {
       let limit = limit.clamp(1, crate::membership::page::DEFAULT_PAGE_LIMIT);
       let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
         crate::membership::NODE_DESCRIPTOR_NAMESPACE,
-      )?)?;
+      )?);
       let mut scan = self.snapshot.scan(&namespace, &[]).await?;
       let paged = crate::paging::scan_paged(
         scan.as_mut(),

@@ -41,7 +41,7 @@ pub fn required_capabilities() -> StoreCapabilities {
 }
 
 pub fn namespace(tag: &str) -> StoreNamespace {
-  StoreNamespace::new(QualifiedTag::parse(tag).unwrap()).unwrap()
+  StoreNamespace::new(QualifiedTag::parse(tag).unwrap())
 }
 
 /// An ordered, cross-provider event log for startup-order assertions.

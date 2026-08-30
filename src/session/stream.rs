@@ -713,10 +713,6 @@ async fn liveness_observer(
   }
 }
 
-/// Drains a replaced session: it stops accepting new work, its pending
-/// admissions fail exactly once with `StreamInterrupted`, and the retire
-/// signal closes its reader so the connection tears down after the winner
-/// is registered.
 /// Closes the authenticated session to `peer` from the node side: removes
 /// the entry so no further routing occurs and retires it so its reader and
 /// writer loops end (DisconnectPeer, SC-G05-P0-22 partition simulation).
@@ -732,6 +728,10 @@ pub(crate) fn retire_session(table: &SessionTable, peer: &NodeId) -> Result<()> 
   Ok(())
 }
 
+/// Drains one replaced session: it stops accepting new work, its pending
+/// admissions fail exactly once with `StreamInterrupted`, and the retire
+/// signal closes its reader so the connection tears down after the winner
+/// is registered.
 fn retire(entry: &SessionEntry) {
   entry.alive.store(false, Ordering::SeqCst);
   if let Ok(mut pending) = entry.pending_acks.lock() {

@@ -185,8 +185,7 @@ fn g1_core_storage_boundary_values_round_trip() {
   assert!(StoreRevision::new(Arc::from([])).is_err());
 
   let namespace =
-    StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap())
-      .unwrap();
+    StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap());
   let key = StoreKey::new(Arc::from(b"node-key".as_slice()));
   let value = StoreValue::new(Arc::from(b"metadata-value".as_slice()));
   assert_eq!(namespace.as_str(), "relay.woooo.tech/metadata/identity");

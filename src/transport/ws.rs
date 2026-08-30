@@ -97,8 +97,7 @@ fn parse_generation_hex(text: &str) -> Result<[u8; 16]> {
 
 /// The aggregate WebSocket message limit: ADR-0002's body ceiling plus one
 /// 16-byte prelude.
-pub(crate) const MAX_MESSAGE_BYTES: usize =
-  crate::protocol::offer::ADR0002_BODY_BYTES + PRELUDE_LEN;
+pub(crate) const MAX_MESSAGE_BYTES: usize = crate::protocol::ADR0002_BODY_BYTES + PRELUDE_LEN;
 
 fn config() -> WebSocketConfig {
   let mut config = WebSocketConfig::default();

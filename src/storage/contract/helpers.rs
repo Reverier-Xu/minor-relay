@@ -95,8 +95,14 @@ pub(crate) fn committed(outcome: CommitOutcome) -> CommitReceipt {
   }
 }
 
+/// The contract lanes' transaction-id helper, single-sourced in
+/// `test_util` (one `txn_` format and parse for every lane).
+pub(crate) use crate::storage::test_util::transaction_id;
+
+/// Engine-lane alias for call-site readability; delegates to the
+/// single-sourced [`transaction_id`].
 pub(crate) fn contract_transaction_id(index: u16) -> TransactionId {
-  TransactionId::parse(&format!("txn_{index:021}")).unwrap()
+  transaction_id(u64::from(index))
 }
 
 pub(crate) async fn collect_scan(mut scan: Box<dyn StoreScan + '_>) -> Vec<StoreEntry> {
@@ -119,13 +125,9 @@ pub(crate) fn required_capabilities() -> StoreCapabilities {
 pub(crate) use crate::storage::test_util::{key as store_key, namespace, value};
 
 pub(crate) fn transaction(
-  index: u8, base_revision: StoreRevision, operations: Vec<StoreOperation>,
+  index: u64, base_revision: StoreRevision, operations: Vec<StoreOperation>,
 ) -> Result<StoreTransaction> {
   StoreTransaction::new(transaction_id(index), base_revision, operations)
-}
-
-pub(crate) fn transaction_id(index: u8) -> TransactionId {
-  TransactionId::parse(&format!("txn_{index:021}")).unwrap()
 }
 
 pub(crate) fn reference_revision(generation: u64) -> StoreRevision {

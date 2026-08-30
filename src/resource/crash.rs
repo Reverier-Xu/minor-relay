@@ -92,7 +92,7 @@ async fn open_store(factory: &Arc<dyn StorageFactory>) -> MetadataStore {
     .unwrap()
 }
 
-async fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
+fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
   Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()))
 }
 
@@ -115,7 +115,7 @@ async fn seed(factory: &Arc<dyn StorageFactory>) -> MetadataStore {
 /// the identical receipt identity.
 async fn child_identity() -> CommitReceipt {
   let dir = TempDir::new().unwrap();
-  let factory = factory(&dir).await;
+  let factory = factory(&dir);
   let store = seed(&factory).await;
   match commit_record_ctx(&store, &SeedEntropy(CHILD_ENTROPY_SEED), &new_record())
     .await
@@ -173,7 +173,7 @@ async fn resource_crash_boundaries_recover_exact_old_or_new_register() {
   let mut committed_points = Vec::new();
   for point in 1..=LAST_POINT {
     let dir = TempDir::new().unwrap();
-    let factory = factory(&dir).await;
+    let factory = factory(&dir);
     let seeded = seed(&factory).await;
     drop(seeded);
 
@@ -241,7 +241,7 @@ fn removal_record() -> ResourceRecordV1 {
 /// same way `child_identity` does for the commit lane.
 async fn delete_identity() -> CommitReceipt {
   let dir = TempDir::new().unwrap();
-  let factory = factory(&dir).await;
+  let factory = factory(&dir);
   let store = MetadataStore::open(&factory, Duration::from_secs(10))
     .await
     .unwrap();
@@ -259,8 +259,7 @@ async fn delete_identity() -> CommitReceipt {
   let snapshot = provider.snapshot().await.unwrap();
   let namespace = crate::StoreNamespace::new(
     crate::QualifiedTag::parse(super::store::RESOURCE_RECORD_NAMESPACE).unwrap(),
-  )
-  .unwrap();
+  );
   let key = crate::StoreKey::new(Arc::from(name().as_str().as_bytes().to_vec()));
   let stored = snapshot
     .get(&namespace, &key)
@@ -313,8 +312,7 @@ async fn resource_delete_child_entry() {
   let snapshot = provider.snapshot().await.unwrap();
   let namespace = crate::StoreNamespace::new(
     crate::QualifiedTag::parse(super::store::RESOURCE_RECORD_NAMESPACE).unwrap(),
-  )
-  .unwrap();
+  );
   let key = crate::StoreKey::new(Arc::from(name().as_str().as_bytes().to_vec()));
   let stored = snapshot
     .get(&namespace, &key)
@@ -347,7 +345,7 @@ async fn resource_delete_boundaries_recover_old_or_new_presence() {
   let mut committed_points = Vec::new();
   for point in 1..=LAST_POINT {
     let dir = TempDir::new().unwrap();
-    let factory = factory(&dir).await;
+    let factory = factory(&dir);
     let store = MetadataStore::open(&factory, Duration::from_secs(10))
       .await
       .unwrap();

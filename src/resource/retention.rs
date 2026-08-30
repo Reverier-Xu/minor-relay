@@ -110,7 +110,7 @@ pub(crate) async fn sweep_removed_ctx(
 ) -> Result<usize> {
   let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
     super::store::RESOURCE_RECORD_NAMESPACE,
-  )?)?;
+  )?);
   let now = clock.now();
   let snapshot = store.snapshot().await?;
   let mut scan = snapshot.scan(&namespace, &[]).await?;
@@ -348,8 +348,7 @@ mod tests {
     let snapshot = provider.snapshot().await.unwrap();
     let namespace = crate::StoreNamespace::new(
       crate::QualifiedTag::parse(crate::resource::store::RESOURCE_RECORD_NAMESPACE).unwrap(),
-    )
-    .unwrap();
+    );
     let key = crate::StoreKey::new(Arc::from(name(5).as_str().as_bytes().to_vec()));
     let stale = crate::StoreTransaction::new(
       crate::TransactionId::generate(&SystemEntropy).unwrap(),

@@ -19,9 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use minicbor::Encode;
 
 use super::{
-  FeatureTag, QualifiedTag, encode_canonical,
+  CONTROL_CBOR_LIMITS, FeatureTag, QualifiedTag, encode_canonical,
   feature::FeatureRegistry,
-  offer::{FeatureOffer, LimitEntryWire, OFFER_CBOR_LIMITS},
+  offer::{FeatureOffer, LimitEntryWire},
 };
 use crate::Error;
 
@@ -228,7 +228,7 @@ pub(crate) fn select(
       .collect(),
   };
   let bytes =
-    encode_canonical(&wire, OFFER_CBOR_LIMITS).map_err(|_| SelectionError::Malformed {
+    encode_canonical(&wire, CONTROL_CBOR_LIMITS).map_err(|_| SelectionError::Malformed {
       context: "selection encode",
     })?;
   Ok(Selection {
@@ -550,17 +550,7 @@ mod tests {
     (tag, digest)
   }
 
-  fn extension_tag(name: &str) -> FeatureTag {
-    FeatureTag::parse(&format!("testing.example/features/{name}")).unwrap()
-  }
-
-  fn extension_feature(name: &str, fingerprint_byte: u8) -> crate::FeatureDefinition {
-    crate::FeatureDefinition::new(
-      extension_tag(name),
-      Digest::from_bytes([fingerprint_byte; 32]),
-    )
-    .unwrap()
-  }
+  use crate::protocol::offer::fixtures::{extension_feature, extension_tag};
 
   fn extension_offer(
     registry: &FeatureRegistry, supported: &[&str], required: &[&str],

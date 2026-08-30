@@ -29,7 +29,7 @@ use minicbor::{Decode, Encode, bytes::ByteVec};
 use tokio::time::timeout;
 
 use crate::{
-  ClusterId, Digest, Error, NodeId, OperationId, PublicKey, Result,
+  ClusterId, Digest, Error, NodeId, PublicKey, Result,
   api::Entropy,
   identity::{
     admission::{AdmissionProposal, adopt_admission, commit_admission},
@@ -41,13 +41,14 @@ use crate::{
     },
   },
   protocol::{
+    CONTROL_CBOR_LIMITS,
     credential::CredentialSecret,
     feature::FeatureRegistry,
     handshake::{
       Handshake, HandshakeConfig, HandshakeMode, initiator_session_message, peek_initiator_hello,
       responder_session_message,
     },
-    offer::{FeatureOffer, OFFER_CBOR_LIMITS, Role},
+    offer::{FeatureOffer, Role},
     wire::{BASE_SCHEMA_ID, HandshakeKind},
   },
   provider::KeyProvider,
@@ -366,7 +367,7 @@ impl SessionDriver {
     let proposal = AdmissionProposal::new(
       peer_id.clone(),
       peer_key.clone(),
-      GenerationId::from_operation(OperationId::from_bytes(generation)),
+      GenerationId::from_bytes(generation),
       AdmissionId::generate(self.entropy.as_ref())?,
     );
     let grant =
@@ -662,7 +663,7 @@ fn encode_grant_payload(grant: &AdmissionGrantV1, genesis_digest: &Digest) -> Re
       grant: ByteVec::from(grant.encode()?),
       genesis_digest: ByteVec::from(genesis_digest.as_bytes().to_vec()),
     },
-    OFFER_CBOR_LIMITS,
+    CONTROL_CBOR_LIMITS,
   )
 }
 
@@ -675,13 +676,12 @@ fn decode_grant_payload(
   payload: &[u8], expected_cluster: &ClusterId, subject: &NodeId, subject_key: &PublicKey,
   issuer: &NodeId, issuer_key: &PublicKey,
 ) -> Result<(AdmissionGrantV1, Digest)> {
-  let wire: GrantPayloadWire = crate::protocol::decode_canonical(payload, OFFER_CBOR_LIMITS)
-    .map_err(|_| Error::authentication_failed("admission grant payload"))?;
-  let reencoded = crate::protocol::encode_canonical(&wire, OFFER_CBOR_LIMITS)
-    .map_err(|_| Error::authentication_failed("admission grant payload"))?;
-  if reencoded != payload {
-    return Err(Error::authentication_failed("admission grant payload"));
-  }
+  let wire: GrantPayloadWire = crate::protocol::decode_canonical_strict(
+    payload,
+    CONTROL_CBOR_LIMITS,
+    "admission grant payload canonical",
+  )
+  .map_err(|_| Error::authentication_failed("admission grant payload"))?;
   let digest: [u8; 32] = wire
     .genesis_digest
     .as_slice()

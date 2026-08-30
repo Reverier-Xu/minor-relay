@@ -14,8 +14,7 @@ use tempfile::TempDir;
 use super::RedbStoreFactory;
 use crate::{
   CommitOutcome, ReconcileOutcome, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
-  StoreRequirements, StoreRevision, StoreTransaction, StoreValue, TransactionId,
-  provider::StorageFactory,
+  StoreRequirements, StoreRevision, StoreTransaction, StoreValue, provider::StorageFactory,
 };
 
 const CRASH_DIR_ENV: &str = "MINOR_RELAY_REDB_CRASH_DIR";
@@ -36,12 +35,11 @@ fn requirements() -> StoreRequirements {
 
 fn namespace() -> StoreNamespace {
   StoreNamespace::new(crate::QualifiedTag::parse("relay.woooo.tech/crash/redb-v1").unwrap())
-    .unwrap()
 }
 
 fn put_transaction(index: u64, base: StoreRevision, name: &[u8], value: &[u8]) -> StoreTransaction {
   StoreTransaction::new(
-    TransactionId::parse(&format!("txn_{index:021}")).unwrap(),
+    crate::storage::test_util::transaction_id(index),
     base,
     vec![StoreOperation::Put {
       namespace: namespace(),

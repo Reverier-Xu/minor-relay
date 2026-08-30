@@ -118,7 +118,7 @@ pub(crate) struct FrameRules {
 /// The frame rules of the handshake phase: declared handshake kinds only,
 /// no flags, bounded by the offer decode limits.
 pub(crate) fn handshake_frame_rules() -> crate::Result<FrameRules> {
-  let limit = u32::try_from(crate::protocol::offer::OFFER_CBOR_LIMITS.max_body_len())
+  let limit = u32::try_from(crate::protocol::CONTROL_CBOR_LIMITS.max_body_len())
     .map_err(|_| crate::Error::invalid_input("handshake frame limit"))?;
   Ok(FrameRules {
     allowed_flags: 0,

@@ -879,7 +879,7 @@ impl StoreRevision {
     pub fn as_bytes(&self) -> &[u8];
 }
 impl StoreNamespace {
-    pub fn new(value: QualifiedTag) -> Result<Self>;
+    pub const fn new(value: QualifiedTag) -> Self;
     pub fn as_str(&self) -> &str;
 }
 impl StoreKey {

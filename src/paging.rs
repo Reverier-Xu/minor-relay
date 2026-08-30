@@ -50,7 +50,7 @@ pub(crate) fn encode_page(
         .collect(),
       cursor: cursor.map(|value| ByteVec::from(value.to_vec())),
     },
-    crate::protocol::offer::OFFER_CBOR_LIMITS,
+    crate::protocol::CONTROL_CBOR_LIMITS,
   )
 }
 
@@ -63,11 +63,8 @@ type PageEnvelope = (Vec<Vec<u8>>, Option<Vec<u8>>);
 pub(crate) fn decode_page(
   bytes: &[u8], schema: &str, max_items: usize, context: &'static str,
 ) -> Result<PageEnvelope> {
-  let wire: PageEnvelopeWire = crate::protocol::decode_canonical_strict(
-    bytes,
-    crate::protocol::offer::OFFER_CBOR_LIMITS,
-    context,
-  )?;
+  let wire: PageEnvelopeWire =
+    crate::protocol::decode_canonical_strict(bytes, crate::protocol::CONTROL_CBOR_LIMITS, context)?;
   if wire.schema != schema {
     return Err(Error::invalid_input(context));
   }
@@ -177,7 +174,7 @@ mod tests {
   impl VecScan {
     fn new(count: usize) -> Self {
       let namespace =
-        StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/test/paging").unwrap()).unwrap();
+        StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/test/paging").unwrap());
       let entries = (0..count)
         .map(|index| {
           StoreEntry::new(

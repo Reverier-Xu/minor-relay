@@ -91,7 +91,7 @@ impl FeatureDefinition {
   /// The built-in `relay.woooo.tech` domain is reserved for the frozen
   /// built-in definitions and is rejected here.
   pub fn new(tag: FeatureTag, fingerprint: Digest) -> Result<Self> {
-    if tag_domain(tag.as_str()) == BUILTIN_DOMAIN {
+    if tag.domain() == BUILTIN_DOMAIN {
       return Err(Error::invalid_input(
         "feature definition reserved namespace",
       ));
@@ -193,11 +193,23 @@ impl FeatureDefinition {
   }
 
   fn wire(&self) -> DefinitionWire {
-    let mut dependencies = string_tags(&self.dependencies);
+    let mut dependencies: Vec<String> = self
+      .dependencies
+      .iter()
+      .map(|tag| tag.as_str().to_owned())
+      .collect();
     dependencies.sort();
-    let mut conflicts = string_tags(&self.conflicts);
+    let mut conflicts: Vec<String> = self
+      .conflicts
+      .iter()
+      .map(|tag| tag.as_str().to_owned())
+      .collect();
     conflicts.sort();
-    let mut protocols = string_tags(&self.protocols);
+    let mut protocols: Vec<String> = self
+      .protocols
+      .iter()
+      .map(|tag| tag.as_str().to_owned())
+      .collect();
     protocols.sort();
     let mut limits: Vec<LimitDefinitionWire> =
       self.limits.iter().map(LimitDefinition::wire).collect();
@@ -408,8 +420,9 @@ impl FeatureRegistry {
         return Err(Error::invalid_input("feature registry duplicate label"));
       }
     }
+    let builtins = builtin_definitions()?;
     for definition in map.values() {
-      check_reserved_namespace(definition)?;
+      check_reserved_namespace(definition, &builtins)?;
     }
     check_dependencies(&map)?;
     check_conflicts(&map)?;
@@ -436,17 +449,19 @@ impl FeatureRegistry {
 /// session authentication and the session core it anchors.
 pub(crate) fn required_session_features() -> Result<[FeatureTag; 2]> {
   Ok([
-    feature_tag(AUTH_ED25519_SESSION)?,
-    feature_tag(SESSION_CORE)?,
+    FeatureTag::parse(AUTH_ED25519_SESSION)?,
+    FeatureTag::parse(SESSION_CORE)?,
   ])
 }
 
-fn check_reserved_namespace(definition: &FeatureDefinition) -> Result<()> {
-  if tag_domain(definition.tag().as_str()) != BUILTIN_DOMAIN {
+fn check_reserved_namespace(
+  definition: &FeatureDefinition, builtins: &[FeatureDefinition],
+) -> Result<()> {
+  if definition.tag().domain() != BUILTIN_DOMAIN {
     return Ok(());
   }
   let actual = definition.definition_digest()?;
-  for candidate in builtin_definitions()? {
+  for candidate in builtins {
     if candidate.tag() == definition.tag() && candidate.definition_digest()? == actual {
       return Ok(());
     }
@@ -531,29 +546,29 @@ fn check_unique_ownership(definitions: &BTreeMap<FeatureTag, FeatureDefinition>)
 
 fn builtin_definitions() -> Result<Vec<FeatureDefinition>> {
   let auth = builtin(AUTH_ED25519_SESSION)?;
-  let session = builtin(SESSION_CORE)?.dependency(feature_tag(AUTH_ED25519_SESSION)?)?;
+  let session = builtin(SESSION_CORE)?.dependency(FeatureTag::parse(AUTH_ED25519_SESSION)?)?;
   let data = builtin(DATA_MESSAGES)?
-    .dependency(feature_tag(SESSION_CORE)?)?
+    .dependency(FeatureTag::parse(SESSION_CORE)?)?
     .limit(LimitDefinition::new(
       QualifiedTag::parse(DATA_BODY_BYTES_LIMIT)?,
       LimitWidth::U32,
       LimitUnit::Bytes,
       LimitRange::new(DATA_BODY_FLOOR, DATA_BODY_CEILING, DATA_BODY_DEFAULT)?,
-      feature_tag(DATA_MESSAGES)?,
+      FeatureTag::parse(DATA_MESSAGES)?,
       true,
     )?)?;
   let direct = builtin(DIRECT_REQUEST)?
-    .dependency(feature_tag(DATA_MESSAGES)?)?
+    .dependency(FeatureTag::parse(DATA_MESSAGES)?)?
     .limit(LimitDefinition::new(
       QualifiedTag::parse(IN_FLIGHT_REQUESTS_LIMIT)?,
       LimitWidth::U16,
       LimitUnit::Count,
       LimitRange::new(IN_FLIGHT_FLOOR, IN_FLIGHT_CEILING, IN_FLIGHT_DEFAULT)?,
-      feature_tag(DIRECT_REQUEST)?,
+      FeatureTag::parse(DIRECT_REQUEST)?,
       true,
     )?)?
     .protocol(ProtocolTag::parse(DIRECT_REQUEST_PROTOCOL)?)?;
-  let routed = builtin(ROUTED_DELIVERY)?.dependency(feature_tag(DATA_MESSAGES)?)?;
+  let routed = builtin(ROUTED_DELIVERY)?.dependency(FeatureTag::parse(DATA_MESSAGES)?)?;
   Ok(vec![auth, session, data, direct, routed])
 }
 
@@ -574,50 +589,13 @@ fn builtin_fingerprint(tag: &FeatureTag) -> Digest {
   Digest::from_bytes(Sha256::digest(seed.as_bytes()).into())
 }
 
-fn feature_tag(value: &str) -> Result<FeatureTag> {
-  FeatureTag::parse(value)
-}
-
-fn tag_domain(tag: &str) -> &str {
-  tag.split('/').next().unwrap_or(tag)
-}
-
-trait TagText {
-  fn text(&self) -> &str;
-}
-
-impl TagText for FeatureTag {
-  fn text(&self) -> &str {
-    self.as_str()
-  }
-}
-
-impl TagText for ProtocolTag {
-  fn text(&self) -> &str {
-    self.as_str()
-  }
-}
-
-fn string_tags<T: TagText>(tags: &[T]) -> Vec<String> {
-  tags.iter().map(|tag| tag.text().to_owned()).collect()
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::hex::encode as hex;
-
-  fn extension_tag(name: &str) -> FeatureTag {
-    FeatureTag::parse(&format!("testing.example/features/{name}")).unwrap()
-  }
-
-  fn extension_feature(name: &str, fingerprint_byte: u8) -> FeatureDefinition {
-    FeatureDefinition::new(
-      extension_tag(name),
-      Digest::from_bytes([fingerprint_byte; 32]),
-    )
-    .unwrap()
-  }
+  use crate::{
+    hex::encode as hex,
+    protocol::offer::fixtures::{extension_feature, extension_tag},
+  };
 
   fn extension_limit(name: &str, owner: &FeatureTag) -> LimitDefinition {
     LimitDefinition::new(
@@ -818,12 +796,12 @@ mod tests {
     assert_mutation_detected(SESSION_CORE, |definition| {
       definition
         .dependencies
-        .push(feature_tag(ROUTED_DELIVERY).unwrap());
+        .push(FeatureTag::parse(ROUTED_DELIVERY).unwrap());
     });
     assert_mutation_detected(ROUTED_DELIVERY, |definition| {
       definition
         .conflicts
-        .push(feature_tag(SESSION_CORE).unwrap());
+        .push(FeatureTag::parse(SESSION_CORE).unwrap());
     });
     assert_mutation_detected(DATA_MESSAGES, |definition| {
       definition.limits[0].range.floor += 1;

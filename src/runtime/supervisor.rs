@@ -37,6 +37,14 @@ use crate::{
 
 const CONTROL_CAPACITY: usize = 32;
 
+/// The recovery controller's observation period (unnamed literal kept
+/// every other period out of `NodeConfig`).
+const RECOVERY_TICK_PERIOD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Capacity of the node's outbound packet command channel, shared with
+/// the builder so both channel ends are created at one construction site.
+pub(crate) const PACKET_CHANNEL_CAPACITY: usize = CONTROL_CAPACITY;
+
 struct LifecyclePublisher {
   state: watch::Sender<LifecycleSnapshot>,
   terminal: bool,
@@ -80,8 +88,6 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) transport: Arc<dyn Transport>,
   pub(crate) sessions: SessionTable,
   pub(crate) routes: RouteTable,
-  pub(crate) packet_tx: Option<mpsc::Sender<crate::packet::OutboundRequest>>,
-  pub(crate) _runtime_seed: Option<[u8; 32]>,
 }
 
 /// Spawns the anti-entropy membership-sync driver: it pages descriptors
@@ -147,11 +153,14 @@ fn spawn_sync_driver(
   })
 }
 
-pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Result<RuntimeClient> {
+pub(crate) async fn spawn_runtime(
+  mut dependencies: RuntimeDependencies,
+  packets: (
+    mpsc::Sender<crate::packet::OutboundRequest>,
+    mpsc::Receiver<crate::packet::OutboundRequest>,
+  ),
+) -> Result<RuntimeClient> {
   let runtime = Handle::try_current().map_err(|_| Error::not_ready("Tokio runtime"))?;
-  let mut runtime_seed = [0; 32];
-  dependencies.entropy.fill(&mut runtime_seed)?;
-  dependencies._runtime_seed = Some(runtime_seed);
   // `dependencies.transport` is resolved once in the builder from the
   // extension registry, so every dial and listen flows through the
   // registered transport (a counting wrapper registered under the WSS tag
@@ -195,15 +204,15 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
     .register_core_protocol(resource_definition, resource_consumer)?;
   let routes = dependencies.routes.clone();
   let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
-  let (packet_tx, packet_rx) = mpsc::channel(CONTROL_CAPACITY);
   let (state_tx, state_rx) = watch::channel(LifecycleSnapshot::starting());
   let (ready_tx, ready_rx) = oneshot::channel();
+  let (packet_tx, packet_rx) = packets;
   let client = RuntimeClient::new(control_tx, state_rx, routes, packet_tx.clone());
-  dependencies.packet_tx = Some(packet_tx);
 
   runtime.spawn(supervise(
     dependencies,
     control_rx,
+    packet_tx,
     packet_rx,
     state_tx,
     ready_tx,
@@ -217,6 +226,7 @@ pub(crate) async fn spawn_runtime(mut dependencies: RuntimeDependencies) -> Resu
 
 async fn supervise(
   dependencies: RuntimeDependencies, mut control: mpsc::Receiver<Control>,
+  packet_tx: mpsc::Sender<crate::packet::OutboundRequest>,
   mut packets: mpsc::Receiver<crate::packet::OutboundRequest>,
   state: watch::Sender<LifecycleSnapshot>, ready: oneshot::Sender<()>,
 ) {
@@ -236,7 +246,7 @@ async fn supervise(
     return;
   }
 
-  let mut supervisor = match Supervisor::new(dependencies) {
+  let mut supervisor = match Supervisor::new(dependencies, packet_tx) {
     Ok(supervisor) => supervisor,
     Err(failure) => {
       let (error, dependencies) = *failure;
@@ -265,7 +275,7 @@ async fn supervise(
   {
     tracing::warn!(kind = ?error.kind(), "stale trace termination failed");
   }
-  let mut recovery_timer = tokio::time::interval(std::time::Duration::from_secs(2));
+  let mut recovery_timer = tokio::time::interval(RECOVERY_TICK_PERIOD);
   recovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
   loop {
     tokio::select! {
@@ -318,7 +328,7 @@ async fn supervise(
         peer,
         reply,
       } => {
-        let result = supervisor.connect_member(receiver, peer, &mut tasks).await;
+        let result = supervisor.connect_member(receiver, peer).await;
         let _ = reply.send(result);
       }
       Control::GetLocalNode { reply } => {
@@ -366,7 +376,7 @@ async fn supervise(
         let _ = supervisor.send_packet(request, &mut tasks).await;
       }
       _ = recovery_timer.tick() => {
-        let _ = supervisor.recovery_tick(&mut tasks).await;
+        let _ = supervisor.recovery_tick().await;
         supervisor.trace_retention_sweep().await;
         supervisor.resource_removal_sweep().await;
       }
@@ -441,11 +451,34 @@ struct Supervisor {
   trace_records: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+/// Builds the node-shared packet context (single construction site):
+/// every collaborator is cloned from one struct instead of a
+/// ten-argument positional call where a transposed same-typed `Arc`
+/// would compile and silently miswire.
+fn session_packet_context(
+  context: &LocalIdentityContext, dependencies: &RuntimeDependencies,
+  packet_tx: mpsc::Sender<crate::packet::OutboundRequest>,
+  policy: crate::session::stream::SessionPolicy,
+) -> SessionPacketContext {
+  SessionPacketContext::new(
+    context.identity().node().clone(),
+    dependencies.extensions.clone(),
+    policy,
+    crate::runtime::RuntimeClient::routing_only(packet_tx, dependencies.routes.clone()),
+    std::sync::Arc::new(crate::storage::receipt::HostWallClock),
+    dependencies.config.route_policy().cloned(),
+    dependencies.sessions.clone(),
+    dependencies.routes.clone(),
+    dependencies.config.trace_metadata_limits().active(),
+    dependencies.config.parser_cbor_limits(),
+  )
+}
+
 impl Supervisor {
   /// Builds the supervisor; provisioning failures return the dependencies
   /// so the caller can still run a clean shutdown instead of panicking.
   fn new(
-    dependencies: RuntimeDependencies,
+    dependencies: RuntimeDependencies, packet_tx: mpsc::Sender<crate::packet::OutboundRequest>,
   ) -> std::result::Result<Self, Box<(Error, RuntimeDependencies)>> {
     let Some(context) = dependencies.context.clone() else {
       return Err(Box::new((Error::internal("runtime context"), dependencies)));
@@ -458,21 +491,12 @@ impl Supervisor {
       Ok(offer) => offer,
       Err(error) => return Err(Box::new((error, dependencies))),
     };
-    let Some(packet_tx) = dependencies.packet_tx.clone() else {
-      return Err(Box::new((Error::internal("packet channel"), dependencies)));
-    };
     let policy = crate::session::stream::SessionPolicy::from_config(&dependencies.config);
-    let packet = Arc::new(SessionPacketContext::new(
-      context.identity().node().clone(),
-      dependencies.extensions.clone(),
+    let packet = Arc::new(session_packet_context(
+      &context,
+      &dependencies,
+      packet_tx.clone(),
       policy,
-      crate::runtime::RuntimeClient::routing_only(packet_tx.clone(), dependencies.routes.clone()),
-      std::sync::Arc::new(crate::storage::receipt::HostWallClock),
-      dependencies.config.route_policy().cloned(),
-      dependencies.sessions.clone(),
-      dependencies.routes.clone(),
-      dependencies.config.trace_metadata_limits().active(),
-      dependencies.config.parser_cbor_limits(),
     ));
     let route_capacity = dependencies.config.trace_metadata_limits().active();
     let sync_context = Arc::clone(&context);
@@ -710,22 +734,17 @@ impl Supervisor {
     let sessions = self.dependencies.sessions.clone();
     let packet = self.packet.clone();
     let shutdown = self.shutdown_tx.subscribe();
-    let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
-    tasks.spawn(async move {
-      run_session(
-        connection,
-        session,
-        packet,
-        sessions,
-        shutdown,
-        crate::session::stream::DialDirection::Outgoing,
-        Some(registered_tx),
-      )
-      .await;
-    });
-    if registered_rx.await.is_err() {
-      return Err(Error::internal("session registration"));
-    }
+    keep_outbound_session(
+      connection,
+      session,
+      packet,
+      sessions,
+      shutdown,
+      |session_task| {
+        tasks.spawn(session_task);
+      },
+    )
+    .await?;
     Ok(view)
   }
 
@@ -733,9 +752,7 @@ impl Supervisor {
   /// THR-002): the member-mode handshake proves both identities over a
   /// fresh transcript and exporter binding without consulting any join
   /// credential, then keeps the session open for packet streams.
-  async fn connect_member(
-    &mut self, receiver: Endpoint, peer: NodeId, _tasks: &mut JoinSet<()>,
-  ) -> Result<NodeId> {
+  async fn connect_member(&mut self, receiver: Endpoint, peer: NodeId) -> Result<NodeId> {
     self.require_unblocked()?;
     // A deliberate caller connect restores an intentionally disconnected
     // relationship: recovery may heal it again.
@@ -789,7 +806,7 @@ impl Supervisor {
       PacketTarget::Exact(destination) => Ok(destination.clone()),
       PacketTarget::MatchingNodes(selector) => {
         self
-          .select_matching_destination(&trace_id, selector, request.load_balancer.as_ref())
+          .select_matching_destination(selector, request.load_balancer.as_ref())
           .await
       }
     };
@@ -937,15 +954,7 @@ impl Supervisor {
       return Ok(None);
     };
     let local = self.packet.local().clone();
-    let peers: Vec<NodeId> = self
-      .dependencies
-      .sessions
-      .lock()
-      .map_err(Error::session_table)?
-      .iter()
-      .filter(|(_, entry)| entry.alive())
-      .map(|(peer, _)| peer.clone())
-      .collect();
+    let peers = crate::sync_common::alive_peers(&self.dependencies.sessions)?;
     let view = crate::routing::NextHopView {
       destination,
       local: &local,
@@ -970,8 +979,7 @@ impl Supervisor {
   /// the pick against the authoritative descriptors — an unknown, removed,
   /// or nonmatching node fails closed before any frame moves.
   async fn select_matching_destination(
-    &self, trace_id: &TraceId, selector: &crate::Selector,
-    load_balancer: Option<&crate::QualifiedTag>,
+    &self, selector: &crate::Selector, load_balancer: Option<&crate::QualifiedTag>,
   ) -> Result<NodeId> {
     let Some(load_balancer) = load_balancer else {
       return Err(Error::invalid_input("packet load balancer"));
@@ -981,7 +989,6 @@ impl Supervisor {
       .extensions
       .load_balancer(load_balancer)
       .ok_or_else(|| Error::invalid_input("packet load balancer"))?;
-    let _ = trace_id;
     let snapshot = self.context()?.store().snapshot().await?;
     let reader = crate::routing::StoreCandidateReader::new(snapshot);
     let selected = policy.select(selector, &reader).await?;
@@ -1059,7 +1066,7 @@ impl Supervisor {
       .collect();
     let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
       crate::membership::NODE_DESCRIPTOR_NAMESPACE,
-    )?)?;
+    )?);
     let snapshot = self.context()?.store().snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
     let paged = crate::paging::scan_paged(
@@ -1128,15 +1135,19 @@ impl Supervisor {
   async fn page_trust(
     &mut self, cursor: Option<crate::PageCursor>, limit: usize,
   ) -> Result<crate::TrustPage> {
-    let limit = limit.clamp(1, 64);
-    let offset = cursor
-      .as_ref()
-      .map(|cursor| {
-        String::from_utf8_lossy(cursor.as_bytes())
-          .parse()
-          .unwrap_or(0)
-      })
-      .unwrap_or(0);
+    let limit = limit.clamp(1, crate::paging::MAX_VIEW_PAGE_ITEMS);
+    // Trust paging is offset-based (the trust store scans an ordered
+    // namespace in slices) while the other views keyset-paginate. The
+    // encoding still lives behind the opaque `PageCursor`, and a cursor
+    // that does not decode exactly fails closed instead of restarting
+    // the page at offset zero.
+    let offset = match cursor.as_ref() {
+      None => 0,
+      Some(cursor) => std::str::from_utf8(cursor.as_bytes())
+        .map_err(|_| Error::invalid_input("trust page cursor"))?
+        .parse::<usize>()
+        .map_err(|_| Error::invalid_input("trust page cursor"))?,
+    };
     let context = self.context()?;
     let observations =
       crate::identity::trust::store::paged_trust_ctx(context.store(), offset, limit).await?;
@@ -1194,42 +1205,7 @@ impl Supervisor {
     if current.revision() != expected_revision {
       return Err(Error::conflict("node metadata revision"));
     }
-    let (add_endpoints, remove_endpoints, set_labels, remove_labels) = patch.into_parts();
-    let mut endpoints: Vec<crate::Endpoint> = current.endpoints().to_vec();
-    for endpoint in add_endpoints {
-      if endpoints.contains(&endpoint) {
-        return Err(Error::conflict("node metadata endpoint"));
-      }
-      endpoints.push(endpoint);
-    }
-    for endpoint in remove_endpoints {
-      let Some(position) = endpoints
-        .iter()
-        .position(|candidate| *candidate == endpoint)
-      else {
-        return Err(Error::not_found("node metadata endpoint"));
-      };
-      endpoints.remove(position);
-    }
-    let mut labels = current.labels().clone();
-    for (key, value) in set_labels {
-      labels = labels.insert(key, value)?;
-    }
-    for key in remove_labels {
-      if !labels.contains_key(&key) {
-        return Err(Error::not_found("node metadata label"));
-      }
-      labels.remove(&key);
-    }
-    let updated = crate::membership::NodeDescriptorV1::new(
-      current.node().clone(),
-      current.public_key().clone(),
-      endpoints,
-      current.revision() + 1,
-      false,
-      1,
-    )
-    .with_labels(labels);
+    let updated = crate::membership::apply_metadata_patch(&current, patch)?;
     crate::membership::store::store_descriptor_ctx(
       store,
       self.dependencies.entropy.as_ref(),
@@ -1262,7 +1238,7 @@ impl Supervisor {
   /// connectivity to known members and quiesces; it never dials strangers
   /// or the local node, so it cannot add edges beyond the configured
   /// topology).
-  async fn recovery_tick(&mut self, _tasks: &mut JoinSet<()>) -> Result<()> {
+  async fn recovery_tick(&mut self) -> Result<()> {
     let direct: std::collections::BTreeSet<NodeId> = self
       .dependencies
       .sessions
@@ -1410,27 +1386,45 @@ async fn dial_member(
   let mut connection = transport.connect(receiver.clone(), config).await?;
   let session = driver.initiate_member(&mut connection, peer).await?;
   let authenticated = session.peer().clone();
-  let local_packet = packet;
-  let table = sessions.clone();
-  let signal = shutdown;
   // The member-mode dial returns only after the session table settles, so
   // the caller's first packet cannot race registration (including the
   // crossed-dial loser outcome, which reports no usable session).
+  keep_outbound_session(
+    connection,
+    session,
+    packet,
+    sessions,
+    shutdown,
+    |session_task| {
+      tokio::spawn(session_task);
+    },
+  )
+  .await?;
+  Ok(authenticated)
+}
+
+/// The keep-open tail shared by join and member dials: spawns the
+/// outbound session pump through the caller's spawner and returns only
+/// after the session table registers the entry, so the caller's first
+/// packet cannot race registration.
+async fn keep_outbound_session(
+  connection: crate::transport::connection::Connection,
+  session: crate::session::EstablishedSession, packet: Arc<SessionPacketContext>,
+  sessions: SessionTable, shutdown: watch::Receiver<()>,
+  spawn: impl FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>),
+) -> Result<()> {
   let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
-  tokio::spawn(async move {
-    run_session(
-      connection,
-      session,
-      local_packet,
-      table,
-      signal,
-      crate::session::stream::DialDirection::Outgoing,
-      Some(registered_tx),
-    )
-    .await;
-  });
+  spawn(Box::pin(run_session(
+    connection,
+    session,
+    packet,
+    sessions,
+    shutdown,
+    crate::session::stream::DialDirection::Outgoing,
+    Some(registered_tx),
+  )));
   if registered_rx.await.is_err() {
     return Err(Error::internal("session registration"));
   }
-  Ok(authenticated)
+  Ok(())
 }

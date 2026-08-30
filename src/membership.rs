@@ -107,7 +107,7 @@ impl NodeDescriptorV1 {
   }
 
   pub(crate) fn encode(&self) -> Result<Vec<u8>> {
-    encode_canonical(&self.wire(), crate::protocol::offer::OFFER_CBOR_LIMITS)
+    encode_canonical(&self.wire(), crate::protocol::CONTROL_CBOR_LIMITS)
   }
 
   fn wire(&self) -> DescriptorWire {
@@ -170,6 +170,56 @@ pub(crate) fn node_descriptor_digest(descriptor: &NodeDescriptorV1) -> Result<cr
 /// Every public member view (exact lookup, paged population read, and
 /// routed candidate reads) flows through here so the view shape cannot
 /// drift between them.
+/// Applies one owner-only metadata patch to a descriptor and returns the
+/// descriptor at the next revision (ADR-0007 owner records): endpoint adds
+/// must be new, endpoint removals must exist, label set/insert flows
+/// through the label namespace rules, and label removals must exist.
+/// Single-sourced here — next to the descriptor type it mutates — so any
+/// future writer (sync, recovery) merges identically instead of
+/// re-implementing the rules in the runtime supervisor.
+pub(crate) fn apply_metadata_patch(
+  descriptor: &NodeDescriptorV1, patch: crate::NodeMetadataPatch,
+) -> Result<NodeDescriptorV1> {
+  let parts = patch.into_parts();
+  let mut endpoints: Vec<Endpoint> = descriptor.endpoints().to_vec();
+  for endpoint in parts.add_endpoints {
+    if endpoints.contains(&endpoint) {
+      return Err(crate::Error::conflict("node metadata endpoint"));
+    }
+    endpoints.push(endpoint);
+  }
+  for endpoint in parts.remove_endpoints {
+    let Some(position) = endpoints
+      .iter()
+      .position(|candidate| *candidate == endpoint)
+    else {
+      return Err(crate::Error::not_found("node metadata endpoint"));
+    };
+    endpoints.remove(position);
+  }
+  let mut labels = descriptor.labels().clone();
+  for (key, value) in parts.set_labels {
+    labels = labels.insert(key, value)?;
+  }
+  for key in parts.remove_labels {
+    if !labels.contains_key(&key) {
+      return Err(crate::Error::not_found("node metadata label"));
+    }
+    labels.remove(&key);
+  }
+  Ok(
+    NodeDescriptorV1::new(
+      descriptor.node().clone(),
+      descriptor.public_key().clone(),
+      endpoints,
+      descriptor.revision() + 1,
+      false,
+      1,
+    )
+    .with_labels(labels),
+  )
+}
+
 pub(crate) fn member_view(
   descriptor: &NodeDescriptorV1, status: crate::ConnectivityStatus,
 ) -> Result<crate::MemberView> {
@@ -200,7 +250,9 @@ pub(crate) mod store {
   };
 
   fn namespace() -> Result<StoreNamespace> {
-    StoreNamespace::new(crate::QualifiedTag::parse(NODE_DESCRIPTOR_NAMESPACE)?)
+    Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+      NODE_DESCRIPTOR_NAMESPACE,
+    )?))
   }
 
   fn descriptor_key(node: &NodeId) -> StoreKey {
@@ -228,15 +280,8 @@ pub(crate) mod store {
   pub(crate) async fn read_descriptor_ctx(
     store: &MetadataStore, node: &NodeId,
   ) -> Result<Option<NodeDescriptorV1>> {
-    let namespace = namespace()?;
-    let key = descriptor_key(node);
-    let value = store.snapshot().await?.get(&namespace, &key).await?;
-    let Some(value) = value else {
-      return Ok(None);
-    };
-    Ok(Some(crate::membership::page::decode_descriptor(
-      value.as_bytes(),
-    )?))
+    let snapshot = store.snapshot().await?;
+    read_descriptor_snapshot(snapshot.as_ref(), node).await
   }
 
   /// Stores one descriptor over the running node's metadata store. A

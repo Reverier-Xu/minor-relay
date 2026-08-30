@@ -624,14 +624,18 @@ impl RouteRecord {
   }
 }
 
-/// Maps a wire admission rejection kind back to a typed error.
+/// Maps a wire admission rejection kind back to a typed error. The wire
+/// ack status decodes to exactly the kinds matched here; any other kind
+/// can only reach this function through a local invariant violation, and
+/// fails closed with an internal error instead of silently reading as a
+/// stream interruption.
 pub(crate) fn ack_error(kind: ErrorKind) -> Error {
   match kind {
     ErrorKind::Unsupported => Error::unsupported("packet protocol"),
     ErrorKind::Overloaded => Error::overloaded("packet admission"),
     ErrorKind::RouteUnavailable => Error::route_unavailable("packet route"),
     ErrorKind::StreamInterrupted => Error::stream_interrupted("packet stream"),
-    _ => Error::stream_interrupted("packet stream"),
+    _ => Error::internal("packet ack status"),
   }
 }
 

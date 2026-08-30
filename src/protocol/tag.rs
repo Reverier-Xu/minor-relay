@@ -99,6 +99,12 @@ macro_rules! category_tag {
       pub fn as_str(&self) -> &str {
         self.0.as_str()
       }
+
+      /// The canonical domain prefix, derived by the parser's offsets
+      /// rather than re-splitting the text.
+      pub fn domain(&self) -> &str {
+        self.0.domain()
+      }
     }
 
     impl FromStr for $name {

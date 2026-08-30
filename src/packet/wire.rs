@@ -17,15 +17,14 @@ use super::{MAX_CHUNK_BYTES, PacketMetadata};
 use crate::{
   Error, ErrorKind, NodeId, ProtocolTag, Result, TraceId,
   protocol::{
-    CborLimits, decode_canonical, decode_canonical_strict, encode_canonical,
-    offer::OFFER_CBOR_LIMITS,
+    CONTROL_CBOR_LIMITS, CborLimits, decode_canonical, decode_canonical_strict, encode_canonical,
   },
   routing::HopState,
 };
 
 /// Packet frames share the authentication phase's frame budget: one frame
 /// never exceeds the 64 KiB handshake control limit.
-const PACKET_CBOR_LIMITS: CborLimits = OFFER_CBOR_LIMITS;
+const PACKET_CBOR_LIMITS: CborLimits = CONTROL_CBOR_LIMITS;
 
 /// The wire admission outcome of one open frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,7 +377,7 @@ mod tests {
   };
   use crate::{
     ErrorKind, NodeId, PacketMetadata, ProtocolTag, TraceId,
-    protocol::{encode_canonical, offer::OFFER_CBOR_LIMITS},
+    protocol::{CONTROL_CBOR_LIMITS, encode_canonical},
   };
 
   fn ids() -> (TraceId, NodeId, NodeId) {
@@ -445,7 +444,7 @@ mod tests {
       ],
       route: None,
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let error = decode_open(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
@@ -490,7 +489,7 @@ mod tests {
       sequence: 9,
       bytes: ByteVec::from(vec![0xAB; MAX_CHUNK_BYTES + 1]),
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let error = decode_chunk(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
@@ -527,7 +526,7 @@ mod tests {
       outcome: 9,
       admitted_at_millis: 0,
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let error = decode_ack(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
@@ -537,7 +536,7 @@ mod tests {
     let wire = super::EndWire {
       trace_id: "trace_NOT-CANONICAL".to_owned(),
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let error = decode_end(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
 
@@ -549,7 +548,7 @@ mod tests {
       metadata: Vec::new(),
       route: None,
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let error = decode_open(&body, PACKET_CBOR_LIMITS).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
   }
@@ -577,7 +576,7 @@ mod route_tests {
   use super::{OpenFrame, OpenWireV1, PACKET_CBOR_LIMITS, RouteWire, decode_open, encode_open};
   use crate::{
     NodeId, PacketMetadata, ProtocolTag, TraceId,
-    protocol::{encode_canonical, offer::OFFER_CBOR_LIMITS},
+    protocol::{CONTROL_CBOR_LIMITS, encode_canonical},
     routing::HopState,
   };
 
@@ -633,7 +632,7 @@ mod route_tests {
       protocol: "relay.woooo.tech/protocols/test-packets".to_owned(),
       metadata: Vec::new(),
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     let decoded = decode_open(&body, PACKET_CBOR_LIMITS).unwrap();
     assert!(decoded.route.is_none());
     assert_eq!(decoded.source, source);
@@ -660,7 +659,7 @@ mod route_tests {
         remaining_hops: 2,
       }),
     };
-    let body = encode_canonical(&wire, OFFER_CBOR_LIMITS).unwrap();
+    let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
     assert!(decode_open(&body, PACKET_CBOR_LIMITS).is_err());
 
     // Truncation and padding stay rejected on routed frames too.

@@ -10,6 +10,7 @@ use crate::{
   QualifiedTag, Result, Signature, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
   StoreRevision, StoreValue, TransactionId,
   api::Entropy,
+  error::fixed_bytes,
   protocol::{CborLimits, decode_canonical_strict, encode_canonical},
   storage::receipt::{ReceiptIdentity, ReceiptReferenceToken, recover_self_referenced_transaction},
 };
@@ -123,16 +124,12 @@ fn expect_algorithm(actual: &str) -> Result<()> {
   Ok(())
 }
 
-fn fixed_bytes<const LENGTH: usize>(bytes: &[u8], context: &'static str) -> Result<[u8; LENGTH]> {
-  <[u8; LENGTH]>::try_from(bytes).map_err(|_| Error::invalid_input(context))
-}
-
 fn metadata_namespace(tag: &str) -> Result<StoreNamespace> {
   let tag = QualifiedTag::parse(tag)?;
   if tag.category() != crate::protocol::tag::CATEGORY_METADATA {
     return Err(Error::invalid_input("identity record namespace"));
   }
-  StoreNamespace::new(tag)
+  Ok(StoreNamespace::new(tag))
 }
 
 fn store_key(bytes: &[u8]) -> StoreKey {
@@ -199,6 +196,9 @@ pub(crate) fn local_cluster_pointer_key() -> Result<(StoreNamespace, StoreKey)> 
 pub(crate) fn credential_use_key(
   issuer: &NodeId, generation: &GenerationId,
 ) -> Result<(StoreNamespace, StoreKey)> {
+  // No separator: `NodeId` is fixed-width (base62, exactly
+  // `NodeId::TEXT_LEN` characters) and `GenerationId` is a fixed 16
+  // bytes, so the issuer/generation split is unambiguous by position.
   let mut key = Vec::with_capacity(issuer.as_str().len() + generation.as_bytes().len());
   key.extend_from_slice(issuer.as_str().as_bytes());
   key.extend_from_slice(generation.as_bytes());
@@ -243,6 +243,13 @@ pub(crate) struct GenerationId(OperationId);
 impl GenerationId {
   pub(crate) fn generate(entropy: &dyn Entropy) -> Result<Self> {
     OperationId::generate(entropy).map(Self)
+  }
+
+  /// Rebuilds a generation from its raw 16 bytes (e.g. the join
+  /// credential's reserved generation) without laundering the value
+  /// through an unrelated operation id at the call site.
+  pub(crate) const fn from_bytes(value: [u8; 16]) -> Self {
+    Self(OperationId::from_bytes(value))
   }
 
   pub(crate) const fn from_operation(operation: OperationId) -> Self {
@@ -1364,10 +1371,7 @@ mod tests {
   }
 
   fn golden(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-      .step_by(2)
-      .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
-      .collect()
+    crate::hex::decode(hex, "golden").unwrap()
   }
 
   const LOCAL_IDENTITY_GOLDEN: &str = "87782a72656c61792e776f6f6f6f2e746563682f736368656d61732f6c6f63616c2d6964656e746974792d763101781a6e6f64655f3130303030303030303030303030303030303030305820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1781f72656c61792e776f6f6f6f2e746563682f63727970746f2f65643235353139781b6b65796f705f353030303030303030303030303030303030303030506f70617175652d68616e646c652d3031";

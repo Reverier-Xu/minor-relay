@@ -100,7 +100,9 @@ mod catalog {
     }
 
     pub(crate) fn namespace(&self) -> crate::Result<crate::StoreNamespace> {
-      crate::StoreNamespace::new(crate::QualifiedTag::parse(self.namespace_tag)?)
+      Ok(crate::StoreNamespace::new(crate::QualifiedTag::parse(
+        self.namespace_tag,
+      )?))
     }
   }
 
