@@ -277,3 +277,26 @@ async fn g1_lifecycle_last_handle_drop_stops_supervisor() {
   assert_eq!(providers.factory_drops.count(), 1);
   assert_eq!(providers.key_drops.count(), 1);
 }
+
+/// G9-02 facade wiring: the sealed `SelectResources` query pages the local
+/// resource catalog through the public handle; an empty catalog returns an
+/// empty bounded page with no continuation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g9_select_resources_pages_the_empty_catalog() {
+  let providers = Providers::new();
+  let handle = providers.start().await;
+
+  let selector = minor_relay::Selector::parse("relay.woooo.tech/resources/type=document").unwrap();
+  let page = handle
+    .query(minor_relay::SelectResources::new(
+      selector,
+      minor_relay::PageSpec::first(8).unwrap(),
+    ))
+    .await
+    .unwrap();
+  assert!(page.items().is_empty());
+  assert!(page.next().is_none());
+
+  let outcome = handle.command(Shutdown::new()).await.unwrap();
+  assert_eq!(outcome.reason(), &ShutdownReason::Explicit);
+}

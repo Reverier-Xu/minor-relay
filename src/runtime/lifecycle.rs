@@ -99,6 +99,12 @@ pub(crate) enum Control {
     limit: usize,
     reply: oneshot::Sender<Result<crate::MemberPage>>,
   },
+  SelectResources {
+    selector: crate::Selector,
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::ResourcePage>>,
+  },
   PageTopology {
     cursor: Option<crate::PageCursor>,
     limit: usize,
@@ -264,6 +270,20 @@ impl RuntimeClient {
   ) -> Result<crate::MemberPage> {
     self
       .send_command(|reply| Control::PageMembers {
+        cursor,
+        limit,
+        reply,
+      })
+      .await
+  }
+
+  /// Pages the live resource winners matching one selector (G9-02).
+  pub(crate) async fn select_resources(
+    &self, selector: crate::Selector, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::ResourcePage> {
+    self
+      .send_command(|reply| Control::SelectResources {
+        selector,
         cursor,
         limit,
         reply,

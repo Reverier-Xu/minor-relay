@@ -191,6 +191,15 @@ impl ResourceLabels {
   pub fn custom_labels(&self) -> &LabelSet {
     &self.custom
   }
+
+  /// Reassembles the public label view of one stored record.
+  pub(crate) fn from_record(record: &ResourceRecordV1) -> Self {
+    Self {
+      resource_type: record.resource_type.clone(),
+      uri: record.resource_uri.clone(),
+      custom: record.labels.clone(),
+    }
+  }
 }
 
 impl fmt::Debug for ResourceLabels {
@@ -239,10 +248,7 @@ impl ResourceVersion {
     &self.digest
   }
 
-  /// Extracts the public version view of one signed record. The facade
-  /// resource views (T-G09-03/05/07) are its consumers; the G9-01 vector
-  /// tests pin the mapping meanwhile.
-  #[allow(dead_code)]
+  /// Extracts the public version view of one signed record.
   pub(crate) fn from_record(record: &ResourceRecordV1) -> Self {
     Self {
       timestamp: record.timestamp(),
@@ -462,17 +468,14 @@ impl ResourceRecordV1 {
     &self.name
   }
 
-  #[allow(dead_code)]
   pub(crate) const fn resource_type(&self) -> &LabelValue {
     &self.resource_type
   }
 
-  #[allow(dead_code)]
   pub(crate) const fn resource_uri(&self) -> &ResourceUri {
     &self.resource_uri
   }
 
-  #[allow(dead_code)]
   pub(crate) const fn labels(&self) -> &LabelSet {
     &self.labels
   }
@@ -632,6 +635,7 @@ impl ResourceRecordV1 {
 
 pub(crate) mod page;
 pub(crate) mod retention;
+pub(crate) mod select;
 pub(crate) mod store;
 
 #[cfg(test)]

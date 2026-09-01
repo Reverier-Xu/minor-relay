@@ -304,6 +304,63 @@ impl MemberPage {
   }
 }
 
+/// One public resource observation: the winning record's stable name,
+/// its reserved-plus-custom labels, and its exact tuple version.
+///
+/// A resource whose current winner is a signed removal is not observed:
+/// removal evidence stays internal, and a removed name reads as absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceView {
+  name: crate::ResourceName,
+  labels: crate::ResourceLabels,
+  version: crate::ResourceVersion,
+}
+
+impl ResourceView {
+  pub fn name(&self) -> &crate::ResourceName {
+    &self.name
+  }
+
+  pub fn labels(&self) -> &crate::ResourceLabels {
+    &self.labels
+  }
+
+  pub fn version(&self) -> &crate::ResourceVersion {
+    &self.version
+  }
+
+  pub(crate) fn new(
+    name: crate::ResourceName, labels: crate::ResourceLabels, version: crate::ResourceVersion,
+  ) -> Self {
+    Self {
+      name,
+      labels,
+      version,
+    }
+  }
+}
+
+/// One bounded page of resource observations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourcePage {
+  items: Vec<ResourceView>,
+  next: Option<crate::PageCursor>,
+}
+
+impl ResourcePage {
+  pub fn items(&self) -> &[ResourceView] {
+    &self.items
+  }
+
+  pub fn next(&self) -> Option<&crate::PageCursor> {
+    self.next.as_ref()
+  }
+
+  pub(crate) fn new(items: Vec<ResourceView>, next: Option<crate::PageCursor>) -> Self {
+    Self { items, next }
+  }
+}
+
 /// One public topology edge: a directed session between two members.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologyEdgeView {

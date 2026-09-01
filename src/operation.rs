@@ -253,6 +253,32 @@ impl Query for PageMembers {
   type Output = crate::MemberPage;
 }
 
+/// Pages the live resource winners matching one selector (T-G09-02).
+pub struct SelectResources {
+  selector: crate::Selector,
+  page: crate::PageSpec,
+}
+
+impl SelectResources {
+  pub fn new(selector: crate::Selector, page: crate::PageSpec) -> Self {
+    Self { selector, page }
+  }
+
+  pub(crate) const fn selector(&self) -> &crate::Selector {
+    &self.selector
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for SelectResources {}
+
+impl Query for SelectResources {
+  type Output = crate::ResourcePage;
+}
+
 /// Pages the public topology edges (G5-06).
 pub struct PageTopology {
   page: crate::PageSpec,

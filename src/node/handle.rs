@@ -4,8 +4,8 @@ use crate::{
   Command, ConnectMember, CreateCluster, DisconnectPeer, Error, Event, EventOptions,
   EventSubscription, GetLocalNode, GetMember, GetNodeStatus, GetRoute, JoinCluster, Listen,
   NodeStatus, OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget, PageMembers,
-  PageTopology, PageTrust, ProtocolTag, Query, Result, RotateJoinCredential, Shutdown,
-  StartRecovery, StopListener, TraceId, UpdateNodeMetadata, WaitForShutdown,
+  PageTopology, PageTrust, ProtocolTag, Query, Result, RotateJoinCredential, SelectResources,
+  Shutdown, StartRecovery, StopListener, TraceId, UpdateNodeMetadata, WaitForShutdown,
   api::{BoxFuture, Entropy},
   extension_registry::ExtensionRegistry,
   runtime::RuntimeClient,
@@ -121,6 +121,17 @@ impl DispatchQuery for PageMembers {
     let limit = page.limit();
     let runtime = runtime.clone();
     Box::pin(async move { runtime.page_members(cursor, limit).await })
+  }
+}
+
+impl DispatchQuery for SelectResources {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let selector = self.selector().clone();
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.select_resources(selector, cursor, limit).await })
   }
 }
 

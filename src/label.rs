@@ -44,6 +44,13 @@ impl LabelKey {
   pub fn as_str(&self) -> &str {
     self.0.as_str()
   }
+
+  /// Wraps a tag known to be in the closed `labels` category (selector
+  /// evaluation re-checks the category, so reserved keys can never enter
+  /// the custom label namespace this way).
+  pub(crate) fn from_label_tag(tag: &QualifiedTag) -> Option<Self> {
+    (tag.category() == "labels").then(|| Self(tag.clone()))
+  }
 }
 
 impl std::str::FromStr for LabelKey {

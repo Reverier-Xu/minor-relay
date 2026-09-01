@@ -21,55 +21,324 @@
 
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
-use crate::{
-  Error, NodeId, Result, api::BoxFuture, protocol::tag::MAX_TAG_LEN as SELECTOR_INPUT_MAX_LEN,
-};
+use crate::{Error, NodeId, QualifiedTag, Result, api::BoxFuture};
 
 pub(crate) mod trace;
+
+/// The maximum byte length of one selector input. The bound keeps parsing
+/// work finite and independent of caller payloads; longer inputs are
+/// rejected whole instead of being truncated.
+pub(crate) const SELECTOR_INPUT_MAX_BYTES: usize = 1_024;
 
 /// The maximum number of predicates in one selector.
 pub(crate) const SELECTOR_MAX_PREDICATES: usize = 16;
 
-/// One bounded label selector: a conjunction of predicates evaluated
-/// against a node's owned [`crate::LabelSet`].
+/// The maximum number of values in one set (`in`/`notin`) predicate.
+pub(crate) const SELECTOR_MAX_SET_VALUES: usize = 16;
+
+/// One bounded label selector: a conjunction of predicates over the
+/// closed selector key space (the T-G06-01 equality subset, completed to
+/// the full operator set in T-G09-02).
 ///
-/// The G6 grammar is the bounded equality subset of the full selector
-/// grammar (the complete operator set and its property vectors arrive with
-/// T-G09-02): whitespace-separated predicates, each either `key`
-/// (existence) or `key=value` (equality). Keys parse as label keys;
-/// values are non-empty bounded UTF-8 without whitespace. Parsing
-/// normalizes to one canonical representation — predicates sorted by key
-/// text, existence before equality on the same key, single spaces — so
-/// equal inputs converge to one selector and distinct selectors stay
-/// distinguishable.
+/// Grammar (whitespace separates predicates):
+///
+/// ```text
+/// predicate := key                          # existence
+///            | "!" key                      # non-existence
+///            | key "=" value                # equality
+///            | key "!=" value               # inequality
+///            | key WS+ "in" WS* "(" list ")"
+///            | key WS+ "notin" WS* "(" list ")"
+/// list      := value *( WS* "," WS* value )
+/// ```
+///
+/// Keys are qualified tags in the closed `labels` category or one of the
+/// two reserved resource label keys (`resources/type`, `resources/uri`);
+/// every other category fails parsing. Values are bounded opaque UTF-8;
+/// the characters `\`, whitespace (space, tab, LF, CR), `,`, `(`, `)`,
+/// `=`, and `!` appear only escaped (`\X`, with whitespace as `\ `,
+/// `\t`, `\n`, `\r`), so any representable label value round-trips
+/// through the canonical form exactly. Set semantics follow the usual
+/// label-selector rules: inequality and `notin` also match entries whose
+/// key is absent, while equality and `in` require presence.
+///
+/// Parsing normalizes to one canonical representation — predicates sorted
+/// by their canonical text with exact duplicates removed, set members
+/// sorted and deduplicated, single spaces — so equal inputs converge to
+/// one selector and distinct selectors stay distinguishable.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Selector {
   canonical: Arc<str>,
   predicates: Vec<Predicate>,
 }
 
-/// One parsed predicate. Variant order defines the canonical sort:
-/// existence sorts before equality on the same key.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One parsed predicate.
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Predicate {
-  Exists(crate::LabelKey),
-  Equals(crate::LabelKey, crate::LabelValue),
+  Exists(QualifiedTag),
+  NotExists(QualifiedTag),
+  Equals(QualifiedTag, Arc<str>),
+  NotEquals(QualifiedTag, Arc<str>),
+  In(QualifiedTag, Box<[Arc<str>]>),
+  NotIn(QualifiedTag, Box<[Arc<str>]>),
 }
 
 impl Predicate {
-  fn matches(&self, labels: &crate::LabelSet) -> bool {
+  fn matches<'a>(&self, lookup: &impl Fn(&QualifiedTag) -> Option<&'a str>) -> bool {
     match self {
-      Self::Exists(key) => labels.contains_key(key),
-      Self::Equals(key, value) => labels.get(key).is_some_and(|found| found == value),
+      Self::Exists(key) => lookup(key).is_some(),
+      Self::NotExists(key) => lookup(key).is_none(),
+      Self::Equals(key, value) => lookup(key) == Some(value.as_ref()),
+      Self::NotEquals(key, value) => lookup(key).is_none_or(|found| found != value.as_ref()),
+      Self::In(key, values) => {
+        lookup(key).is_some_and(|found| values.iter().any(|v| v.as_ref() == found))
+      }
+      Self::NotIn(key, values) => {
+        lookup(key).is_none_or(|found| !values.iter().any(|v| v.as_ref() == found))
+      }
+    }
+  }
+
+  /// The canonical text of this predicate: values escaped canonically,
+  /// set members sorted and deduplicated.
+  fn canonical(&self) -> String {
+    match self {
+      Self::Exists(key) => key.as_str().to_owned(),
+      Self::NotExists(key) => format!("!{}", key.as_str()),
+      Self::Equals(key, value) => format!("{}={}", key.as_str(), escape_value(value)),
+      Self::NotEquals(key, value) => format!("{}!={}", key.as_str(), escape_value(value)),
+      Self::In(key, values) => format!("{} in ({})", key.as_str(), canonical_set(values)),
+      Self::NotIn(key, values) => {
+        format!("{} notin ({})", key.as_str(), canonical_set(values))
+      }
     }
   }
 }
 
-impl fmt::Display for Predicate {
-  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::Exists(key) => write!(formatter, "{key}"),
-      Self::Equals(key, value) => write!(formatter, "{key}={value}"),
+/// The canonical comma-joined text of one sorted, deduplicated value set.
+fn canonical_set(values: &[Arc<str>]) -> String {
+  let mut sorted: Vec<&str> = values.iter().map(AsRef::as_ref).collect();
+  sorted.sort_unstable();
+  sorted.dedup();
+  sorted
+    .into_iter()
+    .map(escape_value)
+    .collect::<Vec<_>>()
+    .join(",")
+}
+
+/// The canonical escaping of one value: exactly the special characters
+/// are escaped, whitespace by name (`\t`, `\n`, `\r`) except the space
+/// (`\ `), everything else by literal backslash prefix.
+fn escape_value(value: &str) -> String {
+  let mut out = String::with_capacity(value.len());
+  for character in value.chars() {
+    match character {
+      ' ' => out.push_str("\\ "),
+      '\t' => out.push_str("\\t"),
+      '\n' => out.push_str("\\n"),
+      '\r' => out.push_str("\\r"),
+      '\\' | ',' | '(' | ')' | '=' | '!' => {
+        out.push('\\');
+        out.push(character);
+      }
+      _ => out.push(character),
+    }
+  }
+  out
+}
+
+/// Maps one escape letter to its character; every other escape is
+/// malformed input.
+fn unescape(escaped: char) -> Option<char> {
+  Some(match escaped {
+    ' ' => ' ',
+    't' => '\t',
+    'n' => '\n',
+    'r' => '\r',
+    '\\' | ',' | '(' | ')' | '=' | '!' => escaped,
+    _ => return None,
+  })
+}
+
+/// A cursor over the selector input. The grammar is flat (parentheses
+/// nest at most one level inside a set list), so a hand-rolled cursor
+/// keeps the bounds and failure modes explicit.
+struct SelectorParser<'a> {
+  input: &'a str,
+  position: usize,
+}
+
+impl<'a> SelectorParser<'a> {
+  fn new(input: &'a str) -> Self {
+    Self { input, position: 0 }
+  }
+
+  fn rest(&self) -> &'a str {
+    &self.input[self.position..]
+  }
+
+  fn peek(&self) -> Option<char> {
+    self.rest().chars().next()
+  }
+
+  fn advance(&mut self) {
+    if let Some(character) = self.peek() {
+      self.position += character.len_utf8();
+    }
+  }
+
+  fn skip_whitespace(&mut self) {
+    while self.peek().is_some_and(char::is_whitespace) {
+      self.advance();
+    }
+  }
+
+  /// Parses one predicate key: tag characters up to the next operator or
+  /// delimiter, validated against the closed selector key space.
+  fn parse_key(&mut self) -> Result<QualifiedTag> {
+    let start = self.position;
+    while let Some(character) = self.peek() {
+      if character.is_whitespace() || matches!(character, '=' | '!' | '(' | ')' | ',' | '\\') {
+        break;
+      }
+      self.advance();
+    }
+    let text = &self.input[start..self.position];
+    let tag = QualifiedTag::parse(text)?;
+    // The closed selector key space: custom labels live in the `labels`
+    // category; the only `resources` keys are the two reserved labels.
+    match tag.category() {
+      "labels" => Ok(tag),
+      "resources"
+        if tag.as_str() == crate::resource::RESERVED_TYPE_LABEL_KEY
+          || tag.as_str() == crate::resource::RESERVED_URI_LABEL_KEY =>
+      {
+        Ok(tag)
+      }
+      _ => Err(Error::invalid_input("selector key")),
+    }
+  }
+
+  /// Parses one value: literal characters and escapes up to the next
+  /// unescaped delimiter (whitespace, or `,`/`)` inside a set list).
+  fn parse_value(&mut self, in_list: bool) -> Result<Arc<str>> {
+    let mut value = String::new();
+    while let Some(character) = self.peek() {
+      match character {
+        '\\' => {
+          self.advance();
+          let escaped = self
+            .peek()
+            .and_then(unescape)
+            .ok_or_else(|| Error::invalid_input("selector escape"))?;
+          self.advance();
+          value.push(escaped);
+        }
+        _ if character.is_whitespace() => break,
+        ',' | ')' if in_list => break,
+        '(' | ')' | ',' | '=' | '!' => {
+          return Err(Error::invalid_input("selector value"));
+        }
+        _ => {
+          self.advance();
+          value.push(character);
+        }
+      }
+    }
+    if value.is_empty() || value.len() > crate::label::LABEL_VALUE_MAX_BYTES {
+      return Err(Error::invalid_input("selector value"));
+    }
+    Ok(Arc::from(value))
+  }
+
+  /// Parses the parenthesized value list of a set predicate; the list is
+  /// the grammar's only nesting level. Items are comma-separated; a
+  /// missing comma, a leading or trailing comma, and an empty list are
+  /// malformed.
+  fn parse_set(&mut self) -> Result<Vec<Arc<str>>> {
+    if self.peek() != Some('(') {
+      return Err(Error::invalid_input("selector set"));
+    }
+    self.advance();
+    let mut values = Vec::new();
+    loop {
+      self.skip_whitespace();
+      if values.len() >= SELECTOR_MAX_SET_VALUES {
+        return Err(Error::resource_exhausted("selector set values"));
+      }
+      // parse_value fails on an empty item, which covers `()`, `(,a)`,
+      // and `(a,)` fail-closed.
+      values.push(self.parse_value(true)?);
+      self.skip_whitespace();
+      match self.peek() {
+        Some(',') => self.advance(),
+        Some(')') => {
+          self.advance();
+          break;
+        }
+        _ => return Err(Error::invalid_input("selector set")),
+      }
+    }
+    Ok(values)
+  }
+
+  /// Attempts the operator tail after a key: equality, inequality, or a
+  /// set membership. Returns `None` (restoring the cursor) when the key
+  /// stands alone as an existence predicate.
+  fn parse_operator_tail(&mut self, key: &QualifiedTag) -> Result<Option<Predicate>> {
+    let checkpoint = self.position;
+    self.skip_whitespace();
+    match self.peek() {
+      Some('=') => {
+        self.advance();
+        self.skip_whitespace();
+        Ok(Some(Predicate::Equals(
+          key.clone(),
+          self.parse_value(false)?,
+        )))
+      }
+      Some('!') => {
+        self.advance();
+        if self.peek() != Some('=') {
+          // A bare `!` starts the next predicate (non-existence); the
+          // parsed key stands alone as an existence predicate.
+          self.position = checkpoint;
+          return Ok(None);
+        }
+        self.advance();
+        self.skip_whitespace();
+        Ok(Some(Predicate::NotEquals(
+          key.clone(),
+          self.parse_value(false)?,
+        )))
+      }
+      _ => {
+        // Set membership requires the keyword as a whitespace-delimited
+        // word so keys containing "in" never collide with the operator.
+        for (keyword, set_variant) in [("in", true), ("notin", false)] {
+          if let Some(after) = self.rest().strip_prefix(keyword) {
+            let boundary = after
+              .chars()
+              .next()
+              .is_none_or(|character| character.is_whitespace() || character == '(');
+            if boundary {
+              for _ in keyword.chars() {
+                self.advance();
+              }
+              self.skip_whitespace();
+              let values = self.parse_set()?;
+              return Ok(Some(if set_variant {
+                Predicate::In(key.clone(), values.into_boxed_slice())
+              } else {
+                Predicate::NotIn(key.clone(), values.into_boxed_slice())
+              }));
+            }
+          }
+        }
+        self.position = checkpoint;
+        Ok(None)
+      }
     }
   }
 }
@@ -77,58 +346,100 @@ impl fmt::Display for Predicate {
 impl Selector {
   /// Parses, bounds, and canonicalizes one selector expression.
   pub fn parse(value: &str) -> Result<Self> {
-    if value.len() > SELECTOR_INPUT_MAX_LEN {
+    if value.is_empty() || value.len() > SELECTOR_INPUT_MAX_BYTES {
       return Err(Error::invalid_input("selector input"));
     }
+    let mut parser = SelectorParser::new(value);
     let mut predicates = Vec::new();
-    for token in value.split_ascii_whitespace() {
+    loop {
+      parser.skip_whitespace();
+      if parser.peek().is_none() {
+        break;
+      }
       if predicates.len() >= SELECTOR_MAX_PREDICATES {
         return Err(Error::resource_exhausted("selector predicates"));
       }
-      predicates.push(Self::parse_predicate(token)?);
+      let predicate = if parser.peek() == Some('!') {
+        parser.advance();
+        Predicate::NotExists(parser.parse_key()?)
+      } else {
+        let key = parser.parse_key()?;
+        match parser.parse_operator_tail(&key)? {
+          Some(predicate) => predicate,
+          None => Predicate::Exists(key),
+        }
+      };
+      predicates.push(predicate);
     }
     if predicates.is_empty() {
       return Err(Error::invalid_input("selector input"));
     }
-    // Canonical order: by key text, then existence before equality.
-    predicates.sort();
-    let predicates = predicates
-      .into_iter()
-      .map(|predicate| predicate.to_string())
-      .collect::<Vec<_>>()
-      .join(" ");
+    // Canonical order: by canonical predicate text, with exact duplicates
+    // removed (conjunction is idempotent).
+    let mut canonical: Vec<String> = predicates.iter().map(Predicate::canonical).collect();
+    canonical.sort();
+    canonical.dedup();
+    let canonical = canonical.join(" ");
     // Reparse the joined canonical text so the stored predicate list is
     // exactly the canonical form's parse (canonical text round-trips).
-    let mut canonical_predicates = Vec::new();
-    for token in predicates.split_ascii_whitespace() {
-      canonical_predicates.push(Self::parse_predicate(token)?);
-    }
+    let reparsed = Self::parse_predicates(&canonical)?;
     Ok(Self {
-      canonical: Arc::from(predicates),
-      predicates: canonical_predicates,
+      canonical: Arc::from(canonical),
+      predicates: reparsed,
     })
   }
 
-  fn parse_predicate(token: &str) -> Result<Predicate> {
-    match token.split_once('=') {
-      Some((key_text, value_text)) => Ok(Predicate::Equals(
-        crate::LabelKey::parse(key_text)?,
-        crate::LabelValue::parse(value_text)?,
-      )),
-      None => Ok(Predicate::Exists(crate::LabelKey::parse(token)?)),
+  /// Parses the already-canonical text back into predicates; the
+  /// canonical form is inside every bound, so this cannot fail, and a
+  /// failure is an internal invariant break.
+  fn parse_predicates(canonical: &str) -> Result<Vec<Predicate>> {
+    let mut parser = SelectorParser::new(canonical);
+    let mut predicates = Vec::new();
+    loop {
+      parser.skip_whitespace();
+      if parser.peek().is_none() {
+        break;
+      }
+      let predicate = if parser.peek() == Some('!') {
+        parser.advance();
+        Predicate::NotExists(parser.parse_key()?)
+      } else {
+        let key = parser.parse_key()?;
+        parser
+          .parse_operator_tail(&key)?
+          .unwrap_or(Predicate::Exists(key))
+      };
+      predicates.push(predicate);
     }
+    Ok(predicates)
   }
 
   pub fn as_str(&self) -> &str {
     &self.canonical
   }
 
-  /// Whether every predicate is satisfied by `labels`.
-  pub(crate) fn matches(&self, labels: &crate::LabelSet) -> bool {
+  /// Whether every predicate is satisfied under `lookup` (T-G09-02: the
+  /// single evaluator shared by node-label selection and reserved-aware
+  /// resource selection).
+  pub(crate) fn matches_with<'a>(&self, lookup: impl Fn(&QualifiedTag) -> Option<&'a str>) -> bool {
     self
       .predicates
       .iter()
-      .all(|predicate| predicate.matches(labels))
+      .all(|predicate| predicate.matches(&lookup))
+  }
+
+  /// Whether every predicate is satisfied by the node-owned `labels`.
+  /// Node descriptors never carry reserved resource labels, so lookups
+  /// resolve only the `labels` category.
+  pub(crate) fn matches(&self, labels: &crate::LabelSet) -> bool {
+    fn lookup<'a>(labels: &'a crate::LabelSet) -> impl Fn(&QualifiedTag) -> Option<&'a str> {
+      move |tag| {
+        crate::LabelKey::from_label_tag(tag)
+          .and_then(|key| labels.get(&key))
+          .map(|value| value.as_str())
+      }
+    }
+    self.matches_with(lookup(labels))
   }
 }
 
@@ -442,6 +753,8 @@ pub trait RouteNextHop: fmt::Debug + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
+
+  use proptest::strategy::Strategy as _;
 
   use super::{CandidateNodeReader, Selector, StoreCandidateReader};
   use crate::{
@@ -858,5 +1171,364 @@ mod tests {
     }
     assert_eq!(successes, max_hops);
     assert_eq!(context.visited().len(), usize::try_from(max_hops).unwrap());
+  }
+
+  // ---- SC-G09-P1-05..07: the completed selector grammar ----
+
+  /// Every grammar operator parses and evaluates with the documented set
+  /// semantics: equality and `in` require the key present; inequality and
+  /// `notin` also match entries whose key is absent.
+  #[test]
+  fn all_operators_parse_and_evaluate() {
+    let set = labels(&[("zone", "edge"), ("gpu", "yes")]);
+    // Equality and existence.
+    assert!(
+      Selector::parse("relay.woooo.tech/labels/zone=edge")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      !Selector::parse("relay.woooo.tech/labels/zone=core")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      Selector::parse("relay.woooo.tech/labels/gpu")
+        .unwrap()
+        .matches(&set)
+    );
+    // Inequality matches a different value and an absent key alike.
+    assert!(
+      Selector::parse("relay.woooo.tech/labels/zone!=core")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      Selector::parse("relay.woooo.tech/labels/ssd!=yes")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      !Selector::parse("relay.woooo.tech/labels/zone!=edge")
+        .unwrap()
+        .matches(&set)
+    );
+    // Set membership requires presence; non-membership matches absence.
+    assert!(
+      Selector::parse("relay.woooo.tech/labels/zone in (core,edge)")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      !Selector::parse("relay.woooo.tech/labels/ssd in (yes)")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      Selector::parse("relay.woooo.tech/labels/ssd notin (yes)")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      !Selector::parse("relay.woooo.tech/labels/zone notin (core,edge)")
+        .unwrap()
+        .matches(&set)
+    );
+    // Non-existence.
+    assert!(
+      Selector::parse("!relay.woooo.tech/labels/ssd")
+        .unwrap()
+        .matches(&set)
+    );
+    assert!(
+      !Selector::parse("!relay.woooo.tech/labels/gpu")
+        .unwrap()
+        .matches(&set)
+    );
+  }
+
+  /// Equivalent whitespace and operand forms canonicalize to one text,
+  /// while distinct operators and escaped values stay distinguishable and
+  /// round-trip exactly through `as_str`.
+  #[test]
+  fn canonicalization_normalizes_and_round_trips() {
+    let spaced =
+      Selector::parse("  relay.woooo.tech/labels/zone = edge   relay.woooo.tech/labels/gpu  ")
+        .unwrap();
+    let compact =
+      Selector::parse("relay.woooo.tech/labels/gpu relay.woooo.tech/labels/zone=edge").unwrap();
+    assert_eq!(spaced, compact);
+    assert_eq!(
+      spaced.as_str(),
+      "relay.woooo.tech/labels/gpu relay.woooo.tech/labels/zone=edge"
+    );
+    // Set member order and duplicates collapse into one canonical list.
+    let set_a = Selector::parse("relay.woooo.tech/labels/zone in ( edge, core ,edge )").unwrap();
+    let set_b = Selector::parse("relay.woooo.tech/labels/zone in (core,edge)").unwrap();
+    assert_eq!(set_a, set_b);
+    assert_eq!(
+      set_a.as_str(),
+      "relay.woooo.tech/labels/zone in (core,edge)"
+    );
+    // Exact duplicate predicates deduplicate.
+    let duplicated =
+      Selector::parse("relay.woooo.tech/labels/gpu relay.woooo.tech/labels/gpu").unwrap();
+    assert_eq!(duplicated.as_str(), "relay.woooo.tech/labels/gpu");
+
+    // Distinct operators stay distinct.
+    let equality = Selector::parse("relay.woooo.tech/labels/zone=edge").unwrap();
+    let inequality = Selector::parse("relay.woooo.tech/labels/zone!=edge").unwrap();
+    let membership = Selector::parse("relay.woooo.tech/labels/zone in (edge)").unwrap();
+    assert_ne!(equality, inequality);
+    assert_ne!(equality, membership);
+    assert_ne!(inequality, membership);
+
+    // Escaped values round-trip exactly and stay distinct from their
+    // unescaped counterparts.
+    let escaped = Selector::parse("example.org/labels/note=x\\ y\\\\z").unwrap();
+    assert_eq!(escaped.as_str(), "example.org/labels/note=x\\ y\\\\z");
+    assert_eq!(Selector::parse(escaped.as_str()).unwrap(), escaped);
+    assert!(escaped.matches(&{
+      let mut set = LabelSet::new();
+      set = set
+        .insert(
+          LabelKey::parse("example.org/labels/note").unwrap(),
+          LabelValue::parse("x y\\z").unwrap(),
+        )
+        .unwrap();
+      set
+    }));
+    assert!(
+      !escaped.matches(&labels(&[])),
+      "the escaped value is absent from an empty label set"
+    );
+    let plain = Selector::parse("example.org/labels/note=xyz").unwrap();
+    assert_ne!(escaped, plain);
+  }
+
+  /// Grammar bounds hold: over-limit input, predicates, set members, and
+  /// values are rejected with typed errors, and malformed shapes fail
+  /// closed without panic (THR-012).
+  #[test]
+  fn grammar_bounds_reject_overlimit_and_malformed_input() {
+    // Input byte limit.
+    let oversized = format!(
+      "relay.woooo.tech/labels/a in ({})",
+      (0..300)
+        .map(|index| format!("v{index}"))
+        .collect::<Vec<_>>()
+        .join(",")
+    );
+    assert!(oversized.len() > super::SELECTOR_INPUT_MAX_BYTES);
+    assert_eq!(
+      Selector::parse(&oversized).unwrap_err().kind(),
+      ErrorKind::InvalidInput
+    );
+    // Predicate count limit.
+    let many = (0..super::SELECTOR_MAX_PREDICATES + 1)
+      .map(|index| format!("relay.woooo.tech/labels/p{index:02}"))
+      .collect::<Vec<_>>()
+      .join(" ");
+    assert_eq!(
+      Selector::parse(&many).unwrap_err().kind(),
+      ErrorKind::ResourceExhausted
+    );
+    // Set member limit (within the input budget).
+    let members = (0..super::SELECTOR_MAX_SET_VALUES + 1)
+      .map(|index| format!("v{index}"))
+      .collect::<Vec<_>>()
+      .join(",");
+    assert_eq!(
+      Selector::parse(&format!("example.org/labels/s in ({members})"))
+        .unwrap_err()
+        .kind(),
+      ErrorKind::ResourceExhausted
+    );
+    // Value length limit.
+    let long = "x".repeat(crate::label::LABEL_VALUE_MAX_BYTES + 1);
+    assert_eq!(
+      Selector::parse(&format!("example.org/labels/v={long}"))
+        .unwrap_err()
+        .kind(),
+      ErrorKind::InvalidInput
+    );
+    // Malformed shapes fail closed.
+    for malformed in [
+      "relay.woooo.tech/labels/a=(",
+      "relay.woooo.tech/labels/a in (",
+      "relay.woooo.tech/labels/a in (1,",
+      "relay.woooo.tech/labels/a in ()",
+      "relay.woooo.tech/labels/a in (1 2)",
+      "relay.woooo.tech/labels/a in (,1)",
+      "relay.woooo.tech/labels/a in (1,)",
+      "relay.woooo.tech/labels/a in ((1))",
+      "relay.woooo.tech/labels/a=",
+      "relay.woooo.tech/labels/a!",
+      "relay.woooo.tech/labels/a! =1",
+      "!",
+      "relay.woooo.tech/labels/a=b=c",
+      "relay.woooo.tech/labels/a=bad\\q",
+      "relay.woooo.tech/features/not-a-label",
+      "relay.woooo.tech/resources/other=x",
+    ] {
+      assert!(
+        Selector::parse(malformed).is_err(),
+        "malformed selector must fail closed: {malformed:?}"
+      );
+    }
+  }
+
+  // ---- SC-G09-P1-07: evaluator semantics against a reference ----
+
+  /// One generated predicate with its independently computed reference
+  /// semantics.
+  #[derive(Clone, Debug)]
+  enum RefPredicate {
+    Exists(String),
+    NotExists(String),
+    Equals(String, String),
+    NotEquals(String, String),
+    In(String, Vec<String>),
+    NotIn(String, Vec<String>),
+  }
+
+  /// The reference escaping, written directly from the documented escape
+  /// set (independent of the implementation's encoder).
+  fn ref_escape(value: &str) -> String {
+    let mut out = String::new();
+    for character in value.chars() {
+      match character {
+        ' ' => out.push_str("\\ "),
+        '\t' => out.push_str("\\t"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\\' | ',' | '(' | ')' | '=' | '!' => {
+          out.push('\\');
+          out.push(character);
+        }
+        _ => out.push(character),
+      }
+    }
+    out
+  }
+
+  impl RefPredicate {
+    fn text(&self) -> String {
+      match self {
+        Self::Exists(key) => key.clone(),
+        Self::NotExists(key) => format!("!{key}"),
+        Self::Equals(key, value) => format!("{key}={}", ref_escape(value)),
+        Self::NotEquals(key, value) => format!("{key}!={}", ref_escape(value)),
+        Self::In(key, values) => format!(
+          "{key} in ({})",
+          values
+            .iter()
+            .map(|value| ref_escape(value))
+            .collect::<Vec<_>>()
+            .join(",")
+        ),
+        Self::NotIn(key, values) => format!(
+          "{key} notin ({})",
+          values
+            .iter()
+            .map(|value| ref_escape(value))
+            .collect::<Vec<_>>()
+            .join(",")
+        ),
+      }
+    }
+
+    /// The reference evaluator: direct boolean logic over the label map.
+    fn expected(&self, map: &std::collections::BTreeMap<String, String>) -> bool {
+      match self {
+        Self::Exists(key) => map.contains_key(key),
+        Self::NotExists(key) => !map.contains_key(key),
+        Self::Equals(key, value) => map.get(key) == Some(value),
+        Self::NotEquals(key, value) => map.get(key).is_none_or(|found| found != value),
+        Self::In(key, values) => map.get(key).is_some_and(|found| values.contains(found)),
+        Self::NotIn(key, values) => map.get(key).is_none_or(|found| !values.contains(found)),
+      }
+    }
+  }
+
+  /// The selector key space for the property: custom labels across two
+  /// caller domains plus both reserved resource labels.
+  fn arb_key() -> impl proptest::strategy::Strategy<Value = String> {
+    proptest::sample::select(vec![
+      "relay.woooo.tech/labels/zone",
+      "example.org/labels/owner",
+      "relay.woooo.tech/resources/type",
+      "relay.woooo.tech/resources/uri",
+    ])
+    .prop_map(str::to_owned)
+  }
+
+  /// Values include characters that require escaping, so the property
+  /// exercises the escape round-trip on every operator.
+  fn arb_value() -> impl proptest::strategy::Strategy<Value = String> {
+    proptest::sample::select(vec![
+      "edge",
+      "core",
+      "gold",
+      "x y",
+      "a,b",
+      "eq=v",
+      "bang!",
+      "p(aren)",
+      "tab\there",
+    ])
+    .prop_map(str::to_owned)
+  }
+
+  fn arb_predicate() -> impl proptest::strategy::Strategy<Value = RefPredicate> {
+    use proptest::prelude::*;
+    (arb_key(), arb_value(), 0..6_u8)
+      .prop_flat_map(|(key, value, variant)| {
+        let set = proptest::collection::vec(arb_value(), 1..=3);
+        (Just((key, value, variant)), set)
+      })
+      .prop_map(|((key, value, variant), values)| match variant {
+        0 => RefPredicate::Exists(key),
+        1 => RefPredicate::NotExists(key),
+        2 => RefPredicate::Equals(key, value),
+        3 => RefPredicate::NotEquals(key, value),
+        4 => RefPredicate::In(key, values),
+        _ => RefPredicate::NotIn(key, values),
+      })
+  }
+
+  proptest::proptest! {
+    /// The implementation matches the reference evaluator over absent,
+    /// present, and overwritten (duplicate-assignment) labels for every
+    /// grammar operator, and the canonical text reparses to an equal
+    /// selector (SC-G09-P1-07, round-trip of SC-G09-P1-06).
+    #[test]
+    fn evaluator_matches_reference_over_generated_label_spaces(
+      predicates in proptest::collection::vec(arb_predicate(), 1..=8),
+      assignments in proptest::collection::vec((arb_key(), arb_value()), 0..=6),
+    ) {
+      // Duplicate assignments overwrite: the map reflects the final
+      // converged state of the applied update sequence.
+      let map: std::collections::BTreeMap<String, String> =
+        assignments.into_iter().collect();
+      let text = predicates.iter().map(RefPredicate::text).collect::<Vec<_>>().join(" ");
+      let selector = Selector::parse(&text).unwrap();
+      let expected = predicates.iter().all(|predicate| predicate.expected(&map));
+      let actual = selector.matches_with(|tag| map.get(tag.as_str()).map(String::as_str));
+      proptest::prop_assert_eq!(actual, expected);
+      proptest::prop_assert_eq!(Selector::parse(selector.as_str()).unwrap(), selector);
+    }
+
+    /// Hostile and malformed inputs never panic and never exceed the
+    /// documented bounds (SC-G09-P1-05).
+    #[test]
+    fn hostile_selector_input_never_panics(input in ".{0,1100}") {
+      let result = std::panic::catch_unwind(|| Selector::parse(&input));
+      proptest::prop_assert!(result.is_ok());
+      if let Ok(Ok(selector)) = result {
+        proptest::prop_assert!(selector.as_str().len() <= super::SELECTOR_INPUT_MAX_BYTES);
+        proptest::prop_assert_eq!(Selector::parse(selector.as_str()).unwrap(), selector);
+      }
+    }
   }
 }

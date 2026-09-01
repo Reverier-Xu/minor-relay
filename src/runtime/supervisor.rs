@@ -353,6 +353,15 @@ async fn supervise(
         let result = supervisor.page_members(cursor, limit).await;
         let _ = reply.send(result);
       }
+      Control::SelectResources {
+        selector,
+        cursor,
+        limit,
+        reply,
+      } => {
+        let result = supervisor.select_resources(&selector, cursor, limit).await;
+        let _ = reply.send(result);
+      }
       Control::PageTopology { cursor, limit, reply } => {
         let result = supervisor.page_topology(cursor, limit).await;
         let _ = reply.send(result);
@@ -1101,6 +1110,19 @@ impl Supervisor {
       .next
       .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
     Ok(crate::MemberPage::new(paged.items, next))
+  }
+
+  /// Pages the live resource winners matching one selector (SC-G09-P1-08).
+  async fn select_resources(
+    &mut self, selector: &crate::Selector, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::ResourcePage> {
+    crate::resource::select::select_page_ctx(
+      self.context()?.store(),
+      selector,
+      cursor.as_ref(),
+      limit,
+    )
+    .await
   }
 
   /// Pages the authenticated sessions as directed topology edges
