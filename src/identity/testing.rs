@@ -243,6 +243,21 @@ impl ScriptedKeys {
       .clone()
   }
 
+  /// Registers the deterministic handle for one creation index without
+  /// consuming the creation counter (crash-matrix parents resolve the
+  /// child process's handles this way).
+  #[cfg(test)]
+  pub(crate) fn register_handle_index(&self, index: u64) {
+    let handle = format!("scripted-handle-{index}").into_bytes();
+    self
+      .inner
+      .records
+      .lock()
+      .unwrap()
+      .entry(handle)
+      .or_insert_with(|| scripted_signing(index));
+  }
+
   /// Looks up the created key for one operation without recording a
   /// provider call, for assertions on already-created handles.
   pub(crate) fn lookup_operation(&self, operation: &KeyOperationId) -> Option<CreatedKey> {

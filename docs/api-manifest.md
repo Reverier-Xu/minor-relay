@@ -691,6 +691,7 @@ incremental, not a complete graph allocation.
 
 ```rust
 pub struct ReplaceIdentityAndDeleteOldCoreMetadata { /* no Default */ }
+impl ReplaceIdentityAndDeleteOldCoreMetadata { pub fn new() -> Self; }
 pub struct ShutdownOutcome { /* private */ }
 impl ShutdownOutcome { pub fn reason(&self) -> &ShutdownReason; }
 pub struct ClusterView { /* private */ }

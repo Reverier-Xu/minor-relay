@@ -387,6 +387,62 @@ impl Command for RemoveResource {
   type Output = crate::ResourceMutationView;
 }
 
+/// Actively leaves the cluster (T-G09-06): replaces the node's identity
+/// with a fresh node id and key, deletes the old identity's local core
+/// metadata and key through the journaled custody protocols, and shuts the
+/// node down with [`crate::ShutdownReason::ActiveLeave`]. The explicit
+/// acknowledgement makes the identity replacement and metadata deletion
+/// a deliberate caller decision.
+pub struct LeaveCluster {
+  acknowledgement: crate::ReplaceIdentityAndDeleteOldCoreMetadata,
+}
+
+impl LeaveCluster {
+  pub fn new(acknowledgement: crate::ReplaceIdentityAndDeleteOldCoreMetadata) -> Self {
+    Self { acknowledgement }
+  }
+
+  pub(crate) const fn acknowledgement(&self) -> &crate::ReplaceIdentityAndDeleteOldCoreMetadata {
+    &self.acknowledgement
+  }
+}
+
+impl private::Sealed for LeaveCluster {}
+
+impl Command for LeaveCluster {
+  type Output = crate::LeaveOutcome;
+}
+
+/// The node's identity was replaced by an active leave (T-G09-06).
+/// Emitted once, after the identity swap is durable and before the node
+/// shuts down with [`crate::ShutdownReason::ActiveLeave`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityReplaced {
+  former_identity: NodeId,
+  replacement_identity: NodeId,
+}
+
+impl IdentityReplaced {
+  pub fn former_identity(&self) -> &NodeId {
+    &self.former_identity
+  }
+
+  pub fn replacement_identity(&self) -> &NodeId {
+    &self.replacement_identity
+  }
+
+  pub(crate) const fn new(former_identity: NodeId, replacement_identity: NodeId) -> Self {
+    Self {
+      former_identity,
+      replacement_identity,
+    }
+  }
+}
+
+impl private::Sealed for IdentityReplaced {}
+
+impl Event for IdentityReplaced {}
+
 /// A locally revoked identity lost connection and admission authority
 /// (T-G09-04). Emitted once per revocation transition, after the durable
 /// commit; an idempotent repeated revoke emits nothing.

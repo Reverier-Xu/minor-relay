@@ -390,6 +390,54 @@ impl ResourceMutationView {
   }
 }
 
+/// The explicit acknowledgement required by [`crate::LeaveCluster`]
+/// (T-G09-06): constructing it is the caller's deliberate confirmation
+/// that the leave replaces the node's identity and deletes the old
+/// identity's local core metadata. It has no `Default`, so the
+/// acknowledgement cannot be produced accidentally.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplaceIdentityAndDeleteOldCoreMetadata {
+  acknowledged: bool,
+}
+
+impl ReplaceIdentityAndDeleteOldCoreMetadata {
+  /// Constructs the acknowledgement; there is deliberately no `Default`
+  /// so the acknowledgement cannot be produced accidentally.
+  #[allow(clippy::new_without_default)]
+  pub fn new() -> Self {
+    Self { acknowledged: true }
+  }
+
+  pub(crate) const fn is_acknowledged(&self) -> bool {
+    self.acknowledged
+  }
+}
+
+/// The outcome of one active leave (T-G09-06): the exact former and
+/// replacement identities, bound together.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaveOutcome {
+  former_identity: NodeId,
+  replacement_identity: NodeId,
+}
+
+impl LeaveOutcome {
+  pub fn former_identity(&self) -> &NodeId {
+    &self.former_identity
+  }
+
+  pub fn replacement_identity(&self) -> &NodeId {
+    &self.replacement_identity
+  }
+
+  pub(crate) const fn new(former_identity: NodeId, replacement_identity: NodeId) -> Self {
+    Self {
+      former_identity,
+      replacement_identity,
+    }
+  }
+}
+
 /// The outcome of one authorization revoke (T-G09-04): the exact subject
 /// and whether this call performed the revocation transition (an
 /// idempotent repeated revoke reports `true` for `was_already_revoked`).

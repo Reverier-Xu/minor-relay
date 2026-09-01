@@ -253,6 +253,7 @@ async fn supervise(
       Vec::new(),
       &mut lifecycle,
       None,
+      ShutdownReason::Explicit,
     )
     .await;
     return;
@@ -270,6 +271,7 @@ async fn supervise(
         Vec::new(),
         &mut lifecycle,
         None,
+        ShutdownReason::Explicit,
       )
       .await;
       return;
@@ -305,6 +307,7 @@ async fn supervise(
           drained,
           &mut lifecycle,
           Some(reply),
+          ShutdownReason::Explicit,
         )
         .await;
         return;
@@ -408,6 +411,33 @@ async fn supervise(
         let result = supervisor.remove_resource(name, expected).await;
         let _ = reply.send(result);
       }
+      Control::LeaveCluster {
+        acknowledgement,
+        reply,
+      } => {
+        match supervisor.leave_cluster(acknowledgement).await {
+          Ok(outcome) => {
+            // The outcome reaches the caller before teardown begins; the
+            // node then shuts down with the active-leave reason.
+            let _ = reply.send(Ok(outcome));
+            let (dependencies, drained) = supervisor.into_dependencies();
+            finish_shutdown(
+              control,
+              tasks,
+              dependencies,
+              drained,
+              &mut lifecycle,
+              None,
+              ShutdownReason::ActiveLeave,
+            )
+            .await;
+            return;
+          }
+          Err(error) => {
+            let _ = reply.send(Err(error));
+          }
+        }
+      }
         }
       }
       request = packets.recv() => {
@@ -424,13 +454,22 @@ async fn supervise(
     }
   }
   let (dependencies, drained) = supervisor.into_dependencies();
-  finish_shutdown(control, tasks, dependencies, drained, &mut lifecycle, None).await;
+  finish_shutdown(
+    control,
+    tasks,
+    dependencies,
+    drained,
+    &mut lifecycle,
+    None,
+    ShutdownReason::Explicit,
+  )
+  .await;
 }
 
 async fn finish_shutdown(
   mut control: mpsc::Receiver<Control>, mut tasks: JoinSet<()>, dependencies: RuntimeDependencies,
   drained: Vec<tokio::task::JoinHandle<()>>, lifecycle: &mut LifecyclePublisher,
-  first_reply: Option<oneshot::Sender<ShutdownOutcome>>,
+  first_reply: Option<oneshot::Sender<ShutdownOutcome>>, reason: ShutdownReason,
 ) {
   lifecycle.publish(LifecycleSnapshot::shutting_down());
   control.close();
@@ -449,12 +488,12 @@ async fn finish_shutdown(
   drop(control);
   drop(dependencies);
 
-  lifecycle.stop(ShutdownReason::Explicit);
+  lifecycle.stop(reason);
   if let Some(reply) = first_reply {
-    let _ = reply.send(ShutdownOutcome::new(ShutdownReason::Explicit));
+    let _ = reply.send(ShutdownOutcome::new(reason));
   }
   for reply in queued_replies {
-    let _ = reply.send(ShutdownOutcome::new(ShutdownReason::Explicit));
+    let _ = reply.send(ShutdownOutcome::new(reason));
   }
 }
 
@@ -1506,6 +1545,58 @@ impl Supervisor {
         .emit(crate::NodeRevoked::new(subject.clone()));
     }
     Ok(crate::RevokeOutcome::new(subject, was_already_revoked))
+  }
+
+  /// Executes one acknowledged active leave (`LeaveCluster`, T-G09-06):
+  /// tears down listeners and sessions, replaces the identity, wipes the
+  /// old identity's local core metadata, and deletes the old key — all
+  /// through the journaled, crash-recoverable leave phases. The caller's
+  /// outcome is reported, then the control loop shuts the runtime down
+  /// with `ShutdownReason::ActiveLeave`.
+  async fn leave_cluster(
+    &mut self, acknowledgement: crate::ReplaceIdentityAndDeleteOldCoreMetadata,
+  ) -> Result<crate::LeaveOutcome> {
+    self.require_unblocked()?;
+    // The acknowledgement is a proof-of-construction marker: only the
+    // deliberate constructor produces it.
+    if !acknowledgement.is_acknowledged() {
+      return Err(Error::invalid_input("leave acknowledgement"));
+    }
+    let context = self.context()?;
+    crate::identity::genesis::local_cluster(&context)
+      .await?
+      .ok_or_else(|| Error::not_ready("local cluster"))?;
+
+    // Network teardown first: no new sessions or inbound metadata while
+    // the identity is replaced and the old metadata is wiped.
+    let listener_ids: Vec<crate::identity::ListenerId> = self.listeners.keys().cloned().collect();
+    for listener in listener_ids {
+      self.stop_listener(&listener).await?;
+    }
+    let peers: Vec<NodeId> = self
+      .dependencies
+      .sessions
+      .lock()
+      .map_err(Error::session_table)?
+      .keys()
+      .cloned()
+      .collect();
+    for peer in peers {
+      crate::session::stream::retire_session(&self.dependencies.sessions, &peer)?;
+      self.recovery_history.remove(&peer);
+    }
+
+    let (former, replacement) = crate::identity::leave::execute(
+      &context,
+      &self.dependencies.keys,
+      self.dependencies.entropy.as_ref(),
+    )
+    .await?;
+    self.dependencies.events.emit(crate::IdentityReplaced::new(
+      former.clone(),
+      replacement.clone(),
+    ));
+    Ok(crate::LeaveOutcome::new(former, replacement))
   }
 
   /// The public recovery observation: whether every known online member

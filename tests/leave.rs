@@ -1,0 +1,395 @@
+//! Public-API integration tests for active leave and identity rotation
+//! (T-G09-06, SC-G09-P0-18..21).
+//!
+//! Every test drives the facade only: an acknowledged `LeaveCluster`
+//! replaces the identity, deletes the old key and the old identity's core
+//! metadata, emits one `IdentityReplaced`, and shuts the node down with
+//! `ShutdownReason::ActiveLeave`; a restart on either backend shows only
+//! the replacement identity and never the old cluster's metadata.
+
+use std::{
+  collections::BTreeMap,
+  sync::{Arc, Mutex},
+  time::Duration,
+};
+
+use minor_relay::{
+  BoxFuture, CreateCluster, Endpoint, Error, ErrorKind, EventOptions, EventReceive,
+  IdentityReplaced, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
+  LeaveCluster, Listen, NodeBuilder, PageMembers, PageSpec, PageTrust, PublicKey, PutResource,
+  ReplaceIdentityAndDeleteOldCoreMetadata, ResourceLabels, ResourceName, ResourceUri,
+  ResourceWrite, Result, SelectResources, Selector, Shutdown, ShutdownReason, Signature,
+  WaitForShutdown,
+  extension::{KeyProvider, StorageFactory},
+};
+
+mod common;
+
+/// A deterministic key provider with working deletion and a call log
+/// (the shared scripted providers intentionally fail deletes, so the
+/// leave's custody lane needs its own).
+#[derive(Debug, Default)]
+struct LeaveKeys {
+  records: Mutex<BTreeMap<Vec<u8>, ed25519_dalek::SigningKey>>,
+  operations: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
+  deleted: Mutex<Vec<Vec<u8>>>,
+  next: Mutex<u64>,
+}
+
+impl LeaveKeys {
+  fn seed_for(base: u64) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&base.to_le_bytes().repeat(4)[..32].try_into().unwrap())
+  }
+
+  fn create_at(&self, operation: &KeyOperationId) -> KeyCreateState {
+    let mut operations = self.operations.lock().unwrap();
+    if let Some(handle) = operations.get(operation.as_str().as_bytes()) {
+      let records = self.records.lock().unwrap();
+      let signing = &records[handle];
+      return KeyCreateState::Present(minor_relay::CreatedKey::new(
+        KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
+        PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+      ));
+    }
+    let mut next = self.next.lock().unwrap();
+    let index = *next;
+    *next += 1;
+    let signing = Self::seed_for(index + 1);
+    let handle = format!("leave-handle-{index}").into_bytes();
+    let created = minor_relay::CreatedKey::new(
+      KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
+      PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+    );
+    operations.insert(operation.as_str().as_bytes().to_vec(), handle.clone());
+    self.records.lock().unwrap().insert(handle, signing);
+    KeyCreateState::Present(created)
+  }
+
+  fn deleted_count(&self) -> usize {
+    self.deleted.lock().unwrap().len()
+  }
+}
+
+impl KeyProvider for LeaveKeys {
+  fn capabilities(&self) -> KeyCapabilities {
+    KeyCapabilities::new()
+      .ed25519(true)
+      .reconciliation(true)
+      .deletion(true)
+  }
+
+  fn create_ed25519<'a>(
+    &'a self, operation: &'a KeyOperationId,
+  ) -> BoxFuture<'a, Result<KeyCreateState>> {
+    Box::pin(async move { Ok(self.create_at(operation)) })
+  }
+
+  fn reconcile_create<'a>(
+    &'a self, operation: &'a KeyOperationId,
+  ) -> BoxFuture<'a, Result<KeyCreateState>> {
+    Box::pin(async move {
+      let operations = self.operations.lock().unwrap();
+      let Some(handle) = operations.get(operation.as_str().as_bytes()) else {
+        return Ok(KeyCreateState::Absent);
+      };
+      let records = self.records.lock().unwrap();
+      let Some(signing) = records.get(handle) else {
+        return Ok(KeyCreateState::Absent);
+      };
+      Ok(KeyCreateState::Present(minor_relay::CreatedKey::new(
+        KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
+        PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+      )))
+    })
+  }
+
+  fn public_key<'a>(&'a self, handle: &'a KeyHandle) -> BoxFuture<'a, Result<PublicKey>> {
+    let result = self
+      .records
+      .lock()
+      .unwrap()
+      .get(handle.expose_provider_handle())
+      .map(|signing| PublicKey::from_bytes(signing.verifying_key().to_bytes()))
+      .ok_or_else(|| {
+        Error::provider(
+          minor_relay::ProviderErrorKind::Internal,
+          minor_relay::ProviderErrorContext::KeyPublicKey,
+        )
+      });
+    Box::pin(async move { result })
+  }
+
+  fn sign<'a>(
+    &'a self, handle: &'a KeyHandle, message: &'a [u8],
+  ) -> BoxFuture<'a, Result<Signature>> {
+    use ed25519_dalek::Signer as _;
+    let result = self
+      .records
+      .lock()
+      .unwrap()
+      .get(handle.expose_provider_handle())
+      .map(|signing| Signature::from_bytes(signing.sign(message).to_bytes()))
+      .ok_or_else(|| {
+        Error::provider(
+          minor_relay::ProviderErrorKind::Internal,
+          minor_relay::ProviderErrorContext::KeySign,
+        )
+      });
+    Box::pin(async move { result })
+  }
+
+  fn delete<'a>(
+    &'a self, _operation: &'a KeyOperationId, handle: &'a KeyHandle,
+  ) -> BoxFuture<'a, Result<KeyDeleteState>> {
+    let removed = self
+      .records
+      .lock()
+      .unwrap()
+      .remove(handle.expose_provider_handle());
+    if removed.is_some() {
+      self
+        .deleted
+        .lock()
+        .unwrap()
+        .push(handle.expose_provider_handle().to_vec());
+    }
+    Box::pin(async move { Ok(KeyDeleteState::Absent) })
+  }
+
+  fn reconcile_delete<'a>(
+    &'a self, _operation: &'a KeyOperationId, handle: &'a KeyHandle,
+  ) -> BoxFuture<'a, Result<KeyDeleteState>> {
+    let present = self
+      .records
+      .lock()
+      .unwrap()
+      .contains_key(handle.expose_provider_handle());
+    Box::pin(async move {
+      Ok(if present {
+        KeyDeleteState::Present
+      } else {
+        KeyDeleteState::Absent
+      })
+    })
+  }
+}
+
+fn write(name_seed: u8) -> PutResource {
+  PutResource::new(ResourceWrite::new(
+    ResourceName::parse(&format!("relay.woooo.tech/resources/leave-{name_seed:03}")).unwrap(),
+    ResourceLabels::new(
+      minor_relay::LabelValue::parse("document").unwrap(),
+      ResourceUri::parse(&format!("file:///leave/{name_seed:03}")).unwrap(),
+    ),
+  ))
+  .unwrap()
+}
+
+/// SC-G09-P0-18: an acknowledged active leave binds the exact former and
+/// replacement identities, emits one IdentityReplaced, and shuts the node
+/// down with the ActiveLeave reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn g9_leave_replaces_identity_and_shuts_down_with_active_leave() {
+  let storage = Arc::new(common::MemoryStorageFactory::new(
+    common::required_capabilities(),
+  ));
+  let keys: Arc<dyn KeyProvider> = Arc::new(LeaveKeys::default());
+  let handle = NodeBuilder::new(storage, keys).start().await.unwrap();
+  handle.command(CreateCluster::new()).await.unwrap();
+  handle
+    .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+    .await
+    .unwrap();
+  handle.command(write(1)).await.unwrap();
+  let former = handle
+    .query(minor_relay::GetLocalNode::new())
+    .await
+    .unwrap()
+    .node_id()
+    .clone();
+  let mut events = handle
+    .events::<IdentityReplaced>(EventOptions::new())
+    .unwrap();
+
+  let outcome = handle
+    .command(LeaveCluster::new(
+      ReplaceIdentityAndDeleteOldCoreMetadata::new(),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(outcome.former_identity(), &former);
+  assert_ne!(outcome.former_identity(), outcome.replacement_identity());
+
+  // Exactly one replacement event naming both identities.
+  let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+    .await
+    .unwrap()
+    .unwrap();
+  match event {
+    EventReceive::Item(replaced) => {
+      assert_eq!(replaced.former_identity(), &former);
+      assert_eq!(
+        replaced.replacement_identity(),
+        outcome.replacement_identity()
+      );
+    }
+    _ => panic!("expected the identity replacement event"),
+  }
+  assert!(matches!(
+    events.try_recv().unwrap(),
+    EventReceive::Empty | EventReceive::Closed
+  ));
+
+  // The node shuts down with the active-leave reason.
+  let reason = handle.query(WaitForShutdown::new()).await.unwrap();
+  assert_eq!(reason, ShutdownReason::ActiveLeave);
+  assert_eq!(
+    handle
+      .query(minor_relay::GetNodeStatus::new())
+      .await
+      .unwrap(),
+    minor_relay::NodeStatus::Stopped
+  );
+}
+
+/// SC-G09-P0-20/21: after the leave and a restart, the store shows no old
+/// identity metadata — no cluster, members, trust, or resources — while
+/// the replacement identity runs and the old key is provider-deleted.
+#[cfg(feature = "json")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g9_json_leave_restart_shows_only_the_replacement() {
+  let directory = tempfile::tempdir().unwrap();
+  leave_restart_shows_only_the_replacement(minor_relay::adapters::json_store(
+    directory.path().to_path_buf(),
+  ))
+  .await;
+}
+
+#[cfg(feature = "redb")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g9_redb_leave_restart_shows_only_the_replacement() {
+  let directory = tempfile::tempdir().unwrap();
+  leave_restart_shows_only_the_replacement(minor_relay::adapters::redb_store(
+    directory.path().join("store.redb"),
+  ))
+  .await;
+}
+
+#[cfg(any(feature = "json", feature = "redb"))]
+async fn leave_restart_shows_only_the_replacement(storage: Arc<dyn StorageFactory>) {
+  let keys = Arc::new(LeaveKeys::default());
+  let provider: Arc<dyn KeyProvider> = keys.clone();
+  let former_handle_bytes;
+  let replacement;
+  {
+    let handle = NodeBuilder::new(Arc::clone(&storage), provider.clone())
+      .start()
+      .await
+      .unwrap();
+    handle.command(CreateCluster::new()).await.unwrap();
+    handle
+      .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
+      .await
+      .unwrap();
+    handle.command(write(2)).await.unwrap();
+    let former = handle
+      .query(minor_relay::GetLocalNode::new())
+      .await
+      .unwrap()
+      .node_id()
+      .clone();
+    former_handle_bytes = former.clone();
+    let outcome = handle
+      .command(LeaveCluster::new(
+        ReplaceIdentityAndDeleteOldCoreMetadata::new(),
+      ))
+      .await
+      .unwrap();
+    assert_eq!(outcome.former_identity(), &former_handle_bytes);
+    replacement = outcome.replacement_identity().clone();
+    let reason = handle.query(WaitForShutdown::new()).await.unwrap();
+    assert_eq!(reason, ShutdownReason::ActiveLeave);
+    // The former identity's key passed the custody protocol exactly once.
+    assert_eq!(keys.deleted_count(), 1);
+  }
+
+  // Restart on the same store: no cluster, no members, no trust, no
+  // resources — only the replacement identity remains.
+  let handle = NodeBuilder::new(storage, provider).start().await.unwrap();
+  assert_eq!(
+    handle
+      .query(minor_relay::GetLocalNode::new())
+      .await
+      .unwrap_err()
+      .kind(),
+    ErrorKind::NotReady,
+    "the old cluster pointer is gone"
+  );
+  assert!(
+    handle
+      .query(SelectResources::new(
+        Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+        PageSpec::first(8).unwrap(),
+      ))
+      .await
+      .unwrap()
+      .items()
+      .is_empty()
+  );
+  // The member page can carry only the restarted node's own descriptor;
+  // the old cluster's members (including the former identity) are gone.
+  let members = handle
+    .query(PageMembers::new(PageSpec::first(8).unwrap()))
+    .await
+    .unwrap();
+  assert!(members.items().len() <= 1, "old membership must be wiped");
+  assert!(
+    members
+      .items()
+      .iter()
+      .all(|member| member.node_id() == &replacement),
+    "only the replacement identity may appear"
+  );
+  assert!(
+    handle
+      .query(PageTrust::new(PageSpec::first(8).unwrap()))
+      .await
+      .unwrap()
+      .items()
+      .is_empty()
+  );
+
+  // A fresh cluster over the restarted store binds the replacement
+  // identity — the old identity never returns.
+  handle.command(CreateCluster::new()).await.unwrap();
+  let local = handle
+    .query(minor_relay::GetLocalNode::new())
+    .await
+    .unwrap();
+  assert_eq!(local.node_id(), &replacement);
+  assert_ne!(local.node_id(), &former_handle_bytes);
+
+  handle.command(Shutdown::new()).await.unwrap();
+}
+
+/// SC-G09-P0-18: leave requires an acknowledged intent and a cluster; a
+/// standalone node fails NotReady without touching anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g9_leave_without_cluster_is_not_ready() {
+  let storage = Arc::new(common::MemoryStorageFactory::new(
+    common::required_capabilities(),
+  ));
+  let keys: Arc<dyn KeyProvider> = Arc::new(LeaveKeys::default());
+  let handle = NodeBuilder::new(storage, keys).start().await.unwrap();
+  assert_eq!(
+    handle
+      .command(LeaveCluster::new(
+        ReplaceIdentityAndDeleteOldCoreMetadata::new()
+      ))
+      .await
+      .unwrap_err()
+      .kind(),
+    ErrorKind::NotReady
+  );
+  handle.command(Shutdown::new()).await.unwrap();
+}

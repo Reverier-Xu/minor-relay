@@ -7,6 +7,7 @@ pub(crate) mod credential;
 pub(crate) mod deletion;
 pub(crate) mod genesis;
 pub(crate) mod id;
+pub(crate) mod leave;
 pub(crate) mod lifecycle;
 #[allow(dead_code)]
 pub(crate) mod records;

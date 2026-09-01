@@ -66,6 +66,13 @@ impl LocalIdentityContext {
   pub(crate) const fn identity(&self) -> &LocalIdentityV1 {
     &self.identity
   }
+
+  /// Replaces the in-memory identity after a startup leave resume swapped
+  /// the durable singleton (T-G09-06): the context never observes a mixed
+  /// identity.
+  pub(crate) fn replace_identity(&mut self, identity: LocalIdentityV1) {
+    self.identity = identity;
+  }
 }
 
 /// Opens or creates the local node identity with exact crash recovery.
@@ -96,14 +103,22 @@ pub(crate) async fn open_local_identity(
   let snapshot = store.snapshot().await?;
   let local = discover_local_identity(snapshot.as_ref()).await?;
   let intent = discover_key_creation_intent(snapshot.as_ref()).await?;
-  match (local, intent) {
+  let context = match (local, intent) {
     (Some(_), Some(_)) => Err(discovery_corrupt()),
     (Some((_, identity)), None) => load_existing_identity(store, keys, identity).await,
     (None, None) => create_identity(store, keys, entropy, snapshot).await,
     (None, Some((stored, intent))) => {
       resume_identity_creation(store, keys, entropy, stored, intent).await
     }
+  }?;
+  // A pending leave-intent resumes and completes before the node serves
+  // (T-G09-06): the returned context always reflects the post-leave
+  // identity, never a mixed one.
+  let mut context = context;
+  if let Some(replacement) = super::leave::resume_if_pending(&context, keys, entropy).await? {
+    context.replace_identity(replacement);
   }
+  Ok(context)
 }
 
 /// Reconciles a pending journal recovered at open.

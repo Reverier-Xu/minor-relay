@@ -762,14 +762,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G09-06"
 verification_id = "VERIFY-G09-06"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G09-06"
 owner_task = "T-G09-06"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g09-06-leave-rotation.sh"]
 timeout_seconds = 1800
 
 [[task]]

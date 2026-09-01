@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use super::{
   lifecycle::{
-    CommitWithReconcile, LocalIdentityContext, cleanup_pending_exact, commit_with_reconcile,
-    discover_local_identity, discovery_corrupt,
+    CommitWithReconcile, cleanup_pending_exact, commit_with_reconcile, discover_local_identity,
+    discovery_corrupt,
   },
   records::{
     KeyDeletedV1, KeyDeletionIntentV1, key_deleted_key, key_deletion_intent_key, local_identity_key,
@@ -35,10 +35,9 @@ use crate::{
 /// without any mutation. Provider `Unknown` outcomes quarantine the intent
 /// until `reconcile_delete` proves `Absent`.
 pub(crate) async fn delete_unreferenced_key(
-  context: &LocalIdentityContext, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy,
+  store: &crate::storage::MetadataStore, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy,
   handle: &KeyHandle,
 ) -> Result<()> {
-  let store = context.store();
   let purpose = deletion_purpose(handle);
   // The deletion path reconciles a frozen store after journal recovery
   // too (a cheap no-op on a non-frozen store), matching its historical
@@ -339,7 +338,7 @@ mod tests {
     assert!(fixture.keys.has_handle(&handle));
 
     delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -356,7 +355,7 @@ mod tests {
     let commits_before = commit_calls(&fixture.reference);
     let calls_before = fixture.keys.all_calls().len();
     delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -375,7 +374,7 @@ mod tests {
     let calls_before = fixture.keys.all_calls().len();
 
     let error = delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -397,7 +396,7 @@ mod tests {
     fixture.keys.push_delete_script(DeleteScript::StillPresent);
 
     let error = delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -413,7 +412,7 @@ mod tests {
     // handle still present, one fresh delete under the same operation
     // completes, and the tombstone commits.
     delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -432,7 +431,7 @@ mod tests {
     fixture.keys.push_delete_script(DeleteScript::Unknown);
 
     let error = delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -446,7 +445,7 @@ mod tests {
     // Resume: reconcile_delete reports the handle still present, one delete
     // under the same operation completes, and the tombstone commits.
     delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -486,9 +485,14 @@ mod tests {
       let operation = KeyOperationId::parse("keyop_000000000000000000099").unwrap();
       let handle = keys.create_detached(&operation).handle().clone();
 
-      delete_unreferenced_key(&context, &keys.as_provider(), entropy.as_ref(), &handle)
-        .await
-        .unwrap();
+      delete_unreferenced_key(
+        context.store(),
+        &keys.as_provider(),
+        entropy.as_ref(),
+        &handle,
+      )
+      .await
+      .unwrap();
       assert!(tombstone_present(&reference, &handle));
       assert!(!intent_present(&reference, &handle));
       assert!(pending_keys(&reference).is_empty());
@@ -526,7 +530,7 @@ mod tests {
       let provider = keys.as_provider();
       let entropy = Arc::clone(&entropy);
       let handle = handle.clone();
-      async move { delete_unreferenced_key(&context, &provider, entropy.as_ref(), &handle).await }
+      async move { delete_unreferenced_key(context.store(), &provider, entropy.as_ref(), &handle).await }
     });
     committed.notified().await;
     for _ in 0..64 {
@@ -542,9 +546,14 @@ mod tests {
     let context = open_context(&faulting.as_factory(), &keys, &entropy)
       .await
       .unwrap();
-    delete_unreferenced_key(&context, &keys.as_provider(), entropy.as_ref(), &handle)
-      .await
-      .unwrap();
+    delete_unreferenced_key(
+      context.store(),
+      &keys.as_provider(),
+      entropy.as_ref(),
+      &handle,
+    )
+    .await
+    .unwrap();
     assert!(tombstone_present(&reference, &handle));
     assert!(pending_keys(&reference).is_empty());
   }
@@ -615,7 +624,7 @@ mod tests {
     let handle = detached_handle(&fixture, 7);
     let receipts_before = receipt_ids(&fixture.reference).len();
     delete_unreferenced_key(
-      &fixture.context,
+      fixture.context.store(),
       &fixture.keys.as_provider(),
       fixture.entropy.as_ref(),
       &handle,
@@ -691,9 +700,14 @@ mod guard_tests {
     let operation = KeyOperationId::parse("keyop_000000000000000000055").unwrap();
     let handle = keys.create_detached(&operation).handle().clone();
 
-    delete_unreferenced_key(&context, &keys.as_provider(), entropy.as_ref(), &handle)
-      .await
-      .unwrap();
+    delete_unreferenced_key(
+      context.store(),
+      &keys.as_provider(),
+      entropy.as_ref(),
+      &handle,
+    )
+    .await
+    .unwrap();
 
     let committed = faulting.committed_ops();
     let install = &committed[3];

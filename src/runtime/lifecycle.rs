@@ -141,6 +141,10 @@ pub(crate) enum Control {
     expected: crate::ResourceVersion,
     reply: oneshot::Sender<Result<crate::ResourceMutationView>>,
   },
+  LeaveCluster {
+    acknowledgement: crate::ReplaceIdentityAndDeleteOldCoreMetadata,
+    reply: oneshot::Sender<Result<crate::LeaveOutcome>>,
+  },
 }
 
 #[derive(Clone)]
@@ -389,6 +393,20 @@ impl RuntimeClient {
       .send_command(|reply| Control::RemoveResource {
         name,
         expected,
+        reply,
+      })
+      .await
+  }
+
+  /// Actively leaves the cluster, replacing the node's identity (G9-06).
+  /// The node shuts down with `ShutdownReason::ActiveLeave` after the
+  /// outcome is reported.
+  pub(crate) async fn leave_cluster(
+    &self, acknowledgement: crate::ReplaceIdentityAndDeleteOldCoreMetadata,
+  ) -> Result<crate::LeaveOutcome> {
+    self
+      .send_command(|reply| Control::LeaveCluster {
+        acknowledgement,
         reply,
       })
       .await

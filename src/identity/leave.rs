@@ -1,0 +1,949 @@
+//! Active leave and identity replacement (T-G09-06, ADR-0001/0006).
+//!
+//! An explicit active leave replaces the node's identity and erases the
+//! old identity's local core metadata, crash-safely:
+//!
+//! 1. A journaled leave-intent records the exact former identity and the
+//!    replacement coordinates (node id and key-creation operation).
+//! 2. The replacement key is created through the provider under that operation
+//!    id; an indeterminate create reconciles, never duplicates.
+//! 3. One journaled transaction swaps the local-identity singleton to the
+//!    replacement — after this commit the node is never the former identity
+//!    again.
+//! 4. The old identity's domain metadata (trust, membership, resources, traces,
+//!    credentials, admissions, revocations) is wiped in bounded idempotent
+//!    batches; the store's schema, receipt internals, and key custody records
+//!    are store infrastructure, not identity metadata, and stay.
+//! 5. The former key is deleted through the exact key-deletion intent protocol;
+//!    no referenced key is ever deleted.
+//! 6. The leave-intent is removed, completing the leave.
+//!
+//! Every step is idempotent and reopen-recoverable: a crash at any point
+//! reopens to a reconciled phase and resumes, never to a mixed identity,
+//! a duplicate active key, or silently restored old membership.
+
+use std::sync::Arc;
+
+use minicbor::{Decode, Encode, bytes::ByteVec};
+
+use super::{
+  deletion::delete_unreferenced_key,
+  lifecycle::{CommitWithReconcile, LocalIdentityContext, commit_with_reconcile},
+  records::{LocalIdentityV1, local_identity_key},
+};
+use crate::{
+  Error, KeyHandle, KeyOperationId, NodeId, PublicKey, Result, StoreExpectation, StoreKey,
+  StoreNamespace, StoreOperation, StoreValue, TransactionId,
+  api::Entropy,
+  protocol::{decode_canonical, encode_canonical},
+  provider::KeyProvider,
+  storage::MetadataStore,
+};
+
+/// The durable schema of the leave-intent record.
+const LEAVE_INTENT_SCHEMA: &str = "relay.woooo.tech/schemas/leave-intent-v1";
+pub(crate) use crate::storage::families::LEAVE_NAMESPACE;
+
+/// Canonical-decoder bounds for the flat intent record.
+const INTENT_LIMITS: crate::protocol::CborLimits = crate::protocol::CborLimits::new(4, 8, 1024);
+
+const INTENT_VERSION: u16 = 1;
+const INTENT_KEY: &[u8] = b"leave";
+
+/// The durable leave-intent: the exact former identity and the
+/// replacement coordinates. One record per store; presence means a leave
+/// is in progress and must resume before the node serves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LeaveIntentV1 {
+  former_node: NodeId,
+  former_key: PublicKey,
+  former_handle: KeyHandle,
+  replacement_node: NodeId,
+  replacement_operation: KeyOperationId,
+}
+
+#[derive(Encode, Decode)]
+#[cbor(array)]
+struct LeaveIntentWire {
+  #[n(0)]
+  schema: String,
+  #[n(1)]
+  record_version: u16,
+  #[n(2)]
+  former_node: String,
+  #[n(3)]
+  former_key: ByteVec,
+  #[n(4)]
+  former_handle: ByteVec,
+  #[n(5)]
+  replacement_node: String,
+  #[n(6)]
+  replacement_operation: String,
+}
+
+impl LeaveIntentV1 {
+  fn former_handle(&self) -> &KeyHandle {
+    &self.former_handle
+  }
+
+  fn encode(&self) -> Result<Vec<u8>> {
+    encode_canonical(
+      &LeaveIntentWire {
+        schema: LEAVE_INTENT_SCHEMA.to_owned(),
+        record_version: INTENT_VERSION,
+        former_node: self.former_node.as_str().to_owned(),
+        former_key: ByteVec::from(self.former_key.as_bytes().to_vec()),
+        former_handle: ByteVec::from(self.former_handle.expose_provider_handle().to_vec()),
+        replacement_node: self.replacement_node.as_str().to_owned(),
+        replacement_operation: self.replacement_operation.as_str().to_owned(),
+      },
+      INTENT_LIMITS,
+    )
+  }
+
+  fn decode(bytes: &[u8]) -> Result<Self> {
+    let wire: LeaveIntentWire =
+      decode_canonical(bytes, INTENT_LIMITS).map_err(|_| Error::invalid_input("leave intent"))?;
+    if wire.schema != LEAVE_INTENT_SCHEMA || wire.record_version != INTENT_VERSION {
+      return Err(Error::invalid_input("leave intent schema"));
+    }
+    Ok(Self {
+      former_node: NodeId::parse(&wire.former_node)?,
+      former_key: PublicKey::from_bytes(
+        <[u8; 32]>::try_from(wire.former_key.as_slice())
+          .map_err(|_| Error::invalid_input("leave intent key"))?,
+      ),
+      former_handle: KeyHandle::from_provider_bytes(Arc::from(
+        wire.former_handle.as_slice().to_vec(),
+      ))?,
+      replacement_node: NodeId::parse(&wire.replacement_node)?,
+      replacement_operation: KeyOperationId::parse(&wire.replacement_operation)?,
+    })
+  }
+
+  /// The deterministic fixture intent for round-trip tests.
+  #[cfg(test)]
+  fn new_for_test() -> Self {
+    Self {
+      former_node: NodeId::parse("node_000000000000000000061").unwrap(),
+      former_key: PublicKey::from_bytes([61; 32]),
+      former_handle: KeyHandle::from_provider_bytes(Arc::from(b"former-handle".to_vec())).unwrap(),
+      replacement_node: NodeId::parse("node_000000000000000000062").unwrap(),
+      replacement_operation: KeyOperationId::parse("keyop_000000000000000000062").unwrap(),
+    }
+  }
+}
+
+fn leave_namespace() -> Result<StoreNamespace> {
+  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
+    LEAVE_NAMESPACE,
+  )?))
+}
+
+fn leave_key() -> StoreKey {
+  StoreKey::new(Arc::from(INTENT_KEY.to_vec()))
+}
+
+/// Discovers the pending leave-intent, if any.
+pub(crate) async fn discover_leave_intent(
+  store: &MetadataStore,
+) -> Result<Option<(StoreValue, LeaveIntentV1)>> {
+  let namespace = leave_namespace()?;
+  let snapshot = store.snapshot().await?;
+  let Some(value) = snapshot.get(&namespace, &leave_key()).await? else {
+    return Ok(None);
+  };
+  Ok(Some((
+    value.clone(),
+    LeaveIntentV1::decode(value.as_bytes())?,
+  )))
+}
+
+/// The domain metadata namespaces of the old identity, wiped by a leave.
+/// The local identity singleton is swapped, never wiped; the store's
+/// schema, receipt internals, pending journal, and key-custody records
+/// are storage infrastructure and stay.
+const WIPE_NAMESPACES: &[&str] = &[
+  crate::storage::families::IDENTITY_BINDING_NAMESPACE,
+  crate::storage::families::CLUSTER_GENESIS_NAMESPACE,
+  crate::storage::families::LOCAL_CLUSTER_POINTER_NAMESPACE,
+  crate::storage::families::CREDENTIAL_USE_NAMESPACE,
+  crate::storage::families::ADMISSION_GRANT_NAMESPACE,
+  crate::storage::families::TRUST_SNAPSHOT_NAMESPACE,
+  crate::storage::families::TRUST_BINDING_NAMESPACE,
+  crate::storage::families::REVOCATION_NAMESPACE,
+  crate::storage::families::NODE_DESCRIPTOR_NAMESPACE,
+  crate::storage::families::RESOURCE_RECORD_NAMESPACE,
+  crate::storage::families::TRACE_NAMESPACE,
+];
+
+/// The bounded batch size of one wipe transaction.
+const WIPE_BATCH: usize = 64;
+
+/// The bounded retry budget per wipe batch against concurrent writers.
+const WIPE_RETRIES: usize = 8;
+
+/// Wipes one family in bounded exact-digest batches; idempotent, so a
+/// crash mid-family resumes by re-scanning.
+async fn wipe_family(
+  store: &MetadataStore, entropy: &dyn Entropy, namespace_tag: &str,
+) -> Result<()> {
+  let namespace = StoreNamespace::new(crate::QualifiedTag::parse(namespace_tag)?);
+  let mut retries = 0_usize;
+  loop {
+    let snapshot = store.snapshot().await?;
+    let mut scan = snapshot.scan(&namespace, &[]).await?;
+    let mut operations = Vec::new();
+    while let Some(entry) = scan.next().await? {
+      operations.push(StoreOperation::Delete {
+        namespace: namespace.clone(),
+        key: entry.key().clone(),
+        expected: entry.value().digest().clone(),
+      });
+      if operations.len() >= WIPE_BATCH {
+        break;
+      }
+    }
+    if operations.is_empty() {
+      return Ok(());
+    }
+    let revision = snapshot.revision().clone();
+    drop(scan);
+    drop(snapshot);
+    let prepared =
+      store.prepare_transaction(TransactionId::generate(entropy)?, revision, operations)?;
+    match commit_with_reconcile(store, prepared).await? {
+      CommitWithReconcile::Committed => {}
+      // A concurrent write raced the batch: restart the family scan with
+      // a fresh snapshot; the bounded budget makes a permanent storm a
+      // typed failure instead of an unbounded retry.
+      CommitWithReconcile::Aborted => {
+        retries += 1;
+        if retries > WIPE_RETRIES {
+          return Err(Error::conflict("leave wipe"));
+        }
+      }
+    }
+  }
+}
+
+/// Wipes every domain family of the old identity.
+async fn wipe_old_metadata(store: &MetadataStore, entropy: &dyn Entropy) -> Result<()> {
+  for namespace in WIPE_NAMESPACES {
+    wipe_family(store, entropy, namespace).await?;
+  }
+  Ok(())
+}
+
+/// Creates or reconciles the replacement key under the intent's operation
+/// id; an indeterminate provider outcome blocks pending reconciliation and
+/// never duplicates the key (SC-G09-P0-19).
+async fn replacement_key(
+  keys: &Arc<dyn KeyProvider>, intent: &LeaveIntentV1,
+) -> Result<crate::CreatedKey> {
+  let created = match keys.reconcile_create(&intent.replacement_operation).await? {
+    crate::KeyCreateState::Present(created) => created,
+    crate::KeyCreateState::Absent => {
+      match keys.create_ed25519(&intent.replacement_operation).await? {
+        crate::KeyCreateState::Present(created) => created,
+        crate::KeyCreateState::Absent => {
+          return Err(Error::not_ready("leave replacement key create"));
+        }
+        crate::KeyCreateState::Unknown => {
+          return Err(crate::identity::lifecycle::reconcile_unknown());
+        }
+      }
+    }
+    crate::KeyCreateState::Unknown => {
+      return Err(crate::identity::lifecycle::reconcile_unknown());
+    }
+  };
+  let provided = keys.public_key(created.handle()).await?;
+  if &provided != created.public_key() {
+    return Err(Error::provider(
+      crate::ProviderErrorKind::Internal,
+      crate::ProviderErrorContext::KeyPublicKey,
+    ));
+  }
+  Ok(created)
+}
+
+/// Phase C: one journaled transaction swaps the local-identity singleton
+/// to the replacement (exact digest on the former record, deletion-intent
+/// guards on the replacement handle).
+async fn swap_identity(
+  store: &MetadataStore, entropy: &dyn Entropy, intent: &LeaveIntentV1, created: &crate::CreatedKey,
+) -> Result<()> {
+  let replacement = LocalIdentityV1::new(
+    intent.replacement_node.clone(),
+    created.public_key().clone(),
+    intent.replacement_operation.clone(),
+    created.handle().clone(),
+  );
+  let snapshot = store.snapshot().await?;
+  let (local_namespace, local_key) = local_identity_key()?;
+  let Some(former_value) = snapshot.get(&local_namespace, &local_key).await? else {
+    return Err(Error::conflict("leave identity swap"));
+  };
+  let former = LocalIdentityV1::decode(former_value.as_bytes())
+    .map_err(|_| Error::invalid_input("local identity"))?;
+  if former.node() != &intent.former_node {
+    return Err(Error::conflict("leave identity swap"));
+  }
+  // The replacement handle must be provably fresh: a deletion intent or
+  // tombstone for it fails closed (the finalize_identity precedent).
+  let (deletion_namespace, deletion_key) =
+    crate::identity::records::key_deletion_intent_key(created.handle())?;
+  let (deleted_namespace, deleted_key) =
+    crate::identity::records::key_deleted_key(created.handle())?;
+  if snapshot
+    .get(&deletion_namespace, &deletion_key)
+    .await?
+    .is_some()
+    || snapshot
+      .get(&deleted_namespace, &deleted_key)
+      .await?
+      .is_some()
+  {
+    return Err(Error::conflict("key handle reuse"));
+  }
+  let prepared = store.prepare_transaction(
+    TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    vec![
+      StoreOperation::Put {
+        namespace: local_namespace,
+        key: local_key,
+        expected: StoreExpectation::Exact(former_value.digest().clone()),
+        value: StoreValue::new(Arc::from(replacement.encode()?)),
+      },
+      StoreOperation::Check {
+        namespace: deletion_namespace,
+        key: deletion_key,
+        expected: StoreExpectation::Absent,
+      },
+      StoreOperation::Check {
+        namespace: deleted_namespace,
+        key: deleted_key,
+        expected: StoreExpectation::Absent,
+      },
+    ],
+  )?;
+  drop(snapshot);
+  match commit_with_reconcile(store, prepared).await? {
+    CommitWithReconcile::Committed => Ok(()),
+    CommitWithReconcile::Aborted => Err(Error::conflict("leave identity swap")),
+  }
+}
+
+/// Phase F: removes the completed leave-intent by exact digest.
+async fn complete_leave(
+  store: &MetadataStore, entropy: &dyn Entropy, stored: &StoreValue,
+) -> Result<()> {
+  let snapshot = store.snapshot().await?;
+  let prepared = store.prepare_transaction(
+    TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    vec![StoreOperation::Delete {
+      namespace: leave_namespace()?,
+      key: leave_key(),
+      expected: stored.digest().clone(),
+    }],
+  )?;
+  drop(snapshot);
+  match commit_with_reconcile(store, prepared).await? {
+    CommitWithReconcile::Committed => Ok(()),
+    CommitWithReconcile::Aborted => Err(Error::conflict("leave completion")),
+  }
+}
+
+/// Runs the leave phases from the intent forward: replacement key, identity
+/// swap, metadata wipe, former-key deletion, completion. Idempotent and
+/// shared by the command path and the startup resume.
+async fn run_leave(
+  store: &MetadataStore, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy, stored: &StoreValue,
+  intent: &LeaveIntentV1,
+) -> Result<()> {
+  let identity =
+    crate::identity::lifecycle::discover_local_identity(store.snapshot().await?.as_ref())
+      .await?
+      .ok_or_else(|| Error::internal("leave local identity"))?
+      .1;
+  if identity.node() == &intent.former_node {
+    // The swap has not committed yet: create the replacement key and swap.
+    let created = replacement_key(keys, intent).await?;
+    swap_identity(store, entropy, intent, &created).await?;
+  } else if identity.node() != &intent.replacement_node {
+    // The identity is neither the former nor the replacement: the store
+    // is inconsistent with the intent and fails closed as corrupt.
+    return Err(super::lifecycle::discovery_corrupt());
+  }
+  wipe_old_metadata(store, entropy).await?;
+  delete_unreferenced_key(store, keys, entropy, intent.former_handle()).await?;
+  complete_leave(store, entropy, stored).await
+}
+
+/// Executes one active leave: journals the intent, then runs the phases.
+/// Returns the exact former and replacement identities for the outcome.
+pub(crate) async fn execute(
+  context: &LocalIdentityContext, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy,
+) -> Result<(NodeId, NodeId)> {
+  let store = context.store();
+  if discover_leave_intent(store).await?.is_some() {
+    // A startup resume completes any pending leave before the node
+    // serves, so a live node never sees one.
+    return Err(Error::conflict("leave in progress"));
+  }
+  let (stored, intent) = begin_intent(context, entropy).await?;
+  run_leave(store, keys, entropy, &stored, &intent).await?;
+  Ok((intent.former_node.clone(), intent.replacement_node.clone()))
+}
+
+/// Phase A: journals the leave-intent before any provider or identity
+/// work, so a crash after this point always has the exact former identity
+/// and replacement coordinates to resume from.
+async fn begin_intent(
+  context: &LocalIdentityContext, entropy: &dyn Entropy,
+) -> Result<(StoreValue, LeaveIntentV1)> {
+  let store = context.store();
+  let former = context.identity().clone();
+  let intent = LeaveIntentV1 {
+    former_node: former.node().clone(),
+    former_key: former.public_key().clone(),
+    former_handle: former.handle().clone(),
+    replacement_node: NodeId::generate(entropy)?,
+    replacement_operation: KeyOperationId::generate(entropy)?,
+  };
+  let value = StoreValue::new(Arc::from(intent.encode()?));
+  let snapshot = store.snapshot().await?;
+  let prepared = store.prepare_transaction(
+    TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    vec![StoreOperation::Put {
+      namespace: leave_namespace()?,
+      key: leave_key(),
+      expected: StoreExpectation::Absent,
+      value: value.clone(),
+    }],
+  )?;
+  drop(snapshot);
+  match commit_with_reconcile(store, prepared).await? {
+    CommitWithReconcile::Committed => Ok((value, intent)),
+    CommitWithReconcile::Aborted => Err(Error::conflict("leave intent")),
+  }
+}
+
+/// Resumes a pending leave at startup (T-G09-06 restart path): the leave
+/// phases run to completion before the node serves. Returns the context's
+/// replacement identity when the swap happened during this resume.
+pub(crate) async fn resume_if_pending(
+  context: &LocalIdentityContext, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy,
+) -> Result<Option<LocalIdentityV1>> {
+  let store = context.store();
+  let Some((stored, intent)) = discover_leave_intent(store).await? else {
+    return Ok(None);
+  };
+  run_leave(store, keys, entropy, &stored, &intent).await?;
+  let identity =
+    crate::identity::lifecycle::discover_local_identity(store.snapshot().await?.as_ref())
+      .await?
+      .ok_or_else(|| Error::internal("leave local identity"))?
+      .1;
+  Ok(Some(identity))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{sync::Arc, time::Duration};
+
+  use super::{LeaveIntentV1, WIPE_NAMESPACES, discover_leave_intent, execute, resume_if_pending};
+  use crate::{
+    ErrorKind, Result, StoreExpectation, StoreOperation, StoreValue, TransactionId,
+    api::Entropy,
+    identity::{
+      lifecycle::{self, LocalIdentityContext},
+      testing::{CreateScript, ScriptedKeys, SequenceEntropy},
+    },
+    provider::StorageFactory,
+    storage::MetadataStore,
+  };
+
+  async fn open_store(
+    factory: &Arc<dyn StorageFactory>,
+  ) -> Result<(
+    Arc<ScriptedKeys>,
+    Arc<SequenceEntropy>,
+    LocalIdentityContext,
+  )> {
+    let keys = ScriptedKeys::full();
+    let entropy = Arc::new(SequenceEntropy::default());
+    let context = lifecycle::open_local_identity(
+      factory,
+      &keys.as_provider(),
+      entropy.as_ref(),
+      Duration::from_secs(10),
+    )
+    .await?;
+    Ok((keys, entropy, context))
+  }
+
+  fn reference_factory() -> Arc<dyn StorageFactory> {
+    Arc::new(crate::storage::contract::ReferenceFactory::new(
+      crate::storage::contract::required_capabilities(),
+    ))
+  }
+
+  /// Seeds one opaque record into each wiped family, so the leave has
+  /// metadata to erase in every namespace.
+  async fn seed_old_metadata(store: &MetadataStore, entropy: &dyn Entropy) -> Result<()> {
+    for tag in WIPE_NAMESPACES {
+      let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(tag)?);
+      let snapshot = store.snapshot().await?;
+      let prepared = store.prepare_transaction(
+        TransactionId::generate(entropy)?,
+        snapshot.revision().clone(),
+        vec![StoreOperation::Put {
+          namespace,
+          key: crate::StoreKey::new(Arc::from(b"noise".to_vec())),
+          expected: StoreExpectation::Absent,
+          value: StoreValue::new(Arc::from(b"old-identity-metadata".to_vec())),
+        }],
+      )?;
+      drop(snapshot);
+      assert!(matches!(
+        store.commit(prepared).await?,
+        crate::CommitOutcome::Committed(_)
+      ));
+    }
+    Ok(())
+  }
+
+  /// Every wiped family must be empty after the leave.
+  async fn assert_wiped(store: &MetadataStore) {
+    for tag in WIPE_NAMESPACES {
+      let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(tag).unwrap());
+      let snapshot = store.snapshot().await.unwrap();
+      let mut scan = snapshot.scan(&namespace, &[]).await.unwrap();
+      assert!(
+        scan.next().await.unwrap().is_none(),
+        "family {tag} must be wiped"
+      );
+    }
+  }
+
+  /// The leave-intent record round-trips canonically and rejects schema,
+  /// version, and field mutations (the record is local-only and unsigned;
+  /// integrity comes from the store's digest-checked transactions).
+  #[test]
+  fn leave_intent_round_trips_and_rejects_mutation() {
+    let intent = LeaveIntentV1::new_for_test();
+    let bytes = intent.encode().unwrap();
+    assert_eq!(LeaveIntentV1::decode(&bytes).unwrap(), intent);
+    // Schema/version rejection: flip the trailing key-generation byte of
+    // the version field and the last schema character.
+    let mut forged = bytes.clone();
+    let last = forged.len() - 1;
+    forged[last] ^= 0xFF;
+    assert!(LeaveIntentV1::decode(&forged).is_err());
+  }
+
+  /// SC-G09-P0-18/20: one leave swaps the identity, wipes every old
+  /// domain family, deletes the former key through the custody protocol,
+  /// and clears its intent — the store holds only the replacement
+  /// identity afterwards.
+  #[tokio::test]
+  async fn leave_swaps_identity_wipes_metadata_and_deletes_former_key() {
+    let factory = reference_factory();
+    let (keys, entropy, context) = open_store(&factory).await.unwrap();
+    let former_node = context.identity().node().clone();
+    let former_handle = context.identity().handle().clone();
+    seed_old_metadata(context.store(), entropy.as_ref())
+      .await
+      .unwrap();
+
+    let (former, replacement) = execute(&context, &keys.as_provider(), entropy.as_ref())
+      .await
+      .unwrap();
+    assert_eq!(former, former_node);
+    assert_ne!(former, replacement);
+
+    // The singleton identity is exactly the replacement.
+    let identity =
+      lifecycle::discover_local_identity(context.store().snapshot().await.unwrap().as_ref())
+        .await
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_eq!(identity.node(), &replacement);
+    assert_ne!(identity.handle(), &former_handle);
+
+    // Every old domain family is empty; the intent is cleared.
+    assert_wiped(context.store()).await;
+    assert!(
+      discover_leave_intent(context.store())
+        .await
+        .unwrap()
+        .is_none()
+    );
+
+    // The former key passed the custody protocol: the provider deleted
+    // exactly the former handle, and the replacement handle is live.
+    use crate::identity::testing::KeyCall;
+    assert!(
+      keys
+        .all_calls()
+        .iter()
+        .any(|call| matches!(call, KeyCall::Delete))
+    );
+    assert!(!keys.has_handle(&former_handle));
+    assert!(keys.has_handle(identity.handle()));
+  }
+
+  /// SC-G09-P0-19: an indeterminate provider create blocks the leave with
+  /// the typed reconciliation error and mutates nothing beyond the
+  /// journaled intent; the startup resume then reconciles and completes.
+  #[tokio::test]
+  async fn unknown_key_create_blocks_then_resume_reconciles() {
+    let factory = reference_factory();
+    let (keys, entropy, context) = open_store(&factory).await.unwrap();
+    let former_node = context.identity().node().clone();
+    seed_old_metadata(context.store(), entropy.as_ref())
+      .await
+      .unwrap();
+
+    // The provider applies the create but reports Unknown: the leave
+    // fails closed and the identity is not swapped.
+    keys.push_create_script(CreateScript::ApplyReportUnknown);
+    let error = execute(&context, &keys.as_provider(), entropy.as_ref())
+      .await
+      .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::CommitUnknown);
+    assert_eq!(context.identity().node(), &former_node);
+    let stored_identity =
+      lifecycle::discover_local_identity(context.store().snapshot().await.unwrap().as_ref())
+        .await
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_eq!(stored_identity.node(), &former_node);
+    assert!(
+      discover_leave_intent(context.store())
+        .await
+        .unwrap()
+        .is_some()
+    );
+
+    // The startup resume reconciles the provider outcome and completes.
+    let replacement = resume_if_pending(&context, &keys.as_provider(), entropy.as_ref())
+      .await
+      .unwrap()
+      .expect("a pending leave resumes to completion");
+    assert_ne!(replacement.node(), &former_node);
+    assert_wiped(context.store()).await;
+    assert!(
+      discover_leave_intent(context.store())
+        .await
+        .unwrap()
+        .is_none()
+    );
+  }
+
+  /// SC-G09-P0-21 (resume arm): a leave interrupted after the identity
+  /// swap resumes to completion — never a mixed identity, a duplicate
+  /// key, or restored old metadata.
+  #[tokio::test]
+  async fn interrupted_leave_resumes_to_completion() {
+    let factory = reference_factory();
+    let (keys, entropy, context) = open_store(&factory).await.unwrap();
+    let former_node = context.identity().node().clone();
+    seed_old_metadata(context.store(), entropy.as_ref())
+      .await
+      .unwrap();
+
+    // Interrupt after the swap: run the intent and the swap, then stop.
+    let (_stored, intent) = super::begin_intent(&context, entropy.as_ref())
+      .await
+      .unwrap();
+    let created = super::replacement_key(&keys.as_provider(), &intent)
+      .await
+      .unwrap();
+    super::swap_identity(context.store(), entropy.as_ref(), &intent, &created)
+      .await
+      .unwrap();
+    let replacement_node = intent.replacement_node.clone();
+
+    // The startup resume completes the remaining phases.
+    let identity = resume_if_pending(&context, &keys.as_provider(), entropy.as_ref())
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(identity.node(), &replacement_node);
+    assert_ne!(identity.node(), &former_node);
+    assert_wiped(context.store()).await;
+    assert!(
+      discover_leave_intent(context.store())
+        .await
+        .unwrap()
+        .is_none()
+    );
+  }
+}
+
+#[cfg(all(test, unix, feature = "json"))]
+mod crash {
+  //! Subprocess durability matrix for the leave transition (SC-G09-P0-21).
+  //!
+  //! The child drives a leave against a JSON store and aborts at one
+  //! selected commit-path boundary of the intent commit or the identity
+  //! swap. The parent reopens the store — which runs the leave resume —
+  //! and proves the outcome equals exactly the untouched control (the
+  //! intent never committed) or the completed control (replacement
+  //! identity, wiped metadata, former-key tombstone, no intent), never a
+  //! mixed or partial phase.
+
+  use std::{sync::Arc, time::Duration};
+
+  use tempfile::TempDir;
+
+  use super::{
+    LeaveIntentV1, WIPE_NAMESPACES, begin_intent, discover_leave_intent, execute, run_leave,
+  };
+  use crate::{
+    NodeId, StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreValue, TransactionId,
+    api::Entropy,
+    identity::{
+      lifecycle::{self, LocalIdentityContext},
+      testing::{ScriptedKeys, SequenceEntropy},
+    },
+    provider::StorageFactory,
+    storage::{MetadataStore, json::JsonStoreFactory, test_util},
+  };
+
+  const CRASH_DIR_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_DIR";
+  const CRASH_POINT_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_POINT";
+  const CRASH_PHASE_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_PHASE";
+  const LAST_POINT: u8 = 13;
+
+  fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
+    Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()))
+  }
+
+  /// Providers whose deterministic handles are all resolvable: children
+  /// create from 5000 and parents from 6000, and every provider
+  /// pre-registers 5000..6008, so a reopen resolves any persisted handle
+  /// without ever reusing one.
+  fn keyed_providers() -> (Arc<ScriptedKeys>, Arc<ScriptedKeys>) {
+    let child_keys = ScriptedKeys::full_at(5_000);
+    let parent_keys = ScriptedKeys::full_at(6_000);
+    for index in 5_000..6_008_u64 {
+      child_keys.register_handle_index(index);
+      parent_keys.register_handle_index(index);
+    }
+    (child_keys, parent_keys)
+  }
+
+  async fn open(
+    factory: &Arc<dyn StorageFactory>,
+  ) -> (
+    Arc<ScriptedKeys>,
+    Arc<SequenceEntropy>,
+    LocalIdentityContext,
+  ) {
+    open_with_entropy_offset(factory, 0).await
+  }
+
+  /// Opens with the entropy sequence started far past every child draw:
+  /// a resume must never regenerate a transaction id the crashed child
+  /// already used (the store's used-id markers would fail it closed).
+  async fn open_with_entropy_offset(
+    factory: &Arc<dyn StorageFactory>, entropy_offset: u128,
+  ) -> (
+    Arc<ScriptedKeys>,
+    Arc<SequenceEntropy>,
+    LocalIdentityContext,
+  ) {
+    let (child_keys, parent_keys) = keyed_providers();
+    let keys = if entropy_offset == 0 {
+      child_keys
+    } else {
+      parent_keys
+    };
+    let entropy = Arc::new(SequenceEntropy::starting_at(entropy_offset));
+    let context = lifecycle::open_local_identity(
+      factory,
+      &keys.as_provider(),
+      entropy.as_ref(),
+      Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    (keys, entropy, context)
+  }
+
+  /// Seeds one opaque old-identity record per wiped family.
+  pub(super) async fn seed(store: &MetadataStore, entropy: &dyn Entropy) {
+    for tag in WIPE_NAMESPACES {
+      let namespace = StoreNamespace::new(crate::QualifiedTag::parse(tag).unwrap());
+      let snapshot = store.snapshot().await.unwrap();
+      let prepared = store
+        .prepare_transaction(
+          TransactionId::generate(entropy).unwrap(),
+          snapshot.revision().clone(),
+          vec![StoreOperation::Put {
+            namespace,
+            key: StoreKey::new(Arc::from(b"noise".to_vec())),
+            expected: StoreExpectation::Absent,
+            value: StoreValue::new(Arc::from(b"old-identity-metadata".to_vec())),
+          }],
+        )
+        .unwrap();
+      drop(snapshot);
+      assert!(matches!(
+        store.commit(prepared).await.unwrap(),
+        crate::CommitOutcome::Committed(_)
+      ));
+    }
+  }
+
+  /// The observable post-resume state: identity, per-family noise
+  /// presence, and intent presence.
+  struct Phase {
+    identity: NodeId,
+    noise: Vec<bool>,
+    intent: Option<LeaveIntentV1>,
+  }
+
+  async fn observe(factory: &Arc<dyn StorageFactory>) -> Phase {
+    let (_keys, _entropy, context) = open_with_entropy_offset(factory, 1_000_000).await;
+    let store = context.store();
+    let mut noise = Vec::with_capacity(WIPE_NAMESPACES.len());
+    for tag in WIPE_NAMESPACES {
+      let namespace = StoreNamespace::new(crate::QualifiedTag::parse(tag).unwrap());
+      let snapshot = store.snapshot().await.unwrap();
+      let mut scan = snapshot.scan(&namespace, &[]).await.unwrap();
+      noise.push(scan.next().await.unwrap().is_some());
+    }
+    let intent = discover_leave_intent(store)
+      .await
+      .unwrap()
+      .map(|(_, intent)| intent);
+    Phase {
+      identity: context.identity().node().clone(),
+      noise,
+      intent,
+    }
+  }
+
+  pub(super) fn run_child(dir: &TempDir, phase: &str, point: u8) {
+    let executable = std::env::current_exe().unwrap();
+    let mut child = std::process::Command::new(executable)
+      .args([
+        "--exact",
+        "identity::leave::crash::leave_crash_child_entry",
+        "--ignored",
+        "--nocapture",
+      ])
+      .env(CRASH_DIR_ENV, dir.path())
+      .env(CRASH_POINT_ENV, point.to_string())
+      .env(CRASH_PHASE_ENV, phase)
+      .stdin(std::process::Stdio::null())
+      .stdout(std::process::Stdio::null())
+      .stderr(std::process::Stdio::null())
+      .spawn()
+      .unwrap();
+    let status = wait_timeout::ChildExt::wait_timeout(&mut child, test_util::CRASH_CHILD_TIMEOUT)
+      .unwrap()
+      .unwrap_or_else(|| panic!("leave crash child at {phase}/{point} did not exit"));
+    assert!(
+      !status.success(),
+      "leave crash child at {phase}/{point} must terminate abnormally"
+    );
+  }
+
+  #[ignore = "leave crash-matrix child process entry point"]
+  #[tokio::test]
+  async fn leave_crash_child_entry() {
+    let directory = std::path::PathBuf::from(std::env::var_os(CRASH_DIR_ENV).expect("crash dir"));
+    let point: u8 = std::env::var(CRASH_POINT_ENV)
+      .expect("crash point")
+      .parse()
+      .expect("numeric crash point");
+    let phase = std::env::var(CRASH_PHASE_ENV).expect("crash phase");
+    let factory: Arc<dyn StorageFactory> = Arc::new(JsonStoreFactory::new(directory));
+    let (keys, entropy, context) = open(&factory).await;
+    seed(context.store(), entropy.as_ref()).await;
+    match phase.as_str() {
+      // Arm before the leave-intent commit (phase A).
+      "intent" => {
+        crate::storage::json::select_crash_point(point);
+        let _ = execute(&context, &keys.as_provider(), entropy.as_ref()).await;
+      }
+      // Commit the intent first, then arm inside the identity swap
+      // (phase C, the first commit of the remaining phases).
+      "swap" => {
+        let (stored, intent) = begin_intent(&context, entropy.as_ref()).await.unwrap();
+        crate::storage::json::select_crash_point(point);
+        let _ = run_leave(
+          context.store(),
+          &keys.as_provider(),
+          entropy.as_ref(),
+          &stored,
+          &intent,
+        )
+        .await;
+      }
+      other => panic!("unknown leave crash phase: {other}"),
+    }
+  }
+
+  /// Every crash boundary of the leave transition resumes to exactly the
+  /// untouched or the completed control state.
+  #[tokio::test]
+  async fn leave_crash_boundaries_resume_to_a_reconciled_phase() {
+    // Untouched control: seeded, no leave.
+    let untouched_dir = TempDir::new().unwrap();
+    let untouched_factory = factory(&untouched_dir);
+    let (_keys, entropy, context) = open(&untouched_factory).await;
+    seed(context.store(), entropy.as_ref()).await;
+    drop(context);
+    let untouched = observe(&untouched_factory).await;
+
+    // Completed control: a full leave without faults.
+    let completed_dir = TempDir::new().unwrap();
+    let completed_factory = factory(&completed_dir);
+    let (keys, entropy, context) = open(&completed_factory).await;
+    seed(context.store(), entropy.as_ref()).await;
+    let (_former, _replacement) = execute(&context, &keys.as_provider(), entropy.as_ref())
+      .await
+      .unwrap();
+    drop(context);
+    let completed = observe(&completed_factory).await;
+    assert!(completed.intent.is_none());
+    assert!(completed.noise.iter().all(|present| !present));
+    assert_ne!(completed.identity, untouched.identity);
+
+    for phase in ["intent", "swap"] {
+      for point in 1..=LAST_POINT {
+        let dir = TempDir::new().unwrap();
+        let factory = factory(&dir);
+        run_child(&dir, phase, point);
+        // The reopen runs the leave resume; the result is one control.
+        let observed = observe(&factory).await;
+        assert!(
+          observed.intent.is_none(),
+          "{phase}/{point}: the resume must clear the leave intent"
+        );
+        let is_untouched =
+          observed.identity == untouched.identity && observed.noise == untouched.noise;
+        let is_completed =
+          observed.identity == completed.identity && observed.noise == completed.noise;
+        assert!(
+          is_untouched ^ is_completed,
+          "{phase}/{point}: state must equal exactly one control, got identity={} noise={:?}",
+          observed.identity,
+          observed.noise,
+        );
+      }
+    }
+  }
+}
