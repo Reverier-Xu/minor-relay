@@ -32,6 +32,8 @@ pub(crate) const KEY_DELETED_NAMESPACE: &str = "relay.woooo.tech/metadata/key-de
 pub(crate) const TRUST_SNAPSHOT_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-snapshot-v1";
 /// Trust snapshot binding observation per issuer and subject.
 pub(crate) const TRUST_BINDING_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-binding-v1";
+/// Local authorization revocation per exact subject binding (G9-04).
+pub(crate) const REVOCATION_NAMESPACE: &str = "relay.woooo.tech/metadata/revocation-v1";
 /// Owner-revision-marked node descriptor per node.
 pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "relay.woooo.tech/metadata/node-descriptor-v1";
 /// One multiwriter generic resource register per resource name.
@@ -111,8 +113,8 @@ mod catalog {
     IDENTITY_BINDING_NAMESPACE, INTERNAL_NAMESPACE, KEY_CREATION_INTENT_NAMESPACE,
     KEY_DELETED_NAMESPACE, KEY_DELETION_INTENT_NAMESPACE, LOCAL_CLUSTER_POINTER_NAMESPACE,
     LOCAL_IDENTITY_NAMESPACE, NODE_DESCRIPTOR_NAMESPACE, PENDING_NAMESPACE,
-    RESOURCE_RECORD_NAMESPACE, SCHEMA_NAMESPACE, TRACE_NAMESPACE, TRUST_BINDING_NAMESPACE,
-    TRUST_SNAPSHOT_NAMESPACE,
+    RESOURCE_RECORD_NAMESPACE, REVOCATION_NAMESPACE, SCHEMA_NAMESPACE, TRACE_NAMESPACE,
+    TRUST_BINDING_NAMESPACE, TRUST_SNAPSHOT_NAMESPACE,
   };
 
   /// Every core metadata family, in domain order and then declaration order.
@@ -124,6 +126,7 @@ mod catalog {
       MetadataFamily::new(MetadataDomain::Identity, LOCAL_CLUSTER_POINTER_NAMESPACE),
       MetadataFamily::new(MetadataDomain::Identity, CREDENTIAL_USE_NAMESPACE),
       MetadataFamily::new(MetadataDomain::Identity, ADMISSION_GRANT_NAMESPACE),
+      MetadataFamily::new(MetadataDomain::Identity, REVOCATION_NAMESPACE),
       MetadataFamily::new(MetadataDomain::KeyIntent, KEY_CREATION_INTENT_NAMESPACE),
       MetadataFamily::new(MetadataDomain::KeyIntent, KEY_DELETION_INTENT_NAMESPACE),
       MetadataFamily::new(MetadataDomain::KeyIntent, KEY_DELETED_NAMESPACE),

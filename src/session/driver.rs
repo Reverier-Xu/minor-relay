@@ -239,6 +239,18 @@ impl SessionDriver {
     if peek.cluster != *pointer.cluster() {
       return Err(Error::authentication_failed("session cluster"));
     }
+    // A locally revoked identity never completes a new admission through
+    // this node: the exact revoked binding fails closed before any
+    // credential or signing work (T-G09-04, ADR-0006).
+    if crate::identity::revocation::is_revoked_ctx(
+      self.context.store(),
+      &peek.node_id,
+      &peek.public_key,
+    )
+    .await?
+    {
+      return Err(Error::revoked("join admission"));
+    }
     let identity = self.context.identity();
 
     // Resolve the mode-specific inputs before the state machine exists. In
@@ -470,6 +482,15 @@ impl SessionDriver {
       issuer,
       issuer_key,
     )?;
+    // A newly presented raw grant whose issuer is already locally revoked
+    // is rejected even when its signature verifies; bindings accepted
+    // anywhere before the revoke still converge through snapshots
+    // (T-G09-04, ADR-0006).
+    if crate::identity::revocation::is_revoked_ctx(self.context.store(), grant.issuer(), issuer_key)
+      .await?
+    {
+      return Err(Error::revoked("admission grant issuer"));
+    }
     adopt_admission(
       &self.context,
       self.entropy.as_ref(),
@@ -567,6 +588,9 @@ impl SessionDriver {
 }
 
 /// Reads the trusted member-mode binding for `peer` from durable storage.
+/// A locally revoked binding fails closed with the typed revocation error
+/// before any signing work (T-G09-04: revocation removes connection
+/// authority).
 async fn trusted_binding(context: &LocalIdentityContext, peer: &NodeId) -> Result<PublicKey> {
   let snapshot = context.store().snapshot().await?;
   let (namespace, key) = identity_binding_key(peer)?;
@@ -576,7 +600,11 @@ async fn trusted_binding(context: &LocalIdentityContext, peer: &NodeId) -> Resul
     .ok_or_else(|| Error::authentication_failed("session binding"))?;
   let binding = IdentityBindingV1::decode(value.as_bytes())
     .map_err(|_| Error::authentication_failed("session binding"))?;
-  Ok(binding.public_key().clone())
+  let public_key = binding.public_key().clone();
+  if crate::identity::revocation::is_revoked_ctx(context.store(), peer, &public_key).await? {
+    return Err(Error::revoked("session binding"));
+  }
+  Ok(public_key)
 }
 
 /// A single-use reservation on the receiver's active join credential

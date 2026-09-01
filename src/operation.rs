@@ -330,6 +330,58 @@ impl Command for PutResource {
   type Output = crate::ResourceMutationView;
 }
 
+/// Revokes one exact subject binding's connection and admission authority
+/// (T-G09-04, ADR-0006): a durable local authorization boundary that
+/// closes the identity's sessions and rejects its new sessions, raw
+/// grants, and admissions — without deleting or reinterpreting any stored
+/// metadata. `expected_key` pins the exact trusted binding so a stale or
+/// substituted revocation fails closed.
+pub struct RevokeNode {
+  subject: NodeId,
+  expected_key: crate::PublicKey,
+}
+
+impl RevokeNode {
+  pub fn new(subject: NodeId, expected_key: crate::PublicKey) -> Self {
+    Self {
+      subject,
+      expected_key,
+    }
+  }
+
+  pub(crate) fn into_parts(self) -> (NodeId, crate::PublicKey) {
+    (self.subject, self.expected_key)
+  }
+}
+
+impl private::Sealed for RevokeNode {}
+
+impl Command for RevokeNode {
+  type Output = crate::RevokeOutcome;
+}
+
+/// A locally revoked identity lost connection and admission authority
+/// (T-G09-04). Emitted once per revocation transition, after the durable
+/// commit; an idempotent repeated revoke emits nothing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeRevoked {
+  subject: NodeId,
+}
+
+impl NodeRevoked {
+  pub fn subject(&self) -> &NodeId {
+    &self.subject
+  }
+
+  pub(crate) const fn new(subject: NodeId) -> Self {
+    Self { subject }
+  }
+}
+
+impl private::Sealed for NodeRevoked {}
+
+impl Event for NodeRevoked {}
+
 /// One committed local resource candidate became visible in the catalog
 /// (T-G09-03). Emitted exactly once after the candidate's durable commit;
 /// the command's [`crate::ResourceMutationView`] reports whether that

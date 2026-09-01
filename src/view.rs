@@ -390,6 +390,32 @@ impl ResourceMutationView {
   }
 }
 
+/// The outcome of one authorization revoke (T-G09-04): the exact subject
+/// and whether this call performed the revocation transition (an
+/// idempotent repeated revoke reports `true` for `was_already_revoked`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevokeOutcome {
+  subject: NodeId,
+  was_already_revoked: bool,
+}
+
+impl RevokeOutcome {
+  pub fn subject(&self) -> &NodeId {
+    &self.subject
+  }
+
+  pub fn was_already_revoked(&self) -> bool {
+    self.was_already_revoked
+  }
+
+  pub(crate) const fn new(subject: NodeId, was_already_revoked: bool) -> Self {
+    Self {
+      subject,
+      was_already_revoked,
+    }
+  }
+}
+
 /// One public topology edge: a directed session between two members.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologyEdgeView {

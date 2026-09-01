@@ -10,6 +10,7 @@ pub(crate) mod id;
 pub(crate) mod lifecycle;
 #[allow(dead_code)]
 pub(crate) mod records;
+pub(crate) mod revocation;
 pub(crate) mod signature;
 #[cfg(test)]
 pub(crate) mod testing;

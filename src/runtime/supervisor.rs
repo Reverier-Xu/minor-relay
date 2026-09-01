@@ -392,6 +392,14 @@ async fn supervise(
         let result = supervisor.put_resource(write).await;
         let _ = reply.send(result);
       }
+      Control::RevokeNode {
+        subject,
+        expected_key,
+        reply,
+      } => {
+        let result = supervisor.revoke_node(subject, expected_key).await;
+        let _ = reply.send(result);
+      }
         }
       }
       request = packets.recv() => {
@@ -1189,17 +1197,26 @@ impl Supervisor {
     let context = self.context()?;
     let observations =
       crate::identity::trust::store::paged_trust_ctx(context.store(), offset, limit).await?;
-    let items = observations
-      .bindings()
-      .iter()
-      .map(|binding| {
-        crate::TrustedIdentityView::new(
-          binding.node().clone(),
-          binding.key().clone(),
-          crate::TrustStatus::Trusted,
-        )
-      })
-      .collect();
+    let mut items = Vec::with_capacity(observations.bindings().len());
+    for binding in observations.bindings() {
+      // A locally revoked binding reports its exact status; the binding
+      // itself is never erased (ADR-0006: revoke is an authorization
+      // boundary, not content erasure).
+      let status = match crate::identity::revocation::revoked_key_ctx(
+        context.store(),
+        binding.node(),
+      )
+      .await?
+      {
+        Some(revoked) if &revoked == binding.key() => crate::TrustStatus::Revoked,
+        _ => crate::TrustStatus::Trusted,
+      };
+      items.push(crate::TrustedIdentityView::new(
+        binding.node().clone(),
+        binding.key().clone(),
+        status,
+      ));
+    }
     let next = observations
       .next()
       .map(|next| crate::PageCursor::new(std::sync::Arc::from(next.to_string().into_bytes())));
@@ -1334,6 +1351,47 @@ impl Supervisor {
         crate::ProviderErrorContext::StorageCommit,
       )),
     }
+  }
+
+  /// Revokes one exact subject binding's connection and admission
+  /// authority (`RevokeNode`, T-G09-04): the revocation commits
+  /// conditionally first, then the revoked identity's sessions close and
+  /// its new sessions, admissions, and operations are rejected. Stored
+  /// metadata is never erased or reinterpreted.
+  async fn revoke_node(
+    &mut self, subject: NodeId, expected_key: crate::PublicKey,
+  ) -> Result<crate::RevokeOutcome> {
+    self.require_unblocked()?;
+    let context = self.context()?;
+    let local = context.identity().node();
+    if &subject == local {
+      // Self-removal is the explicit leave path (T-G09-06), never a
+      // self-revoke.
+      return Err(Error::invalid_input("revoke subject"));
+    }
+    let outcome = crate::identity::revocation::revoke_binding_ctx(
+      context.store(),
+      self.dependencies.entropy.as_ref(),
+      &subject,
+      &expected_key,
+    )
+    .await?;
+    let was_already_revoked = matches!(
+      outcome,
+      crate::identity::revocation::RevokeStoreOutcome::AlreadyRevoked
+    );
+    if !was_already_revoked {
+      // After the known-committed transition: close the exact identity's
+      // active sessions and exclude it from recovery redial.
+      crate::session::stream::retire_session(&self.dependencies.sessions, &subject)?;
+      self.recovery_history.remove(&subject);
+      self.recovery_excluded.insert(subject.clone());
+      self
+        .dependencies
+        .events
+        .emit(crate::NodeRevoked::new(subject.clone()));
+    }
+    Ok(crate::RevokeOutcome::new(subject, was_already_revoked))
   }
 
   /// The public recovery observation: whether every known online member

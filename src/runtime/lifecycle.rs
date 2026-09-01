@@ -131,6 +131,11 @@ pub(crate) enum Control {
     write: crate::ResourceWrite,
     reply: oneshot::Sender<Result<crate::ResourceMutationView>>,
   },
+  RevokeNode {
+    subject: NodeId,
+    expected_key: crate::PublicKey,
+    reply: oneshot::Sender<Result<crate::RevokeOutcome>>,
+  },
 }
 
 #[derive(Clone)]
@@ -355,6 +360,19 @@ impl RuntimeClient {
   ) -> Result<crate::ResourceMutationView> {
     self
       .send_command(|reply| Control::PutResource { write, reply })
+      .await
+  }
+
+  /// Revokes one exact subject binding's authority (G9-04).
+  pub(crate) async fn revoke_node(
+    &self, subject: NodeId, expected_key: crate::PublicKey,
+  ) -> Result<crate::RevokeOutcome> {
+    self
+      .send_command(|reply| Control::RevokeNode {
+        subject,
+        expected_key,
+        reply,
+      })
       .await
   }
 
