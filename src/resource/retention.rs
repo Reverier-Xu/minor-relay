@@ -211,7 +211,7 @@ mod tests {
       ClusterId::parse("cluster_000000000000000000001").unwrap(),
       name.clone(),
       LabelValue::parse("document").unwrap(),
-      LabelValue::parse(uri).unwrap(),
+      crate::ResourceUri::parse(uri).unwrap(),
       labels(),
       timestamp_millis,
       NodeId::parse("node_000000000000000000001").unwrap(),

@@ -1,4 +1,5 @@
-//! Generic named resource metadata (T-G07-02, ADR-0007).
+//! Generic named resource metadata (T-G07-02 records, T-G09-01 public
+//! names/labels/vectors, ADR-0007).
 //!
 //! A resource is a stable name plus labels: reserved labels carry the
 //! resource type and resource URI (callers provide the values; core never
@@ -19,7 +20,7 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use ed25519_dalek::Signer;
 use minicbor::{Decode, Encode, bytes::ByteVec};
@@ -58,7 +59,7 @@ const RECORD_VERSION: u16 = 1;
 /// fixed to `resources`, which keeps resource names out of the protocol,
 /// feature, transport, discovery, and label namespaces.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ResourceName(QualifiedTag);
+pub struct ResourceName(QualifiedTag);
 
 impl ResourceName {
   /// Parses and validates one resource name.
@@ -86,6 +87,180 @@ impl fmt::Debug for ResourceName {
     formatter
       .debug_tuple("ResourceName")
       .field(&self.0)
+      .finish()
+  }
+}
+
+impl std::str::FromStr for ResourceName {
+  type Err = Error;
+
+  fn from_str(value: &str) -> Result<Self> {
+    Self::parse(value)
+  }
+}
+
+/// Caller-owned URI text carried by the reserved URI label.
+///
+/// The value is bounded opaque text: core stores and replicates it
+/// verbatim, assigns it no meaning, and never parses, dereferences, or
+/// follows it. The bound matches the label-value budget so the reserved
+/// label stays within one record's finite envelope.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ResourceUri(Arc<str>);
+
+impl ResourceUri {
+  /// Validates and stores one URI value: non-empty, at most the shared
+  /// label-value byte budget of UTF-8 text.
+  pub fn parse(value: &str) -> Result<Self> {
+    if value.is_empty() || value.len() > crate::label::LABEL_VALUE_MAX_BYTES {
+      return Err(Error::invalid_input("resource uri"));
+    }
+    Ok(Self(Arc::from(value)))
+  }
+
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
+}
+
+impl std::str::FromStr for ResourceUri {
+  type Err = Error;
+
+  fn from_str(value: &str) -> Result<Self> {
+    Self::parse(value)
+  }
+}
+
+impl fmt::Display for ResourceUri {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(&self.0)
+  }
+}
+
+impl fmt::Debug for ResourceUri {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.debug_tuple("ResourceUri").field(&self.0).finish()
+  }
+}
+
+/// The complete label set of one resource: the reserved type and URI
+/// labels plus optional namespaced custom labels.
+///
+/// Both reserved labels are mandatory, so every resource is selectable by
+/// its type and carries its caller-owned object reference; custom labels
+/// are bounded domain-qualified [`crate::LabelKey`]s in the closed
+/// `labels` category, which structurally keeps the reserved
+/// `resources/*` keys out of the custom namespace. Core treats every
+/// value as opaque metadata and never follows the URI.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ResourceLabels {
+  resource_type: LabelValue,
+  uri: ResourceUri,
+  custom: LabelSet,
+}
+
+impl ResourceLabels {
+  /// Creates the label set with both reserved labels; custom labels are
+  /// added through [`ResourceLabels::custom`].
+  pub fn new(resource_type: LabelValue, uri: ResourceUri) -> Self {
+    Self {
+      resource_type,
+      uri,
+      custom: LabelSet::new(),
+    }
+  }
+
+  /// Inserts one custom label, enforcing uniqueness and the bounded-set
+  /// limits of the underlying [`LabelSet`].
+  pub fn custom(mut self, key: crate::LabelKey, value: LabelValue) -> Result<Self> {
+    self.custom = self.custom.insert(key, value)?;
+    Ok(self)
+  }
+
+  /// The reserved resource-type label value (opaque to core).
+  pub fn resource_type(&self) -> &LabelValue {
+    &self.resource_type
+  }
+
+  /// The reserved URI label value. Core never follows it.
+  pub fn uri(&self) -> &ResourceUri {
+    &self.uri
+  }
+
+  /// The custom label map, canonical and bounded.
+  pub fn custom_labels(&self) -> &LabelSet {
+    &self.custom
+  }
+}
+
+impl fmt::Debug for ResourceLabels {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_struct("ResourceLabels")
+      .field("resource_type", &self.resource_type)
+      .field("uri", &self.uri)
+      .field("custom", &self.custom)
+      .finish()
+  }
+}
+
+/// The ordering version of one resource record (ADR-0007).
+///
+/// The version is exactly the signed multiwriter tuple: the host
+/// wall-clock timestamp, the canonical writer [`NodeId`], the removal
+/// flag, and the canonical record digest. It carries no causal, freshness,
+/// or real-time guarantee.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ResourceVersion {
+  timestamp: std::time::SystemTime,
+  writer: NodeId,
+  removal: bool,
+  digest: Digest,
+}
+
+impl ResourceVersion {
+  /// The signed host wall-clock instant of the winning write.
+  pub fn timestamp(&self) -> std::time::SystemTime {
+    self.timestamp
+  }
+
+  /// The canonical writer that signed the winning record.
+  pub fn writer(&self) -> &NodeId {
+    &self.writer
+  }
+
+  /// Whether the winning record removes the named resource.
+  pub fn is_removal(&self) -> bool {
+    self.removal
+  }
+
+  /// The canonical digest of the winning record.
+  pub fn digest(&self) -> &Digest {
+    &self.digest
+  }
+
+  /// Extracts the public version view of one signed record. The facade
+  /// resource views (T-G09-03/05/07) are its consumers; the G9-01 vector
+  /// tests pin the mapping meanwhile.
+  #[allow(dead_code)]
+  pub(crate) fn from_record(record: &ResourceRecordV1) -> Self {
+    Self {
+      timestamp: record.timestamp(),
+      writer: record.writer().clone(),
+      removal: record.removed(),
+      digest: record.digest.clone(),
+    }
+  }
+}
+
+impl fmt::Debug for ResourceVersion {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_struct("ResourceVersion")
+      .field("timestamp", &self.timestamp)
+      .field("writer", &self.writer)
+      .field("removal", &self.removal)
+      .field("digest", &self.digest)
       .finish()
   }
 }
@@ -167,7 +342,7 @@ pub(crate) struct ResourceRecordV1 {
   cluster: ClusterId,
   name: ResourceName,
   resource_type: LabelValue,
-  resource_uri: LabelValue,
+  resource_uri: ResourceUri,
   labels: LabelSet,
   timestamp_millis: u64,
   writer: NodeId,
@@ -182,7 +357,7 @@ impl ResourceRecordV1 {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn encode_signed_body(
     cluster: &ClusterId, name: &ResourceName, resource_type: &LabelValue,
-    resource_uri: &LabelValue, labels: &LabelSet, timestamp_millis: u64, writer: &NodeId,
+    resource_uri: &ResourceUri, labels: &LabelSet, timestamp_millis: u64, writer: &NodeId,
     removal_rank: u64, removed: bool,
   ) -> Result<Vec<u8>> {
     encode_canonical(
@@ -211,7 +386,7 @@ impl ResourceRecordV1 {
   /// caller's key provider).
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn seal(
-    cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: LabelValue,
+    cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: ResourceUri,
     labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64, removed: bool,
     signature: Signature,
   ) -> Result<Self> {
@@ -246,7 +421,7 @@ impl ResourceRecordV1 {
   /// their key provider's sign operation).
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn sign(
-    cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: LabelValue,
+    cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: ResourceUri,
     labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64, removed: bool,
     signing_key: &ed25519_dalek::SigningKey,
   ) -> Result<Self> {
@@ -293,7 +468,7 @@ impl ResourceRecordV1 {
   }
 
   #[allow(dead_code)]
-  pub(crate) const fn resource_uri(&self) -> &LabelValue {
+  pub(crate) const fn resource_uri(&self) -> &ResourceUri {
     &self.resource_uri
   }
 
@@ -303,7 +478,6 @@ impl ResourceRecordV1 {
   }
 
   /// The signed host wall-clock instant of this write.
-  #[allow(dead_code)]
   pub(crate) fn timestamp(&self) -> std::time::SystemTime {
     time::from_millis(self.timestamp_millis)
   }
@@ -369,7 +543,7 @@ impl ResourceRecordV1 {
     let cluster = ClusterId::parse(&wire.cluster_id)?;
     let name = ResourceName::parse(&wire.name)?;
     let resource_type = LabelValue::parse(&wire.resource_type)?;
-    let resource_uri = LabelValue::parse(&wire.resource_uri)?;
+    let resource_uri = ResourceUri::parse(&wire.resource_uri)?;
     let mut labels = LabelSet::new();
     for (key, value) in wire.labels {
       labels = labels.insert(crate::LabelKey::parse(&key)?, LabelValue::parse(&value)?)?;
@@ -476,7 +650,9 @@ mod tests {
 
   use ed25519_dalek::SigningKey;
 
-  use super::{RESERVED_TYPE_LABEL_KEY, RESERVED_URI_LABEL_KEY, ResourceName, ResourceRecordV1};
+  use super::{
+    RESERVED_TYPE_LABEL_KEY, RESERVED_URI_LABEL_KEY, ResourceName, ResourceRecordV1, ResourceUri,
+  };
   use crate::{ClusterId, LabelKey, LabelSet, LabelValue, NodeId};
 
   const SEED: [u8; 32] = [11; 32];
@@ -513,7 +689,7 @@ mod tests {
       ClusterId::parse("cluster_000000000000000000001").unwrap(),
       name.clone(),
       LabelValue::parse(resource_type).unwrap(),
-      LabelValue::parse(uri).unwrap(),
+      ResourceUri::parse(uri).unwrap(),
       labels.clone(),
       timestamp_millis,
       writer.clone(),
@@ -782,7 +958,7 @@ mod tests {
       ClusterId::parse("cluster_000000000000000000001").unwrap(),
       name(),
       LabelValue::parse("a").unwrap(),
-      LabelValue::parse("u://two").unwrap(),
+      ResourceUri::parse("u://two").unwrap(),
       labels(),
       5_000,
       writer(),
@@ -810,5 +986,268 @@ mod tests {
     let record = base_record();
     let bytes = record.encode().unwrap();
     assert_eq!(bytes.as_slice(), GOLDEN_RESOURCE_RECORD_V1);
+  }
+
+  // ---- SC-G09-P0-01/02: namespace ownership and reserved labels ----
+
+  /// The reserved URI label is bounded opaque caller text: exotic schemes
+  /// and delimiter-heavy values store verbatim, core never parses or
+  /// follows them, and empty or over-limit text is rejected without
+  /// truncation (THR-012, THR-029).
+  #[test]
+  fn resource_uri_is_bounded_opaque_text() {
+    for value in [
+      "file:///tmp/a",
+      "scheme+tls.v1://user:pass@host:4443/path?query=1#frag",
+      "urn:example:object:0001",
+      "not a url at all //// ????",
+    ] {
+      let uri = ResourceUri::parse(value).unwrap();
+      assert_eq!(uri.as_str(), value);
+      assert_eq!(value.parse::<ResourceUri>().unwrap(), uri);
+      assert_eq!(uri.to_string(), value);
+    }
+    assert_eq!(
+      ResourceUri::parse("").unwrap_err().kind(),
+      crate::ErrorKind::InvalidInput
+    );
+    assert!(
+      ResourceUri::parse(&"u".repeat(crate::label::LABEL_VALUE_MAX_BYTES)).is_ok(),
+      "exactly at the bound is legal"
+    );
+    assert_eq!(
+      ResourceUri::parse(&"u".repeat(crate::label::LABEL_VALUE_MAX_BYTES + 1))
+        .unwrap_err()
+        .kind(),
+      crate::ErrorKind::InvalidInput
+    );
+  }
+
+  /// Every resource supplies both reserved labels; custom labels stay in
+  /// the closed `labels` category, so the reserved `resources/*` keys can
+  /// never be smuggled in as custom labels (THR-012).
+  #[test]
+  fn resource_labels_require_reserved_and_bound_custom() {
+    let labels = super::ResourceLabels::new(
+      LabelValue::parse("document").unwrap(),
+      ResourceUri::parse("file:///tmp/a").unwrap(),
+    )
+    .custom(
+      LabelKey::parse("example.org/labels/owner").unwrap(),
+      LabelValue::parse("team-a").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(labels.resource_type().as_str(), "document");
+    assert_eq!(labels.uri().as_str(), "file:///tmp/a");
+    assert_eq!(labels.custom_labels().entries().len(), 1);
+
+    // Duplicate custom keys conflict and the set bound holds.
+    assert_eq!(
+      labels
+        .clone()
+        .custom(
+          LabelKey::parse("example.org/labels/owner").unwrap(),
+          LabelValue::parse("team-b").unwrap(),
+        )
+        .unwrap_err()
+        .kind(),
+      crate::ErrorKind::Conflict
+    );
+    // The reserved keys are not in the custom keyspace at all.
+    assert!(LabelKey::parse(RESERVED_TYPE_LABEL_KEY).is_err());
+    assert!(LabelKey::parse(RESERVED_URI_LABEL_KEY).is_err());
+  }
+
+  /// Spoofed domains and malformed names fail or normalize before any
+  /// persistence: tag parsing lowercases domains, so a case-variant of a
+  /// reserved key is still that reserved key (and still rejected as a
+  /// custom label), and malformed or reserved-category names never parse.
+  #[test]
+  fn spoofed_domains_normalize_or_fail_closed() {
+    let canonical = LabelKey::parse("example.org/labels/owner").unwrap();
+    assert_eq!(
+      LabelKey::parse("EXAMPLE.ORG/labels/owner").unwrap(),
+      canonical
+    );
+    assert!(LabelKey::parse("RELAY.WOOOO.TECH/resources/type").is_err());
+    assert!(LabelKey::parse("relay.woooo.tech/resources/uri").is_err());
+    assert!(LabelKey::parse("example.org/labels/").is_err());
+    assert!(ResourceName::parse("RELAY.WOOOO.TECH/labels/not-a-resource").is_err());
+    // A case-variant resource name normalizes to the canonical name, so
+    // lookups cannot be split across case forgeries.
+    assert_eq!(
+      ResourceName::parse("RELAY.WOOOO.TECH/resources/demo-object").unwrap(),
+      name()
+    );
+  }
+
+  // ---- SC-G09-P0-04: current and previous vector compatibility ----
+
+  /// Unknown schemas and record versions fail closed at decode; there is
+  /// no fallback decoding of an incompatible resource record (THR-021,
+  /// THR-022).
+  #[test]
+  fn unknown_schema_or_record_version_fails_closed() {
+    let bytes = base_record().encode().unwrap();
+
+    // Schema mutation: flip one character inside the schema text while
+    // keeping the canonical length prefix intact.
+    let schema = super::RESOURCE_RECORD_SCHEMA.as_bytes();
+    let position = bytes
+      .windows(schema.len())
+      .position(|window| window == schema)
+      .unwrap();
+    let mut forged_schema = bytes.clone();
+    forged_schema[position + schema.len() - 1] ^= 0x01;
+    assert!(ResourceRecordV1::decode(&forged_schema).is_err());
+
+    // Unknown record versions (older, newer, maximum) are rejected.
+    for version in [0_u16, 2, u16::MAX] {
+      let mut wire: super::ResourceRecordWire = minicbor::decode(&bytes).unwrap();
+      wire.record_version = version;
+      let reencoded = crate::protocol::encode_canonical(&wire, super::RECORD_LIMITS).unwrap();
+      assert!(
+        ResourceRecordV1::decode(&reencoded).is_err(),
+        "record version {version} must fail closed"
+      );
+    }
+  }
+
+  /// The pinned current fixture of one live record whose custom labels
+  /// span two caller domains (T-G09-01 vector; deterministic CBOR plus
+  /// the ed25519 signature over the domain-separated digest of seed
+  /// `[11; 32]`).
+  const GOLDEN_RESOURCE_LIVE_G9: &[u8] = &[
+    0x8D, 0x78, 0x2B, 0x72, 0x65, 0x6C, 0x61, 0x79, 0x2E, 0x77, 0x6F, 0x6F, 0x6F, 0x6F, 0x2E, 0x74,
+    0x65, 0x63, 0x68, 0x2F, 0x73, 0x63, 0x68, 0x65, 0x6D, 0x61, 0x73, 0x2F, 0x72, 0x65, 0x73, 0x6F,
+    0x75, 0x72, 0x63, 0x65, 0x2D, 0x72, 0x65, 0x63, 0x6F, 0x72, 0x64, 0x2D, 0x76, 0x31, 0x01, 0x78,
+    0x1D, 0x63, 0x6C, 0x75, 0x73, 0x74, 0x65, 0x72, 0x5F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x78, 0x22,
+    0x72, 0x65, 0x6C, 0x61, 0x79, 0x2E, 0x77, 0x6F, 0x6F, 0x6F, 0x6F, 0x2E, 0x74, 0x65, 0x63, 0x68,
+    0x2F, 0x72, 0x65, 0x73, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x73, 0x2F, 0x67, 0x39, 0x2D, 0x6C, 0x69,
+    0x76, 0x65, 0x68, 0x64, 0x6F, 0x63, 0x75, 0x6D, 0x65, 0x6E, 0x74, 0x6E, 0x66, 0x69, 0x6C, 0x65,
+    0x3A, 0x2F, 0x2F, 0x2F, 0x74, 0x6D, 0x70, 0x2F, 0x67, 0x39, 0x82, 0x82, 0x78, 0x18, 0x65, 0x78,
+    0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x6F, 0x72, 0x67, 0x2F, 0x6C, 0x61, 0x62, 0x65, 0x6C, 0x73,
+    0x2F, 0x6F, 0x77, 0x6E, 0x65, 0x72, 0x66, 0x74, 0x65, 0x61, 0x6D, 0x2D, 0x61, 0x82, 0x77, 0x6F,
+    0x74, 0x68, 0x65, 0x72, 0x2E, 0x6E, 0x65, 0x74, 0x2F, 0x6C, 0x61, 0x62, 0x65, 0x6C, 0x73, 0x2F,
+    0x72, 0x65, 0x67, 0x69, 0x6F, 0x6E, 0x62, 0x65, 0x75, 0x19, 0x0F, 0xA0, 0x78, 0x1A, 0x6E, 0x6F,
+    0x64, 0x65, 0x5F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x00, 0xF4, 0x58, 0x20, 0x54, 0x56, 0x5F, 0x4E,
+    0xD2, 0x78, 0xF1, 0xDF, 0x5E, 0x7D, 0x46, 0x4B, 0x90, 0xAB, 0xBE, 0x54, 0x47, 0xB1, 0xD1, 0xF8,
+    0x9F, 0x4F, 0xE2, 0x14, 0xE9, 0x28, 0x69, 0x85, 0x5B, 0xC0, 0xBB, 0x50, 0x58, 0x40, 0x1F, 0xC9,
+    0xD1, 0xE3, 0x30, 0x6D, 0xE8, 0x34, 0x81, 0xB8, 0x94, 0x02, 0xF9, 0x08, 0xAB, 0xCE, 0x3C, 0xD4,
+    0x35, 0x18, 0x95, 0x20, 0xA3, 0x23, 0xBC, 0xEF, 0xAC, 0x04, 0x52, 0xD9, 0xB0, 0xA7, 0x62, 0x91,
+    0x15, 0x60, 0xA5, 0xE6, 0xC5, 0x77, 0xCB, 0x90, 0x01, 0x24, 0x3A, 0x63, 0x17, 0xDE, 0xE3, 0x10,
+    0x66, 0x34, 0x3F, 0x6B, 0x54, 0x15, 0x03, 0x32, 0xA7, 0xBF, 0x33, 0xC8, 0xCA, 0x0E,
+  ];
+
+  /// The pinned current fixture of one signed removal record (T-G09-01
+  /// vector; same construction as `GOLDEN_RESOURCE_LIVE_G9`).
+  const GOLDEN_RESOURCE_REMOVAL_G9: &[u8] = &[
+    0x8D, 0x78, 0x2B, 0x72, 0x65, 0x6C, 0x61, 0x79, 0x2E, 0x77, 0x6F, 0x6F, 0x6F, 0x6F, 0x2E, 0x74,
+    0x65, 0x63, 0x68, 0x2F, 0x73, 0x63, 0x68, 0x65, 0x6D, 0x61, 0x73, 0x2F, 0x72, 0x65, 0x73, 0x6F,
+    0x75, 0x72, 0x63, 0x65, 0x2D, 0x72, 0x65, 0x63, 0x6F, 0x72, 0x64, 0x2D, 0x76, 0x31, 0x01, 0x78,
+    0x1D, 0x63, 0x6C, 0x75, 0x73, 0x74, 0x65, 0x72, 0x5F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x78, 0x25,
+    0x72, 0x65, 0x6C, 0x61, 0x79, 0x2E, 0x77, 0x6F, 0x6F, 0x6F, 0x6F, 0x2E, 0x74, 0x65, 0x63, 0x68,
+    0x2F, 0x72, 0x65, 0x73, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x73, 0x2F, 0x67, 0x39, 0x2D, 0x72, 0x65,
+    0x6D, 0x6F, 0x76, 0x65, 0x64, 0x68, 0x64, 0x6F, 0x63, 0x75, 0x6D, 0x65, 0x6E, 0x74, 0x76, 0x66,
+    0x69, 0x6C, 0x65, 0x3A, 0x2F, 0x2F, 0x2F, 0x74, 0x6D, 0x70, 0x2F, 0x67, 0x39, 0x2D, 0x72, 0x65,
+    0x6D, 0x6F, 0x76, 0x65, 0x64, 0x80, 0x19, 0x13, 0x88, 0x78, 0x1A, 0x6E, 0x6F, 0x64, 0x65, 0x5F,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x31, 0x01, 0xF5, 0x58, 0x20, 0x0D, 0x09, 0x9B, 0x88, 0x13, 0x96, 0x61,
+    0xB5, 0x7B, 0x61, 0x3D, 0x24, 0x20, 0xD5, 0xF2, 0x79, 0xD8, 0xCD, 0xEF, 0x7D, 0x08, 0x29, 0x04,
+    0x6C, 0x97, 0x95, 0xCB, 0x9E, 0x76, 0xA7, 0xA7, 0x80, 0x58, 0x40, 0xB3, 0xDA, 0xBE, 0x36, 0x0E,
+    0x44, 0x87, 0x19, 0x37, 0x13, 0xE6, 0xEA, 0xBB, 0x56, 0xF4, 0x3F, 0x78, 0x7C, 0x3A, 0x16, 0x51,
+    0x98, 0x4D, 0x2F, 0xDC, 0x4A, 0xCA, 0x02, 0x39, 0x7E, 0x15, 0x6C, 0x19, 0x04, 0xBA, 0xAE, 0x5A,
+    0x3B, 0x13, 0x9B, 0x8F, 0x6D, 0xF2, 0x85, 0x08, 0xE7, 0xC5, 0x36, 0x84, 0x31, 0xD1, 0x51, 0x78,
+    0xC6, 0xAE, 0xA7, 0x58, 0xB9, 0xD2, 0x7B, 0xEF, 0xFE, 0xEA, 0x02,
+  ];
+
+  /// The fixture writer and timestamp shared by the G9 current vectors.
+  fn g9_live_record() -> ResourceRecordV1 {
+    let labels = LabelSet::new()
+      .insert(
+        LabelKey::parse("example.org/labels/owner").unwrap(),
+        LabelValue::parse("team-a").unwrap(),
+      )
+      .unwrap()
+      .insert(
+        LabelKey::parse("other.net/labels/region").unwrap(),
+        LabelValue::parse("eu").unwrap(),
+      )
+      .unwrap();
+    ResourceRecordV1::sign(
+      ClusterId::parse("cluster_000000000000000000001").unwrap(),
+      ResourceName::parse("relay.woooo.tech/resources/g9-live").unwrap(),
+      LabelValue::parse("document").unwrap(),
+      ResourceUri::parse("file:///tmp/g9").unwrap(),
+      labels,
+      4_000,
+      writer(),
+      0,
+      false,
+      &SigningKey::from_bytes(&SEED),
+    )
+    .unwrap()
+  }
+
+  fn g9_removal_record() -> ResourceRecordV1 {
+    ResourceRecordV1::sign(
+      ClusterId::parse("cluster_000000000000000000001").unwrap(),
+      ResourceName::parse("relay.woooo.tech/resources/g9-removed").unwrap(),
+      LabelValue::parse("document").unwrap(),
+      ResourceUri::parse("file:///tmp/g9-removed").unwrap(),
+      LabelSet::new(),
+      5_000,
+      writer(),
+      1,
+      true,
+      &SigningKey::from_bytes(&SEED),
+    )
+    .unwrap()
+  }
+
+  /// Current and previous fixtures round-trip canonically and preserve
+  /// their exact logical tuple versions (SC-G09-P0-04): the G7 golden
+  /// vector stays byte-stable as the previous fixture, and the G9 current
+  /// fixtures pin the same record shape for a live multi-domain record
+  /// and a removal.
+  #[test]
+  fn current_and_previous_fixtures_round_trip_with_exact_versions() {
+    // Previous fixture (G7): the bytes pinned before G9 reopened the
+    // surface still decode to the identical logical record.
+    let previous = ResourceRecordV1::decode(GOLDEN_RESOURCE_RECORD_V1).unwrap();
+    assert_eq!(previous.encode().unwrap(), GOLDEN_RESOURCE_RECORD_V1);
+    let previous_version = super::ResourceVersion::from_record(&previous);
+    assert_eq!(
+      previous_version.timestamp(),
+      crate::time::from_millis(1_000)
+    );
+    assert_eq!(
+      previous_version.writer().as_str(),
+      "node_000000000000000000001"
+    );
+    assert!(!previous_version.is_removal());
+    assert_eq!(previous_version.digest(), previous.digest());
+
+    // Current fixtures: byte-stable encoding, canonical round-trip, and
+    // exact logical versions.
+    let live = g9_live_record();
+    assert_eq!(live.encode().unwrap(), GOLDEN_RESOURCE_LIVE_G9);
+    let live_decoded = ResourceRecordV1::decode(GOLDEN_RESOURCE_LIVE_G9).unwrap();
+    assert_eq!(live_decoded, live);
+    let live_version = super::ResourceVersion::from_record(&live_decoded);
+    assert_eq!(live_version.timestamp(), crate::time::from_millis(4_000));
+    assert!(!live_version.is_removal());
+    assert_eq!(live_version.digest(), live.digest());
+
+    let removal = g9_removal_record();
+    assert_eq!(removal.encode().unwrap(), GOLDEN_RESOURCE_REMOVAL_G9);
+    let removal_decoded = ResourceRecordV1::decode(GOLDEN_RESOURCE_REMOVAL_G9).unwrap();
+    assert_eq!(removal_decoded, removal);
+    let removal_version = super::ResourceVersion::from_record(&removal_decoded);
+    assert!(removal_version.is_removal());
+    assert_eq!(removal_version.digest(), removal.digest());
   }
 }

@@ -156,7 +156,7 @@ mod tests {
       ClusterId::parse("cluster_000000000000000000001").unwrap(),
       name(),
       LabelValue::parse("document").unwrap(),
-      LabelValue::parse(uri).unwrap(),
+      crate::ResourceUri::parse(uri).unwrap(),
       labels(),
       timestamp_millis,
       NodeId::parse("node_000000000000000000001").unwrap(),
@@ -342,5 +342,57 @@ mod tests {
     ));
     let stored = read_record_ctx(&store, &name()).await.unwrap().unwrap();
     assert!(stored.digest() == first.digest() || stored.digest() == second.digest());
+  }
+
+  /// SC-G09-P0-04: both real backends preserve the exact logical tuple
+  /// version of a stored record across a reopen — JSON and redb return
+  /// the identical signed record, never a normalized or truncated form.
+  #[cfg(any(feature = "json", feature = "redb"))]
+  async fn backend_preserves_the_exact_logical_version(factory: Arc<dyn StorageFactory>) {
+    let record = put(7_000, "file:///versioned");
+    let store = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    match commit_record_ctx(&store, &SystemEntropy, &record)
+      .await
+      .unwrap()
+    {
+      ResourceCommitOutcome::Installed(_) => {}
+      _ => panic!("a fresh register must install the record"),
+    }
+    let stored = read_record_ctx(&store, &name()).await.unwrap().unwrap();
+    assert_eq!(stored, record);
+    drop(store);
+
+    // Reopen: the exact logical version survives restart byte-for-byte.
+    let reopened = MetadataStore::open(&factory, Duration::from_secs(10))
+      .await
+      .unwrap();
+    let restored = read_record_ctx(&reopened, &name()).await.unwrap().unwrap();
+    assert_eq!(restored, record);
+    let version = crate::ResourceVersion::from_record(&restored);
+    assert_eq!(version.timestamp(), crate::time::from_millis(7_000));
+    assert!(!version.is_removal());
+    assert_eq!(version.digest(), record.digest());
+  }
+
+  #[cfg(feature = "json")]
+  #[tokio::test]
+  async fn json_backend_preserves_the_exact_logical_version() {
+    let directory = tempfile::tempdir().unwrap();
+    let factory: Arc<dyn StorageFactory> = Arc::new(crate::storage::json::JsonStoreFactory::new(
+      directory.path().to_path_buf(),
+    ));
+    backend_preserves_the_exact_logical_version(factory).await;
+  }
+
+  #[cfg(feature = "redb")]
+  #[tokio::test]
+  async fn redb_backend_preserves_the_exact_logical_version() {
+    let directory = tempfile::tempdir().unwrap();
+    let factory: Arc<dyn StorageFactory> = Arc::new(crate::storage::redb::RedbStoreFactory::new(
+      directory.path().join("store.redb"),
+    ));
+    backend_preserves_the_exact_logical_version(factory).await;
   }
 }

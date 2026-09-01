@@ -81,6 +81,7 @@ pub use provider::{
   StoreExpectation, StoreKey, StoreNamespace, StoreOperation, StoreRequirements, StoreRevision,
   StoreTransaction, StoreValue,
 };
+pub use resource::{ResourceLabels, ResourceName, ResourceUri, ResourceVersion};
 pub use routing::{
   CandidateNodeReader, LoadBalancingPolicy, NextHopView, RouteContext, RouteNextHop, Selector,
 };

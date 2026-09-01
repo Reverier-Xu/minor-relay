@@ -58,7 +58,7 @@ fn resource(
     ClusterId::parse("cluster_000000000000000000001").unwrap(),
     name.clone(),
     LabelValue::parse("document").unwrap(),
-    LabelValue::parse(uri).unwrap(),
+    crate::ResourceUri::parse(uri).unwrap(),
     labels(),
     timestamp_millis,
     writer.clone(),
@@ -258,12 +258,18 @@ async fn eight_plus_eight_components_merge_by_revision_and_tuple() {
     .await
     .unwrap()
     .unwrap();
-  assert_eq!(r1.resource_uri(), &LabelValue::parse("u://a1").unwrap());
+  assert_eq!(
+    r1.resource_uri(),
+    &crate::ResourceUri::parse("u://a1").unwrap()
+  );
   let r2 = resource_store::read_record_ctx(&side_b, &name(2))
     .await
     .unwrap()
     .unwrap();
-  assert_eq!(r2.resource_uri(), &LabelValue::parse("u://b2").unwrap());
+  assert_eq!(
+    r2.resource_uri(),
+    &crate::ResourceUri::parse("u://b2").unwrap()
+  );
   for seed in 1..=3_u8 {
     let left = resource_store::read_record_ctx(&side_a, &name(seed))
       .await

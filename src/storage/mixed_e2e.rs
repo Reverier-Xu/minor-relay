@@ -78,7 +78,7 @@ fn resource_record(
     ClusterId::parse("cluster_000000000000000000001").unwrap(),
     ResourceName::parse(&format!("relay.woooo.tech/resources/mixed-{seed_index}")).unwrap(),
     LabelValue::parse("document").unwrap(),
-    LabelValue::parse(uri).unwrap(),
+    crate::ResourceUri::parse(uri).unwrap(),
     LabelSet::new()
       .insert(
         LabelKey::parse("example.org/labels/lane").unwrap(),
