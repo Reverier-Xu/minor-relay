@@ -107,13 +107,18 @@ pub(crate) struct MembershipSyncConsumer {
   // runtime dropped is rejected as shutting down.
   context: std::sync::Weak<LocalIdentityContext>,
   entropy: Arc<dyn Entropy>,
+  events: Arc<crate::node::EventHub>,
 }
 
 impl MembershipSyncConsumer {
-  pub(crate) fn new(context: Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>) -> Self {
+  pub(crate) fn new(
+    context: Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>,
+    events: Arc<crate::node::EventHub>,
+  ) -> Self {
     Self {
       context: Arc::downgrade(&context),
       entropy,
+      events,
     }
   }
 }
@@ -127,19 +132,24 @@ impl PacketConsumer for MembershipSyncConsumer {
         .context
         .upgrade()
         .ok_or_else(|| Error::shutting_down("membership sync"))?;
-      accept_payload(&context, self.entropy.clone(), &payload).await
+      accept_payload(&context, self.entropy.clone(), &self.events, &payload).await
     })
   }
 }
 
 async fn accept_payload(
-  context: &Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>, payload: &SyncPayload,
+  context: &Arc<LocalIdentityContext>, entropy: Arc<dyn Entropy>,
+  events: &Arc<crate::node::EventHub>, payload: &SyncPayload,
 ) -> Result<()> {
   let store = context.store();
   match payload {
     SyncPayload::Page(encoded) => {
       let page = MembershipPage::decode(encoded.as_ref())?;
-      let _ = page_sync::apply_page_ctx(store, entropy.as_ref(), &page).await?;
+      // Every newly installed descriptor is one member change (T-G09-07).
+      let installed = page_sync::apply_page_ctx(store, entropy.as_ref(), &page).await?;
+      for node in installed {
+        events.emit(crate::MemberChanged::new(node));
+      }
     }
     SyncPayload::Snapshot(encoded) => {
       let snapshot = TrustSnapshotV1::decode(encoded.as_ref())?;

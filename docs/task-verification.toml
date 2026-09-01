@@ -775,14 +775,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G09-07"
 verification_id = "VERIFY-G09-07"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G09-07"
 owner_task = "T-G09-07"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g09-07-facade-closure.sh"]
 timeout_seconds = 1800
 
 [[task]]

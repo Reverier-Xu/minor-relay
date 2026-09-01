@@ -438,6 +438,11 @@ impl RouteHandle {
   pub fn trace_id(&self) -> &TraceId {
     &self.trace_id
   }
+
+  /// Rebuilds the handle of one known route record (event emission).
+  pub(crate) const fn from_trace_id(trace_id: TraceId) -> Self {
+    Self { trace_id }
+  }
 }
 
 /// One observed route state. Terminal states are `Delivered` and `Failed`.

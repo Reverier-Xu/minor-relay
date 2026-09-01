@@ -122,7 +122,7 @@ impl MembershipPage {
 /// and applies received pages under strict validation.
 pub(crate) mod sync {
   use super::{MAX_PAGE_DESCRIPTORS, MembershipPage};
-  use crate::{Result, api::Entropy, storage::MetadataStore};
+  use crate::{NodeId, Result, api::Entropy, storage::MetadataStore};
 
   /// Emits one bounded page over the running node's metadata store. The
   /// cursor is the last emitted node's text, so pages continue without
@@ -151,8 +151,8 @@ pub(crate) mod sync {
   /// (SC-G05-P0-07/08).
   pub(crate) async fn apply_page_ctx(
     store: &MetadataStore, entropy: &dyn Entropy, page: &MembershipPage,
-  ) -> Result<usize> {
-    let mut applied = 0;
+  ) -> Result<Vec<NodeId>> {
+    let mut applied = Vec::new();
     for descriptor in page.descriptors() {
       // Skip descriptors we already have at an equal or higher revision.
       if let Ok(Some(current)) = super::store::read_descriptor_ctx(store, descriptor.node()).await
@@ -164,7 +164,7 @@ pub(crate) mod sync {
         .await
         .is_ok()
       {
-        applied += 1;
+        applied.push(descriptor.node().clone());
       }
     }
     Ok(applied)
@@ -187,7 +187,9 @@ pub(crate) mod sync {
     factory: &std::sync::Arc<dyn crate::provider::StorageFactory>, page: &MembershipPage,
   ) -> Result<usize> {
     let store = MetadataStore::open(factory, std::time::Duration::from_secs(10)).await?;
-    apply_page_ctx(&store, &crate::api::SystemEntropy, page).await
+    apply_page_ctx(&store, &crate::api::SystemEntropy, page)
+      .await
+      .map(|installed| installed.len())
   }
 }
 

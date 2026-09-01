@@ -147,7 +147,8 @@ async fn converge(sides: [&MetadataStore; 2]) -> usize {
         cursor = page.cursor().map(|value| value.to_vec());
         applied += member_page::sync::apply_page_ctx(receiver, &SystemEntropy, &page)
           .await
-          .unwrap();
+          .unwrap()
+          .len();
         if done {
           break;
         }

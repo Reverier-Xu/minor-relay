@@ -73,7 +73,7 @@ const IN_FLIGHT_CEILING: u64 = 1_024;
 const DEFINITION_LIMITS: CborLimits = CborLimits::new(16, 1_024, 65_536);
 
 /// The canonical immutable contract behind one negotiated feature label.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FeatureDefinition {
   tag: FeatureTag,
   fingerprint: Digest,
@@ -544,7 +544,7 @@ fn check_unique_ownership(definitions: &BTreeMap<FeatureTag, FeatureDefinition>)
   Ok(())
 }
 
-fn builtin_definitions() -> Result<Vec<FeatureDefinition>> {
+pub(crate) fn builtin_definitions() -> Result<Vec<FeatureDefinition>> {
   let auth = builtin(AUTH_ED25519_SESSION)?;
   let session = builtin(SESSION_CORE)?.dependency(FeatureTag::parse(AUTH_ED25519_SESSION)?)?;
   let data = builtin(DATA_MESSAGES)?

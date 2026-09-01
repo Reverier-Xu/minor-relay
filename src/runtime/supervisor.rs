@@ -19,7 +19,7 @@ use crate::{
     lifecycle::{LocalIdentityContext, open_local_identity},
   },
   packet::{OutboundRequest, RouteRecord, RouteState},
-  protocol::{feature::FeatureRegistry, offer::node_offer},
+  protocol::offer::node_offer,
   provider::{KeyProvider, StorageFactory},
   runtime::{Control, LifecycleSnapshot, RuntimeClient},
   session::{
@@ -200,6 +200,7 @@ pub(crate) async fn spawn_runtime(
   let sync_consumer = Arc::new(crate::membership::sync::MembershipSyncConsumer::new(
     Arc::clone(&runtime_context),
     dependencies.entropy.clone(),
+    dependencies.events.clone(),
   ));
   dependencies
     .extensions
@@ -365,6 +366,22 @@ async fn supervise(
         reply,
       } => {
         let result = supervisor.select_resources(&selector, cursor, limit).await;
+        let _ = reply.send(result);
+      }
+      Control::GetResource { name, reply } => {
+        let result = supervisor.get_resource(&name).await;
+        let _ = reply.send(result);
+      }
+      Control::PageResources { cursor, limit, reply } => {
+        let result = supervisor.page_resources(cursor, limit).await;
+        let _ = reply.send(result);
+      }
+      Control::PageListeners { cursor, limit, reply } => {
+        let result = supervisor.page_listeners(cursor, limit).await;
+        let _ = reply.send(result);
+      }
+      Control::PageSessions { cursor, limit, reply } => {
+        let result = supervisor.page_sessions(cursor, limit).await;
         let _ = reply.send(result);
       }
       Control::PageTopology { cursor, limit, reply } => {
@@ -546,6 +563,8 @@ fn session_packet_context(
     policy,
     crate::runtime::RuntimeClient::routing_only(packet_tx, dependencies.routes.clone()),
     std::sync::Arc::new(crate::storage::receipt::HostWallClock),
+    dependencies.entropy.clone(),
+    dependencies.events.clone(),
     dependencies.config.route_policy().cloned(),
     dependencies.sessions.clone(),
     dependencies.routes.clone(),
@@ -563,7 +582,14 @@ impl Supervisor {
     let Some(context) = dependencies.context.clone() else {
       return Err(Box::new((Error::internal("runtime context"), dependencies)));
     };
-    let registry = match FeatureRegistry::builtin() {
+    // The negotiation registry is the frozen built-in set plus every
+    // caller-registered feature definition (T-G09-07).
+    let mut definitions = match crate::protocol::feature::builtin_definitions() {
+      Ok(definitions) => definitions,
+      Err(error) => return Err(Box::new((error, dependencies))),
+    };
+    definitions.extend(dependencies.extensions.feature_definitions());
+    let registry = match crate::protocol::feature::FeatureRegistry::build(definitions) {
       Ok(registry) => registry,
       Err(error) => return Err(Box::new((error, dependencies))),
     };
@@ -696,6 +722,7 @@ impl Supervisor {
     let connection_tasks = self.connection_tasks.clone();
     let accept_listener = std::sync::Arc::clone(&listener);
     let insert_listener = std::sync::Arc::clone(&listener);
+    let attachment = bound.clone();
     let abort = tasks.spawn(async move {
       loop {
         // The join hint is computed per accepted connection so the accept
@@ -720,6 +747,7 @@ impl Supervisor {
         let packet = packet.clone();
         let sessions = sessions.clone();
         let shutdown = shutdown.clone();
+        let attachment = attachment.clone();
         let task = tokio::spawn(async move {
           match driver.respond(&mut connection).await {
             Ok(session) => {
@@ -732,6 +760,7 @@ impl Supervisor {
                 sessions,
                 shutdown,
                 crate::session::stream::DialDirection::Incoming,
+                attachment.clone(),
                 None,
               )
               .await;
@@ -820,6 +849,7 @@ impl Supervisor {
       packet,
       sessions,
       shutdown,
+      receiver,
       |session_task| {
         tasks.spawn(session_task);
       },
@@ -867,6 +897,12 @@ impl Supervisor {
     {
       record.update(RouteState::Failed(kind));
     }
+    self
+      .dependencies
+      .events
+      .emit(crate::RouteChanged::new(crate::RouteHandle::from_trace_id(
+        trace_id.clone(),
+      )));
   }
 
   /// Routes one outbound packet. Matching-node targets resolve through the
@@ -913,6 +949,12 @@ impl Supervisor {
       request.reject(error.kind());
       return Err(error);
     }
+    self
+      .dependencies
+      .events
+      .emit(crate::RouteChanged::new(crate::RouteHandle::from_trace_id(
+        trace_id.clone(),
+      )));
     let fail = |request: OutboundRequest, kind: ErrorKind| {
       self.record_route_failure(&trace_id, kind);
       request.reject(kind);
@@ -953,8 +995,9 @@ impl Supervisor {
     } else {
       Some(self.trace_sink.clone())
     };
+    let events = self.dependencies.events.clone();
     tasks.spawn(async move {
-      run_outbound(entry, local, request, routes, force_routed, trace).await;
+      run_outbound(entry, local, request, routes, force_routed, trace, events).await;
     });
     Ok(())
   }
@@ -1186,6 +1229,107 @@ impl Supervisor {
     .await
   }
 
+  /// Pages every live resource winner in canonical name order (G9-07):
+  /// the reserved type label is always present, so its existence selector
+  /// is exactly the unfiltered catalog.
+  async fn page_resources(
+    &mut self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::ResourcePage> {
+    let all = crate::Selector::parse(crate::resource::RESERVED_TYPE_LABEL_KEY)?;
+    self.select_resources(&all, cursor, limit).await
+  }
+
+  /// Reads the live winner of one named resource (G9-07); a removed or
+  /// unknown name reads as absent.
+  async fn get_resource(
+    &mut self, name: &crate::ResourceName,
+  ) -> Result<Option<crate::ResourceView>> {
+    let record = crate::resource::store::read_record_ctx(self.context()?.store(), name).await?;
+    Ok(match record {
+      Some(record) if !record.removed() => Some(crate::resource::select::resource_view(&record)),
+      _ => None,
+    })
+  }
+
+  /// Pages the node's bound listeners in canonical id order (G9-07).
+  async fn page_listeners(
+    &mut self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::ListenerPage> {
+    let limit = limit.clamp(1, crate::paging::MAX_VIEW_PAGE_ITEMS);
+    let entries = self
+      .listeners
+      .iter()
+      .map(|(id, (endpoint, ..))| {
+        (
+          id.as_str().as_bytes().to_vec(),
+          crate::ListenerView::new(id.clone(), endpoint.clone()),
+        )
+      })
+      .collect::<Vec<_>>();
+    let paged = crate::paging::page_keys(
+      entries.into_iter(),
+      cursor.as_ref().map(|cursor| cursor.as_bytes()),
+      limit,
+    );
+    let next = paged
+      .next
+      .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
+    Ok(crate::ListenerPage::new(paged.items, next))
+  }
+
+  /// Pages the live authenticated sessions in canonical peer order
+  /// (G9-07); selected features resolve their exact definition digests at
+  /// query time (SC-G09-P0-23).
+  async fn page_sessions(
+    &mut self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::SessionPage> {
+    let limit = limit.clamp(1, crate::paging::MAX_VIEW_PAGE_ITEMS);
+    let entries: Vec<(Vec<u8>, crate::SessionView)> = {
+      let sessions = self
+        .dependencies
+        .sessions
+        .lock()
+        .map_err(Error::session_table)?;
+      sessions
+        .iter()
+        .filter(|(_, entry)| entry.alive())
+        .map(|(peer, entry)| {
+          let features = entry
+            .meta
+            .features
+            .iter()
+            .filter_map(|tag| {
+              self
+                .dependencies
+                .extensions
+                .feature_digest(tag)
+                .map(|digest| crate::SessionFeatureView::new(tag.clone(), digest))
+            })
+            .collect();
+          (
+            peer.as_str().as_bytes().to_vec(),
+            crate::SessionView::new(
+              entry.meta.id.clone(),
+              entry.meta.generation,
+              peer.clone(),
+              entry.meta.endpoint.clone(),
+              features,
+            ),
+          )
+        })
+        .collect()
+    };
+    let paged = crate::paging::page_keys(
+      entries.into_iter(),
+      cursor.as_ref().map(|cursor| cursor.as_bytes()),
+      limit,
+    );
+    let next = paged
+      .next
+      .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
+    Ok(crate::SessionPage::new(paged.items, next))
+  }
+
   /// Pages the authenticated sessions as directed topology edges
   /// (SC-G05-P0-26).
   async fn page_topology(
@@ -1273,8 +1417,16 @@ impl Supervisor {
   /// Forces one bounded immediate recovery cycle (SC-G05-P0-19) and
   /// returns the public recovery view.
   fn start_recovery(&mut self) -> Result<crate::RecoveryView> {
+    let before = self.recovery_view();
     self.recovery.immediate(crate::time::now_seconds());
-    Ok(self.recovery_view())
+    let after = self.recovery_view();
+    if after != before {
+      self
+        .dependencies
+        .events
+        .emit(crate::RecoveryChanged::new(after.clone()));
+    }
+    Ok(after)
   }
 
   /// Closes the authenticated session to one peer (SC-G05-P0-22 partition
@@ -1283,6 +1435,10 @@ impl Supervisor {
   /// contrast, leaves the member online and gets healed on the next cycle).
   fn disconnect_peer(&mut self, peer: &NodeId) -> Result<()> {
     crate::session::stream::retire_session(&self.dependencies.sessions, peer)?;
+    self
+      .dependencies
+      .events
+      .emit(crate::SessionChanged::new(peer.clone()));
     self.recovery_history.remove(peer);
     // An intentional disconnect is never re-healed until the relationship
     // is deliberately re-established (a new session to the peer).
@@ -1314,6 +1470,10 @@ impl Supervisor {
       &updated,
     )
     .await?;
+    self
+      .dependencies
+      .events
+      .emit(crate::MemberChanged::new(local.clone()));
     crate::membership::member_view(&updated, crate::ConnectivityStatus::Connected)
   }
 
@@ -1537,6 +1697,10 @@ impl Supervisor {
       // After the known-committed transition: close the exact identity's
       // active sessions and exclude it from recovery redial.
       crate::session::stream::retire_session(&self.dependencies.sessions, &subject)?;
+      self
+        .dependencies
+        .events
+        .emit(crate::SessionChanged::new(subject.clone()));
       self.recovery_history.remove(&subject);
       self.recovery_excluded.insert(subject.clone());
       self
@@ -1623,6 +1787,19 @@ impl Supervisor {
   /// or the local node, so it cannot add edges beyond the configured
   /// topology).
   async fn recovery_tick(&mut self) -> Result<()> {
+    let before = self.recovery_view();
+    let result = self.recovery_tick_inner().await;
+    let after = self.recovery_view();
+    if after != before {
+      self
+        .dependencies
+        .events
+        .emit(crate::RecoveryChanged::new(after));
+    }
+    result
+  }
+
+  async fn recovery_tick_inner(&mut self) -> Result<()> {
     let direct: std::collections::BTreeSet<NodeId> = self
       .dependencies
       .sessions
@@ -1779,6 +1956,7 @@ async fn dial_member(
     packet,
     sessions,
     shutdown,
+    receiver,
     |session_task| {
       tokio::spawn(session_task);
     },
@@ -1794,7 +1972,7 @@ async fn dial_member(
 async fn keep_outbound_session(
   connection: crate::transport::connection::Connection,
   session: crate::session::EstablishedSession, packet: Arc<SessionPacketContext>,
-  sessions: SessionTable, shutdown: watch::Receiver<()>,
+  sessions: SessionTable, shutdown: watch::Receiver<()>, attachment: Endpoint,
   spawn: impl FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>),
 ) -> Result<()> {
   let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
@@ -1805,6 +1983,7 @@ async fn keep_outbound_session(
     sessions,
     shutdown,
     crate::session::stream::DialDirection::Outgoing,
+    attachment,
     Some(registered_tx),
   )));
   if registered_rx.await.is_err() {

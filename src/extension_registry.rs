@@ -58,6 +58,7 @@ pub(crate) struct ProtocolRegistration {
 /// [`ExtensionRegistry::register_core_protocol`].
 #[derive(Default)]
 pub struct ExtensionRegistry {
+  features: std::sync::Mutex<BTreeMap<crate::FeatureTag, crate::FeatureDefinition>>,
   protocols: std::sync::Mutex<BTreeMap<ProtocolTag, Arc<ProtocolRegistration>>>,
   transports: BTreeMap<TransportTag, Arc<dyn Transport>>,
   discoveries: BTreeMap<DiscoveryTag, Arc<dyn Discovery>>,
@@ -69,6 +70,51 @@ pub struct ExtensionRegistry {
 impl ExtensionRegistry {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Registers one caller-defined feature (T-G09-07): the definition's
+  /// contract fingerprint joins the node's negotiation registry, so its
+  /// exact digest is offered and intersected at handshake time. A
+  /// duplicate tag is a conflict; the built-in domain is reserved (the
+  /// definition constructor already refuses it).
+  pub fn register_feature(&mut self, value: crate::FeatureDefinition) -> Result<&mut Self> {
+    {
+      let mut features = self.features.lock().map_err(Error::extension_registry)?;
+      insert_once(
+        &mut features,
+        value.tag().clone(),
+        value,
+        "feature registration",
+      )?;
+    }
+    Ok(self)
+  }
+
+  /// The caller-registered feature definitions in canonical tag order.
+  pub(crate) fn feature_definitions(&self) -> Vec<crate::FeatureDefinition> {
+    self
+      .features
+      .lock()
+      .map(|features| features.values().cloned().collect())
+      .unwrap_or_default()
+  }
+
+  /// The exact negotiation digest of one feature tag (the digest offered
+  /// and intersected at handshake time): the caller-registered definition
+  /// wins, then the built-in registry (T-G09-07).
+  pub(crate) fn feature_digest(&self, tag: &crate::FeatureTag) -> Option<crate::Digest> {
+    let definition = self
+      .features
+      .lock()
+      .ok()
+      .and_then(|features| features.get(tag).cloned())
+      .or_else(|| {
+        crate::protocol::feature::FeatureRegistry::builtin()
+          .ok()?
+          .get(tag)
+          .cloned()
+      });
+    definition.and_then(|definition| definition.definition_digest().ok())
   }
 
   /// Registers one transport implementation under its canonical tag. A

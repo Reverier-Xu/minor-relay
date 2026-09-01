@@ -136,6 +136,44 @@ impl DispatchQuery for SelectResources {
   }
 }
 
+impl DispatchQuery for crate::GetResource {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let name = self.name().clone();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.get_resource(name).await })
+  }
+}
+
+impl DispatchQuery for crate::PageResources {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.page_resources(cursor, limit).await })
+  }
+}
+
+impl DispatchQuery for crate::PageListeners {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.page_listeners(cursor, limit).await })
+  }
+}
+
+impl DispatchQuery for crate::PageSessions {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let page = self.page();
+    let cursor = page.cursor().cloned();
+    let limit = page.limit();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.page_sessions(cursor, limit).await })
+  }
+}
+
 impl DispatchQuery for PageTopology {
   fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
     let page = self.page();

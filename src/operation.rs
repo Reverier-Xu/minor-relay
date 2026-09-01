@@ -279,6 +279,90 @@ impl Query for SelectResources {
   type Output = crate::ResourcePage;
 }
 
+/// Pages the node's bound listeners (G9-07).
+pub struct PageListeners {
+  page: crate::PageSpec,
+}
+
+impl PageListeners {
+  pub fn new(page: crate::PageSpec) -> Self {
+    Self { page }
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for PageListeners {}
+
+impl Query for PageListeners {
+  type Output = crate::ListenerPage;
+}
+
+/// Pages the live authenticated sessions (G9-07).
+pub struct PageSessions {
+  page: crate::PageSpec,
+}
+
+impl PageSessions {
+  pub fn new(page: crate::PageSpec) -> Self {
+    Self { page }
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for PageSessions {}
+
+impl Query for PageSessions {
+  type Output = crate::SessionPage;
+}
+
+/// Reads the live winner of one named resource, when present (G9-07).
+pub struct GetResource {
+  name: crate::ResourceName,
+}
+
+impl GetResource {
+  pub fn new(name: crate::ResourceName) -> Self {
+    Self { name }
+  }
+
+  pub(crate) const fn name(&self) -> &crate::ResourceName {
+    &self.name
+  }
+}
+
+impl private::Sealed for GetResource {}
+
+impl Query for GetResource {
+  type Output = Option<crate::ResourceView>;
+}
+
+/// Pages the live resource winners in canonical name order (G9-07).
+pub struct PageResources {
+  page: crate::PageSpec,
+}
+
+impl PageResources {
+  pub fn new(page: crate::PageSpec) -> Self {
+    Self { page }
+  }
+
+  pub(crate) const fn page(&self) -> &crate::PageSpec {
+    &self.page
+  }
+}
+
+impl private::Sealed for PageResources {}
+
+impl Query for PageResources {
+  type Output = crate::ResourcePage;
+}
+
 /// One caller-authored resource write intent (T-G09-03): the stable name
 /// plus its reserved and custom labels. Core stamps the wall-clock tuple
 /// and signs the candidate record when the command executes; the caller
@@ -442,6 +526,93 @@ impl IdentityReplaced {
 impl private::Sealed for IdentityReplaced {}
 
 impl Event for IdentityReplaced {}
+
+/// One authenticated session to the peer was established, replaced, or
+/// retired (T-G09-07). Transient: subscribers re-read the session page
+/// for the current set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionChanged {
+  peer: NodeId,
+}
+
+impl SessionChanged {
+  pub fn peer(&self) -> &NodeId {
+    &self.peer
+  }
+
+  pub(crate) const fn new(peer: NodeId) -> Self {
+    Self { peer }
+  }
+}
+
+impl private::Sealed for SessionChanged {}
+
+impl Event for SessionChanged {}
+
+/// A member's owner-revision descriptor changed (T-G09-07): a local
+/// update or a converged sync install. Transient: subscribers re-read the
+/// member views for the current state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemberChanged {
+  node_id: NodeId,
+}
+
+impl MemberChanged {
+  pub fn node_id(&self) -> &NodeId {
+    &self.node_id
+  }
+
+  pub(crate) const fn new(node_id: NodeId) -> Self {
+    Self { node_id }
+  }
+}
+
+impl private::Sealed for MemberChanged {}
+
+impl Event for MemberChanged {}
+
+/// One route's state changed (T-G09-07). Transient: subscribers re-read
+/// `GetRoute` for the current status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteChanged {
+  handle: crate::RouteHandle,
+}
+
+impl RouteChanged {
+  pub fn handle(&self) -> &crate::RouteHandle {
+    &self.handle
+  }
+
+  pub(crate) const fn new(handle: crate::RouteHandle) -> Self {
+    Self { handle }
+  }
+}
+
+impl private::Sealed for RouteChanged {}
+
+impl Event for RouteChanged {}
+
+/// The recovery state changed (T-G09-07): connectivity restored, a
+/// component became unreachable, or an immediate recovery started.
+/// Transient: subscribers re-read the recovery view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryChanged {
+  recovery: crate::RecoveryView,
+}
+
+impl RecoveryChanged {
+  pub fn recovery(&self) -> &crate::RecoveryView {
+    &self.recovery
+  }
+
+  pub(crate) const fn new(recovery: crate::RecoveryView) -> Self {
+    Self { recovery }
+  }
+}
+
+impl private::Sealed for RecoveryChanged {}
+
+impl Event for RecoveryChanged {}
 
 /// A locally revoked identity lost connection and admission authority
 /// (T-G09-04). Emitted once per revocation transition, after the durable

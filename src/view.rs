@@ -1,4 +1,7 @@
-use crate::{ClusterId, Endpoint, Error, ErrorKind, NodeId, PublicKey, identity::ListenerId};
+use crate::{
+  ClusterId, Endpoint, Error, ErrorKind, NodeId, PublicKey,
+  identity::{ListenerId, SessionId},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -90,6 +93,124 @@ impl ListenerView {
 
   pub(crate) const fn new(id: ListenerId, endpoint: Endpoint) -> Self {
     Self { id, endpoint }
+  }
+}
+
+/// One bounded page of listener observations (G9-07).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListenerPage {
+  items: Vec<ListenerView>,
+  next: Option<crate::PageCursor>,
+}
+
+impl ListenerPage {
+  pub fn items(&self) -> &[ListenerView] {
+    &self.items
+  }
+
+  pub fn next(&self) -> Option<&crate::PageCursor> {
+    self.next.as_ref()
+  }
+
+  pub(crate) fn new(items: Vec<ListenerView>, next: Option<crate::PageCursor>) -> Self {
+    Self { items, next }
+  }
+}
+
+/// One session-scoped selected feature: the negotiated tag and its exact
+/// definition digest from the authenticated intersection (SC-G09-P0-23).
+/// The pair is session metadata: it disappears with the session and never
+/// becomes a node-wide authorization claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionFeatureView {
+  feature: crate::FeatureTag,
+  definition_digest: crate::Digest,
+}
+
+impl SessionFeatureView {
+  pub fn feature(&self) -> &crate::FeatureTag {
+    &self.feature
+  }
+
+  pub fn definition_digest(&self) -> &crate::Digest {
+    &self.definition_digest
+  }
+
+  pub(crate) const fn new(feature: crate::FeatureTag, definition_digest: crate::Digest) -> Self {
+    Self {
+      feature,
+      definition_digest,
+    }
+  }
+}
+
+/// One live authenticated session's public observation (G9-07): its
+/// server-allocated id, the per-peer replacement generation, the peer, the
+/// attachment endpoint (the dial target for outbound sessions, the
+/// accepting listener for inbound ones), and the session-scoped feature
+/// intersection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionView {
+  id: SessionId,
+  generation: u64,
+  peer: NodeId,
+  endpoint: Endpoint,
+  selected_features: Vec<SessionFeatureView>,
+}
+
+impl SessionView {
+  pub fn id(&self) -> &SessionId {
+    &self.id
+  }
+
+  pub fn generation(&self) -> u64 {
+    self.generation
+  }
+
+  pub fn peer(&self) -> &NodeId {
+    &self.peer
+  }
+
+  pub fn endpoint(&self) -> &Endpoint {
+    &self.endpoint
+  }
+
+  pub fn selected_features(&self) -> &[SessionFeatureView] {
+    &self.selected_features
+  }
+
+  pub(crate) fn new(
+    id: SessionId, generation: u64, peer: NodeId, endpoint: Endpoint,
+    selected_features: Vec<SessionFeatureView>,
+  ) -> Self {
+    Self {
+      id,
+      generation,
+      peer,
+      endpoint,
+      selected_features,
+    }
+  }
+}
+
+/// One bounded page of session observations (G9-07).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionPage {
+  items: Vec<SessionView>,
+  next: Option<crate::PageCursor>,
+}
+
+impl SessionPage {
+  pub fn items(&self) -> &[SessionView] {
+    &self.items
+  }
+
+  pub fn next(&self) -> Option<&crate::PageCursor> {
+    self.next.as_ref()
+  }
+
+  pub(crate) fn new(items: Vec<SessionView>, next: Option<crate::PageCursor>) -> Self {
+    Self { items, next }
   }
 }
 

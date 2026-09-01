@@ -140,6 +140,11 @@ pub(crate) struct SessionPacketContext {
   policy: SessionPolicy,
   runtime: crate::runtime::RuntimeClient,
   clock: Arc<dyn crate::storage::receipt::WallClock>,
+  /// Injected entropy for per-session identifiers (G9-07).
+  entropy: Arc<dyn crate::api::Entropy>,
+  /// The typed event hub: session and route transitions emit through it
+  /// (G9-07).
+  events: Arc<crate::node::EventHub>,
   forwarding: super::forward::ForwardingTable,
   route_policy: Option<QualifiedTag>,
   sessions: SessionTable,
@@ -155,6 +160,7 @@ impl SessionPacketContext {
   pub(crate) fn new(
     local: NodeId, registry: Arc<ExtensionRegistry>, policy: SessionPolicy,
     runtime: crate::runtime::RuntimeClient, clock: Arc<dyn crate::storage::receipt::WallClock>,
+    entropy: Arc<dyn crate::api::Entropy>, events: Arc<crate::node::EventHub>,
     route_policy: Option<QualifiedTag>, sessions: SessionTable, routes_clone: RouteTable,
     forwarding_capacity: usize, parser_limits: crate::protocol::CborLimits,
   ) -> Self {
@@ -164,6 +170,8 @@ impl SessionPacketContext {
       policy,
       runtime,
       clock,
+      entropy,
+      events,
       forwarding: super::forward::new_table(),
       route_policy,
       sessions,
@@ -408,6 +416,18 @@ impl BoundedReceiver {
   }
 }
 
+/// The public session metadata allocated at registration (G9-07): the
+/// server-allocated id, the per-peer replacement generation, the
+/// attachment endpoint (dial target for outbound, accepting listener for
+/// inbound), and the session-scoped selected features.
+#[derive(Clone)]
+pub(crate) struct SessionMeta {
+  pub(crate) id: crate::SessionId,
+  pub(crate) generation: u64,
+  pub(crate) endpoint: crate::Endpoint,
+  pub(crate) features: Vec<crate::FeatureTag>,
+}
+
 /// One established session's send-side handle in the session table.
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
@@ -418,6 +438,8 @@ pub(crate) struct SessionEntry {
   /// context) can enforce typed backpressure.
   pub(super) pending_admissions: usize,
   pub(super) clock: Arc<dyn crate::storage::receipt::WallClock>,
+  /// The public session metadata (G9-07).
+  pub(crate) meta: Arc<SessionMeta>,
   alive: Arc<AtomicBool>,
   direction: DialDirection,
   retire: watch::Sender<()>,
@@ -434,11 +456,15 @@ impl SessionEntry {
 /// shuts down: spawns the writer task, registers the session in the table
 /// (retiring any previous session to the same peer), and serves incoming
 /// packet frames.
+///
+/// The argument list mirrors one session's node-shared collaborators; no
+/// subset forms a meaningful grouping.
+#[allow(clippy::too_many_arguments)]
 #[instrument(name = "session", skip_all, fields(peer = %session.peer()))]
 pub(crate) async fn run_session(
   connection: Connection, session: EstablishedSession, context: Arc<SessionPacketContext>,
   table: SessionTable, shutdown: watch::Receiver<()>, direction: DialDirection,
-  registered: Option<oneshot::Sender<()>>,
+  attachment: crate::Endpoint, registered: Option<oneshot::Sender<()>>,
 ) {
   let peer = session.peer().clone();
   let (writer, mut reader) = connection.into_split();
@@ -461,11 +487,27 @@ pub(crate) async fn run_session(
     context.clock.as_ref(),
   )));
   let (ping_tx, ping_rx) = watch::channel(());
+  let session_id = match crate::SessionId::generate(context.entropy.as_ref()) {
+    Ok(id) => id,
+    Err(_) => {
+      alive.store(false, Ordering::SeqCst);
+      if let Some(registered) = registered {
+        let _ = registered.send(());
+      }
+      return;
+    }
+  };
   let entry = SessionEntry {
     frames: frames.clone(),
     pending_acks: Arc::clone(&pending_acks),
     pending_admissions: context.policy.pending_admissions,
     clock: context.clock.clone(),
+    meta: Arc::new(SessionMeta {
+      id: session_id,
+      generation: 0, // resolved against the previous entry at insert
+      endpoint: attachment,
+      features: session.selected_features().to_vec(),
+    }),
     alive: Arc::clone(&alive),
     direction,
     retire: retire_tx,
@@ -505,6 +547,17 @@ pub(crate) async fn run_session(
       }
     };
     if replace {
+      let generation = guard
+        .get(&peer)
+        .map(|previous| previous.meta.generation.saturating_add(1))
+        .unwrap_or(1);
+      let entry = SessionEntry {
+        meta: Arc::new(SessionMeta {
+          generation,
+          ..(*entry.meta).clone()
+        }),
+        ..entry
+      };
       let previous = guard.insert(peer.clone(), entry);
       drop(guard);
       // The dialing caller waits on this signal, so its first packet
@@ -512,6 +565,9 @@ pub(crate) async fn run_session(
       if let Some(registered) = registered {
         let _ = registered.send(());
       }
+      context
+        .events
+        .emit(crate::SessionChanged::new(peer.clone()));
       if let Some(previous) = previous {
         debug!("session replaced; draining the previous connection");
         retire(&previous);
@@ -568,11 +624,18 @@ pub(crate) async fn run_session(
   alive.store(false, Ordering::SeqCst);
   // Remove this session's entry when it is still the registered one, so a
   // dead entry cannot block a later reconnection from either direction.
+  let mut removed = false;
   if let Ok(mut sessions) = table.lock()
     && let Some(current) = sessions.get(&peer)
     && !current.alive()
   {
     sessions.remove(&peer);
+    removed = true;
+  }
+  if removed {
+    context
+      .events
+      .emit(crate::SessionChanged::new(peer.clone()));
   }
   writer_task.abort();
   // Pending admissions and in-flight incoming bodies observe the
@@ -1151,6 +1214,7 @@ fn resolve_ack(ack: AckFrame, pending_acks: &PendingAcks) {
 pub(crate) async fn run_outbound(
   entry: SessionEntry, local: NodeId, request: OutboundRequest, routes: RouteTable,
   force_routed: bool, trace: Option<crate::routing::trace::TraceSink>,
+  events: Arc<crate::node::EventHub>,
 ) {
   // The supervisor resolves selector targets before spawning the pump; a
   // matching-node request that reaches this point is an internal error.
@@ -1171,6 +1235,9 @@ pub(crate) async fn run_outbound(
       update_route(&routes, &trace_id, |record| {
         record.update(RouteState::Failed($kind));
       });
+      events.emit(crate::RouteChanged::new(crate::RouteHandle::from_trace_id(
+        trace_id.clone(),
+      )));
       record_terminal_trace(
         &trace,
         &trace_id,
@@ -1290,6 +1357,9 @@ pub(crate) async fn run_outbound(
   update_route(&routes, &trace_id, |record| {
     record.update(RouteState::Streaming);
   });
+  events.emit(crate::RouteChanged::new(crate::RouteHandle::from_trace_id(
+    trace_id.clone(),
+  )));
 
   let mut sequence = 0_u64;
   let mut body = request.body;
@@ -1362,6 +1432,9 @@ pub(crate) async fn run_outbound(
     update_route(&routes, &trace_id, |record| {
       record.update(RouteState::Delivered);
     });
+    events.emit(crate::RouteChanged::new(crate::RouteHandle::from_trace_id(
+      trace_id.clone(),
+    )));
     record_terminal_trace(
       &trace,
       &trace_id,
@@ -1818,7 +1891,7 @@ mod pending_admission_tests {
 
   use super::{
     BoundedSender, DialDirection, PendingAck, PendingAcks, QueueState, RouteTable, SessionEntry,
-    run_outbound,
+    SessionMeta, run_outbound,
   };
   use crate::{
     ErrorKind, NodeId, PacketMetadata, PacketTarget, ProtocolTag, TraceId, packet::StaticBody,
@@ -1855,6 +1928,12 @@ mod pending_admission_tests {
       pending_acks,
       pending_admissions,
       clock: Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(1))),
+      meta: Arc::new(SessionMeta {
+        id: crate::SessionId::parse("session_000000000000000000001").unwrap(),
+        generation: 1,
+        endpoint: crate::Endpoint::parse("wss://saturated:9000").unwrap(),
+        features: Vec::new(),
+      }),
       alive: Arc::new(AtomicBool::new(true)),
       direction: DialDirection::Outgoing,
       retire,
@@ -1880,7 +1959,16 @@ mod pending_admission_tests {
       ack_notify: ack_tx,
     };
     let routes: RouteTable = Arc::new(Mutex::new(BTreeMap::new()));
-    run_outbound(entry, node(1), request, routes, false, None).await;
+    run_outbound(
+      entry,
+      node(1),
+      request,
+      routes,
+      false,
+      None,
+      Arc::new(crate::node::EventHub::new()),
+    )
+    .await;
     assert_eq!(
       ack_rx.await.ok().and_then(|outcome| outcome.err()),
       Some(ErrorKind::Overloaded)

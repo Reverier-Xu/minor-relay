@@ -65,10 +65,11 @@ pub use label::{LabelKey, LabelSet, LabelValue};
 pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeHandle};
 pub use operation::{
   Command, ConnectMember, CreateCluster, DisconnectPeer, Event, GetLocalNode, GetMember,
-  GetNodeStatus, GetRoute, IdentityReplaced, JoinCluster, LeaveCluster, Listen, NodeRevoked,
-  PageMembers, PageTopology, PageTrust, PutResource, Query, RemoveResource, ResourceChanged,
-  ResourceWrite, RevokeNode, RotateJoinCredential, SelectResources, Shutdown, StartRecovery,
-  StopListener, UpdateNodeMetadata, WaitForShutdown,
+  GetNodeStatus, GetResource, GetRoute, IdentityReplaced, JoinCluster, LeaveCluster, Listen,
+  MemberChanged, NodeRevoked, PageListeners, PageMembers, PageResources, PageSessions,
+  PageTopology, PageTrust, PutResource, Query, RecoveryChanged, RemoveResource, ResourceChanged,
+  ResourceWrite, RevokeNode, RotateJoinCredential, RouteChanged, SelectResources, SessionChanged,
+  Shutdown, StartRecovery, StopListener, UpdateNodeMetadata, WaitForShutdown,
 };
 pub use packet::{
   DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,
@@ -91,11 +92,11 @@ pub use transport::{
   ChannelBinding, Discovery, DiscoveryPage, Endpoint, EndpointCandidate, PageCursor,
 };
 pub use view::{
-  AdmissionView, ClusterView, ConnectivityStatus, LeaveOutcome, ListenerView, LocalNodeView,
-  MemberPage, MemberView, NodeMetadataPatch, NodeStatus, PageSpec, RecoveryView,
+  AdmissionView, ClusterView, ConnectivityStatus, LeaveOutcome, ListenerPage, ListenerView,
+  LocalNodeView, MemberPage, MemberView, NodeMetadataPatch, NodeStatus, PageSpec, RecoveryView,
   ReplaceIdentityAndDeleteOldCoreMetadata, ResourceMutationView, ResourcePage, ResourceView,
-  RevokeOutcome, ShutdownOutcome, ShutdownReason, TopologyEdgeView, TopologyPage, TrustPage,
-  TrustStatus, TrustedIdentityView,
+  RevokeOutcome, SessionFeatureView, SessionPage, SessionView, ShutdownOutcome, ShutdownReason,
+  TopologyEdgeView, TopologyPage, TrustPage, TrustStatus, TrustedIdentityView,
 };
 
 pub mod extension {

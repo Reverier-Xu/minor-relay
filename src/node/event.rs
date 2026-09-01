@@ -71,6 +71,7 @@ pub enum EventReceive<E> {
 /// The hub holds each subscription's sender strongly so the channel stays
 /// open for the subscriber's receiver; a sender whose receiver count
 /// drops to zero is pruned on the next emission or subscription.
+#[derive(Debug, Default)]
 pub(crate) struct EventHub {
   subscribers: std::sync::Mutex<
     std::collections::HashMap<std::any::TypeId, Vec<Box<dyn std::any::Any + Send + Sync>>>,
@@ -79,9 +80,7 @@ pub(crate) struct EventHub {
 
 impl EventHub {
   pub(crate) fn new() -> Self {
-    Self {
-      subscribers: std::sync::Mutex::new(std::collections::HashMap::new()),
-    }
+    Self::default()
   }
 
   /// Locks the subscriber map, recovering from a poisoned lock: the map

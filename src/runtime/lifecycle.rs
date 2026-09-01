@@ -105,6 +105,25 @@ pub(crate) enum Control {
     limit: usize,
     reply: oneshot::Sender<Result<crate::ResourcePage>>,
   },
+  GetResource {
+    name: crate::ResourceName,
+    reply: oneshot::Sender<Result<Option<crate::ResourceView>>>,
+  },
+  PageResources {
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::ResourcePage>>,
+  },
+  PageListeners {
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::ListenerPage>>,
+  },
+  PageSessions {
+    cursor: Option<crate::PageCursor>,
+    limit: usize,
+    reply: oneshot::Sender<Result<crate::SessionPage>>,
+  },
   PageTopology {
     cursor: Option<crate::PageCursor>,
     limit: usize,
@@ -302,6 +321,54 @@ impl RuntimeClient {
     self
       .send_command(|reply| Control::SelectResources {
         selector,
+        cursor,
+        limit,
+        reply,
+      })
+      .await
+  }
+
+  /// Pages every live resource winner in canonical name order (G9-07).
+  pub(crate) async fn page_resources(
+    &self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::ResourcePage> {
+    self
+      .send_command(|reply| Control::PageResources {
+        cursor,
+        limit,
+        reply,
+      })
+      .await
+  }
+
+  /// Reads the live winner of one named resource (G9-07).
+  pub(crate) async fn get_resource(
+    &self, name: crate::ResourceName,
+  ) -> Result<Option<crate::ResourceView>> {
+    self
+      .send_command(|reply| Control::GetResource { name, reply })
+      .await
+  }
+
+  /// Pages the node's bound listeners (G9-07).
+  pub(crate) async fn page_listeners(
+    &self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::ListenerPage> {
+    self
+      .send_command(|reply| Control::PageListeners {
+        cursor,
+        limit,
+        reply,
+      })
+      .await
+  }
+
+  /// Pages the live authenticated sessions (G9-07).
+  pub(crate) async fn page_sessions(
+    &self, cursor: Option<crate::PageCursor>, limit: usize,
+  ) -> Result<crate::SessionPage> {
+    self
+      .send_command(|reply| Control::PageSessions {
         cursor,
         limit,
         reply,
