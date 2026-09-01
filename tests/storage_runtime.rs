@@ -54,6 +54,10 @@ const FRESH_START_EVENTS: &[&str] = &[
   "get",
   "scan",
   "commit",
+  // The leave-intent discovery read closes startup (T-G09-06): a pending
+  // leave resumes before the node serves.
+  "snapshot",
+  "get",
 ];
 
 struct Providers {
