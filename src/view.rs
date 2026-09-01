@@ -361,6 +361,35 @@ impl ResourcePage {
   }
 }
 
+/// The outcome of one local resource mutation (T-G09-03/05): the accepted
+/// signed candidate plus whether that candidate is the register's current
+/// tuple winner. Acceptance is not a promise of winning or staying
+/// current; a losing candidate stays harmless.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceMutationView {
+  accepted: ResourceView,
+  current_winner: bool,
+}
+
+impl ResourceMutationView {
+  /// The accepted candidate as committed (or offered) locally.
+  pub fn accepted(&self) -> &ResourceView {
+    &self.accepted
+  }
+
+  /// Whether the accepted candidate is the register's current winner.
+  pub fn is_current_winner(&self) -> bool {
+    self.current_winner
+  }
+
+  pub(crate) fn new(accepted: ResourceView, current_winner: bool) -> Self {
+    Self {
+      accepted,
+      current_winner,
+    }
+  }
+}
+
 /// One public topology edge: a directed session between two members.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologyEdgeView {

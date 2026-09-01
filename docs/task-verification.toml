@@ -723,14 +723,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G09-03"
 verification_id = "VERIFY-G09-03"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G09-03"
 owner_task = "T-G09-03"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g09-03-resource-operations.sh"]
 timeout_seconds = 1800
 
 [[task]]

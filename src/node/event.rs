@@ -62,6 +62,82 @@ pub enum EventReceive<E> {
   Closed,
 }
 
+/// The runtime event hub (T-G09-03): one typed subscriber set per event
+/// type. Events are transient — an emission with no live subscriber is
+/// dropped, a lagging subscriber observes `Lagged` and must re-read
+/// through the paged queries, and nothing is retained for replay after
+/// restart.
+///
+/// The hub holds each subscription's sender strongly so the channel stays
+/// open for the subscriber's receiver; a sender whose receiver count
+/// drops to zero is pruned on the next emission or subscription.
+pub(crate) struct EventHub {
+  subscribers: std::sync::Mutex<
+    std::collections::HashMap<std::any::TypeId, Vec<Box<dyn std::any::Any + Send + Sync>>>,
+  >,
+}
+
+impl EventHub {
+  pub(crate) fn new() -> Self {
+    Self {
+      subscribers: std::sync::Mutex::new(std::collections::HashMap::new()),
+    }
+  }
+
+  /// Locks the subscriber map, recovering from a poisoned lock: the map
+  /// holds only plain subscriber vectors, so a panicking emitter cannot
+  /// leave it inconsistent.
+  fn lock(
+    &self,
+  ) -> std::sync::MutexGuard<
+    '_,
+    std::collections::HashMap<std::any::TypeId, Vec<Box<dyn std::any::Any + Send + Sync>>>,
+  > {
+    self
+      .subscribers
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+  }
+
+  /// Subscribes with an independent bounded channel per subscription, so
+  /// one slow subscriber's lag never backpressures emitters or other
+  /// subscribers.
+  pub(crate) fn subscribe<E: Event>(&self, options: EventOptions) -> EventSubscription<E> {
+    let (sender, receiver) = broadcast::channel(options.capacity);
+    let mut subscribers = self.lock();
+    let entries = subscribers.entry(std::any::TypeId::of::<E>()).or_default();
+    Self::prune::<E>(entries);
+    entries.push(Box::new(std::sync::Arc::new(sender)));
+    EventSubscription { receiver }
+  }
+
+  /// Emits one event to every live subscriber of its type; a subscriber
+  /// whose channel is full lags instead of blocking the emitter.
+  pub(crate) fn emit<E: Event>(&self, event: E) {
+    let mut subscribers = self.lock();
+    let Some(entries) = subscribers.get_mut(&std::any::TypeId::of::<E>()) else {
+      return;
+    };
+    for entry in entries.iter() {
+      if let Some(sender) = entry.downcast_ref::<std::sync::Arc<broadcast::Sender<E>>>() {
+        // A send error means this channel has no active receivers; the
+        // transient event is gone and the next retain prunes the sender.
+        let _ = sender.send(event.clone());
+      }
+    }
+    Self::prune::<E>(entries);
+  }
+
+  /// Drops senders whose subscribers have all gone away.
+  fn prune<E: Event>(entries: &mut Vec<Box<dyn std::any::Any + Send + Sync>>) {
+    entries.retain(|entry| {
+      entry
+        .downcast_ref::<std::sync::Arc<broadcast::Sender<E>>>()
+        .is_some_and(|sender| sender.receiver_count() > 0)
+    });
+  }
+}
+
 fn validate_capacity(value: usize) -> Result<()> {
   if value == 0 {
     return Err(Error::invalid_input("event subscription capacity"));

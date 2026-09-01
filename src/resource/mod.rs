@@ -633,6 +633,30 @@ impl ResourceRecordV1 {
   }
 }
 
+/// Validates that a candidate with this name and labels fits the
+/// canonical record envelope under any stamp (T-G09-03): the probe encodes
+/// the full wire shape with maximal-width timestamp/rank fields and a
+/// placeholder signature, so an accepted write can never exceed the record
+/// budget when the runtime stamps and signs it.
+pub(crate) fn check_write_shape(name: &ResourceName, labels: &ResourceLabels) -> Result<()> {
+  let cluster = ClusterId::parse("cluster_000000000000000000001")?;
+  let writer = NodeId::parse("node_000000000000000000001")?;
+  let probe = ResourceRecordV1::seal(
+    cluster,
+    name.clone(),
+    labels.resource_type().clone(),
+    labels.uri().clone(),
+    labels.custom_labels().clone(),
+    u64::MAX,
+    writer,
+    u64::MAX,
+    true,
+    Signature::from_bytes([0; 64]),
+  )?;
+  probe.encode()?;
+  Ok(())
+}
+
 pub(crate) mod page;
 pub(crate) mod retention;
 pub(crate) mod select;

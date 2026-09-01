@@ -57,6 +57,7 @@ impl NodeBuilder {
       )?;
     }
     let extensions = Arc::new(extensions);
+    let events = Arc::new(crate::node::EventHub::new());
     let client = {
       let (packet_tx, packet_rx) =
         tokio::sync::mpsc::channel(crate::runtime::PACKET_CHANNEL_CAPACITY);
@@ -74,12 +75,13 @@ impl NodeBuilder {
           extensions: extensions.clone(),
           sessions: Default::default(),
           routes: Default::default(),
+          events: Arc::clone(&events),
           runtime_seed: None,
         },
         (packet_tx, packet_rx),
       )
       .await?
     };
-    Ok(NodeHandle::new(client, self.entropy, extensions))
+    Ok(NodeHandle::new(client, self.entropy, extensions, events))
   }
 }

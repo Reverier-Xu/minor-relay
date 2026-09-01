@@ -279,6 +279,81 @@ impl Query for SelectResources {
   type Output = crate::ResourcePage;
 }
 
+/// One caller-authored resource write intent (T-G09-03): the stable name
+/// plus its reserved and custom labels. Core stamps the wall-clock tuple
+/// and signs the candidate record when the command executes; the caller
+/// never supplies a timestamp, writer, or signature.
+pub struct ResourceWrite {
+  name: crate::ResourceName,
+  labels: crate::ResourceLabels,
+}
+
+impl ResourceWrite {
+  pub fn new(name: crate::ResourceName, labels: crate::ResourceLabels) -> Self {
+    Self { name, labels }
+  }
+
+  pub(crate) const fn name(&self) -> &crate::ResourceName {
+    &self.name
+  }
+
+  pub(crate) const fn labels(&self) -> &crate::ResourceLabels {
+    &self.labels
+  }
+}
+
+/// Commits one resource write intent as a signed candidate record
+/// (T-G09-03). Acceptance never promises the candidate becomes or stays
+/// the tuple winner; the outcome view reports the accepted record and
+/// whether it is the current winner.
+pub struct PutResource {
+  write: ResourceWrite,
+}
+
+impl PutResource {
+  /// Validates the write's encoded shape before it reaches the runtime:
+  /// a candidate that can never fit the canonical record envelope is
+  /// rejected here, before any signing or storage work.
+  pub fn new(record: ResourceWrite) -> crate::Result<Self> {
+    crate::resource::check_write_shape(record.name(), record.labels())?;
+    Ok(Self { write: record })
+  }
+
+  pub(crate) fn into_write(self) -> ResourceWrite {
+    self.write
+  }
+}
+
+impl private::Sealed for PutResource {}
+
+impl Command for PutResource {
+  type Output = crate::ResourceMutationView;
+}
+
+/// One committed local resource candidate became visible in the catalog
+/// (T-G09-03). Emitted exactly once after the candidate's durable commit;
+/// the command's [`crate::ResourceMutationView`] reports whether that
+/// candidate is the current winner. Aborted and indeterminate candidates
+/// emit nothing, and restart or maintenance never replays the event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceChanged {
+  resource: crate::ResourceName,
+}
+
+impl ResourceChanged {
+  pub fn resource(&self) -> &crate::ResourceName {
+    &self.resource
+  }
+
+  pub(crate) const fn new(resource: crate::ResourceName) -> Self {
+    Self { resource }
+  }
+}
+
+impl private::Sealed for ResourceChanged {}
+
+impl Event for ResourceChanged {}
+
 /// Pages the public topology edges (G5-06).
 pub struct PageTopology {
   page: crate::PageSpec,

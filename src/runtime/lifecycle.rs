@@ -127,6 +127,10 @@ pub(crate) enum Control {
     patch: crate::NodeMetadataPatch,
     reply: oneshot::Sender<Result<crate::MemberView>>,
   },
+  PutResource {
+    write: crate::ResourceWrite,
+    reply: oneshot::Sender<Result<crate::ResourceMutationView>>,
+  },
 }
 
 #[derive(Clone)]
@@ -342,6 +346,15 @@ impl RuntimeClient {
         patch,
         reply,
       })
+      .await
+  }
+
+  /// Commits one resource write intent as a signed candidate (G9-03).
+  pub(crate) async fn put_resource(
+    &self, write: crate::ResourceWrite,
+  ) -> Result<crate::ResourceMutationView> {
+    self
+      .send_command(|reply| Control::PutResource { write, reply })
       .await
   }
 

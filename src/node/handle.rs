@@ -16,6 +16,7 @@ pub struct NodeHandle {
   runtime: RuntimeClient,
   entropy: Arc<dyn Entropy>,
   extensions: Arc<ExtensionRegistry>,
+  events: Arc<crate::node::EventHub>,
 }
 
 /// Executes one typed command against the runtime. Each command implements
@@ -178,6 +179,14 @@ impl DispatchCommand for UpdateNodeMetadata {
   }
 }
 
+impl DispatchCommand for crate::PutResource {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let write = crate::PutResource::into_write(self);
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.put_resource(write).await })
+  }
+}
+
 impl DispatchQuery for GetRoute {
   fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
     let handle = self.handle().clone();
@@ -189,11 +198,13 @@ impl DispatchQuery for GetRoute {
 impl NodeHandle {
   pub(crate) fn new(
     runtime: RuntimeClient, entropy: Arc<dyn Entropy>, extensions: Arc<ExtensionRegistry>,
+    events: Arc<crate::node::EventHub>,
   ) -> Self {
     Self {
       runtime,
       entropy,
       extensions,
+      events,
     }
   }
 
@@ -254,17 +265,13 @@ impl NodeHandle {
     query.dispatch(&self.runtime).await
   }
 
-  /// Subscribes to node events.
-  ///
-  /// TODO(M9): the typed event bus is not wired until the M9 facade
-  /// closure; this call is part of the reserved public surface and
-  /// currently returns `Unsupported`. `EventOptions` validation stays in
-  /// place so the wiring lands without API changes.
+  /// Subscribes to node events (T-G09-03). Subscriptions are bounded and
+  /// transient: a lagging subscriber observes [`EventReceive::Lagged`] and
+  /// must re-read through the paged queries.
   pub fn events<E: Event>(&self, options: EventOptions) -> Result<EventSubscription<E>> {
-    let _ = options;
     if self.runtime.status() != NodeStatus::Running {
       return Err(Error::shutting_down("node events"));
     }
-    Err(Error::unsupported("node events"))
+    Ok(self.events.subscribe::<E>(options))
   }
 }

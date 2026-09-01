@@ -32,6 +32,13 @@ pub(crate) fn to_millis(time: SystemTime) -> u64 {
     .unwrap_or(0)
 }
 
+/// Current host wall-clock milliseconds; resource writes stamp their
+/// signed tuple with this host reading (roadmap: host `SystemTime` is the
+/// only time authority).
+pub(crate) fn now_millis() -> u64 {
+  to_millis(SystemTime::now())
+}
+
 /// Rebuilds a [`SystemTime`] from stored UNIX milliseconds.
 pub(crate) fn from_millis(millis: u64) -> SystemTime {
   UNIX_EPOCH + std::time::Duration::from_millis(millis)

@@ -88,6 +88,8 @@ pub(crate) struct RuntimeDependencies {
   pub(crate) transport: Arc<dyn Transport>,
   pub(crate) sessions: SessionTable,
   pub(crate) routes: RouteTable,
+  /// The typed event hub shared with every node handle (G9-03).
+  pub(crate) events: Arc<crate::node::EventHub>,
   /// The 32-byte runtime seed drawn once at startup, before identity
   /// provisioning. Deliberately reserved and pinned by the G1 lifecycle
   /// entropy-sequence test; future runtime lanes consume it from here
@@ -384,6 +386,10 @@ async fn supervise(
         reply,
       } => {
         let result = supervisor.update_node_metadata(expected_revision, patch).await;
+        let _ = reply.send(result);
+      }
+      Control::PutResource { write, reply } => {
+        let result = supervisor.put_resource(write).await;
         let _ = reply.send(result);
       }
         }
@@ -1245,6 +1251,89 @@ impl Supervisor {
     )
     .await?;
     crate::membership::member_view(&updated, crate::ConnectivityStatus::Connected)
+  }
+
+  /// Commits one resource write intent as a signed candidate record
+  /// (`PutResource`, T-G09-03): the supervisor stamps the host wall-clock
+  /// tuple, signs through the node's key provider, and commits the whole
+  /// record in one conditional transaction. A committed winner emits
+  /// exactly one [`crate::ResourceChanged`] after durability; an accepted
+  /// but superseded candidate emits nothing, and an indeterminate commit
+  /// reports `CommitUnknown` without an event.
+  async fn put_resource(
+    &mut self, write: crate::ResourceWrite,
+  ) -> Result<crate::ResourceMutationView> {
+    self.require_unblocked()?;
+    let context = self.context()?;
+    // The writer's descriptor anchors the record's signature: publish it
+    // before the commit so peers can verify this candidate as soon as it
+    // arrives (a writing member that never listens must still propagate).
+    self.ensure_self_descriptor().await?;
+    let cluster = crate::identity::genesis::local_cluster(&context)
+      .await?
+      .ok_or_else(|| Error::not_ready("local cluster"))?
+      .cluster()
+      .clone();
+    let writer = context.identity().node().clone();
+    let timestamp_millis = crate::time::now_millis();
+    let labels = write.labels();
+    let body = crate::resource::ResourceRecordV1::encode_signed_body(
+      &cluster,
+      write.name(),
+      labels.resource_type(),
+      labels.uri(),
+      labels.custom_labels(),
+      timestamp_millis,
+      &writer,
+      0,
+      false,
+    )?;
+    let signature = self
+      .dependencies
+      .keys
+      .sign(
+        context.identity().handle(),
+        &crate::identity::signature::signature_message(
+          crate::resource::RESOURCE_RECORD_V1_DOMAIN,
+          &body,
+        ),
+      )
+      .await?;
+    let record = crate::resource::ResourceRecordV1::seal(
+      cluster,
+      write.name().clone(),
+      labels.resource_type().clone(),
+      labels.uri().clone(),
+      labels.custom_labels().clone(),
+      timestamp_millis,
+      writer,
+      0,
+      false,
+      signature,
+    )?;
+    let accepted = crate::resource::select::resource_view(&record);
+    match crate::resource::store::commit_record_ctx(
+      context.store(),
+      self.dependencies.entropy.as_ref(),
+      &record,
+    )
+    .await?
+    {
+      crate::resource::store::ResourceCommitOutcome::Installed(_) => {
+        self
+          .dependencies
+          .events
+          .emit(crate::ResourceChanged::new(record.name().clone()));
+        Ok(crate::ResourceMutationView::new(accepted, true))
+      }
+      crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
+        Ok(crate::ResourceMutationView::new(accepted, false))
+      }
+      crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => Err(Error::provider(
+        crate::ProviderErrorKind::CommitUnknown,
+        crate::ProviderErrorContext::StorageCommit,
+      )),
+    }
   }
 
   /// The public recovery observation: whether every known online member
