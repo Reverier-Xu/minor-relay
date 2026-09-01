@@ -66,8 +66,9 @@ pub use node::{EventOptions, EventReceive, EventSubscription, NodeBuilder, NodeH
 pub use operation::{
   Command, ConnectMember, CreateCluster, DisconnectPeer, Event, GetLocalNode, GetMember,
   GetNodeStatus, GetRoute, JoinCluster, Listen, NodeRevoked, PageMembers, PageTopology, PageTrust,
-  PutResource, Query, ResourceChanged, ResourceWrite, RevokeNode, RotateJoinCredential,
-  SelectResources, Shutdown, StartRecovery, StopListener, UpdateNodeMetadata, WaitForShutdown,
+  PutResource, Query, RemoveResource, ResourceChanged, ResourceWrite, RevokeNode,
+  RotateJoinCredential, SelectResources, Shutdown, StartRecovery, StopListener, UpdateNodeMetadata,
+  WaitForShutdown,
 };
 pub use packet::{
   DeliveryAck, IncomingPacket, OutboundPacket, PacketBody, PacketMetadata, PacketPolicy,

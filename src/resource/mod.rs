@@ -248,6 +248,15 @@ impl ResourceVersion {
     &self.digest
   }
 
+  /// Whether this observed version names exactly `record`'s tuple
+  /// (T-G09-05): timestamp, writer, removal flag, and digest all equal.
+  pub(crate) fn matches_record(&self, record: &ResourceRecordV1) -> bool {
+    self.timestamp == record.timestamp()
+      && self.writer == *record.writer()
+      && self.removal == record.removed()
+      && self.digest == record.digest
+  }
+
   /// Extracts the public version view of one signed record.
   pub(crate) fn from_record(record: &ResourceRecordV1) -> Self {
     Self {
@@ -493,7 +502,6 @@ impl ResourceRecordV1 {
     &self.writer
   }
 
-  #[allow(dead_code)]
   pub(crate) const fn removal_rank(&self) -> u64 {
     self.removal_rank
   }

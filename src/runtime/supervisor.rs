@@ -400,6 +400,14 @@ async fn supervise(
         let result = supervisor.revoke_node(subject, expected_key).await;
         let _ = reply.send(result);
       }
+      Control::RemoveResource {
+        name,
+        expected,
+        reply,
+      } => {
+        let result = supervisor.remove_resource(name, expected).await;
+        let _ = reply.send(result);
+      }
         }
       }
       request = packets.recv() => {
@@ -1345,6 +1353,112 @@ impl Supervisor {
       }
       crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
         Ok(crate::ResourceMutationView::new(accepted, false))
+      }
+      crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => Err(Error::provider(
+        crate::ProviderErrorKind::CommitUnknown,
+        crate::ProviderErrorContext::StorageCommit,
+      )),
+    }
+  }
+
+  /// Creates signed removal evidence for one resource (`RemoveResource`,
+  /// T-G09-05): only when the stored winner still equals the caller's
+  /// observed version exactly and the removal strictly wins the tuple.
+  /// The removal record carries the winner's labels (removal evidence
+  /// stays comparable), and the operation touches core metadata only —
+  /// the resource URI is never followed and no caller object is deleted
+  /// (SC-G09-P0-15..17).
+  async fn remove_resource(
+    &mut self, name: crate::ResourceName, expected: crate::ResourceVersion,
+  ) -> Result<crate::ResourceMutationView> {
+    self.require_unblocked()?;
+    let context = self.context()?;
+    // The writer's descriptor anchors the removal's signature for the
+    // same propagation reason as a put.
+    self.ensure_self_descriptor().await?;
+    let store = context.store();
+    let stored = crate::resource::store::read_record_ctx(store, &name)
+      .await?
+      .ok_or_else(|| Error::not_found("resource"))?;
+    if !expected.matches_record(&stored) {
+      // A stale observation never becomes a newer wall-clock winner.
+      return Err(Error::conflict("resource version"));
+    }
+    if stored.removed() {
+      // The exact removal already won: idempotent, no new transition.
+      return Ok(crate::ResourceMutationView::new(
+        crate::resource::select::resource_view(&stored),
+        true,
+      ));
+    }
+    let cluster = crate::identity::genesis::local_cluster(&context)
+      .await?
+      .ok_or_else(|| Error::not_ready("local cluster"))?
+      .cluster()
+      .clone();
+    let writer = context.identity().node().clone();
+    let timestamp_millis = crate::time::now_millis();
+    let removal_rank = stored.removal_rank() + 1;
+    let body = crate::resource::ResourceRecordV1::encode_signed_body(
+      &cluster,
+      &name,
+      stored.resource_type(),
+      stored.resource_uri(),
+      stored.labels(),
+      timestamp_millis,
+      &writer,
+      removal_rank,
+      true,
+    )?;
+    let signature = self
+      .dependencies
+      .keys
+      .sign(
+        context.identity().handle(),
+        &crate::identity::signature::signature_message(
+          crate::resource::RESOURCE_RECORD_V1_DOMAIN,
+          &body,
+        ),
+      )
+      .await?;
+    let removal = crate::resource::ResourceRecordV1::seal(
+      cluster,
+      name.clone(),
+      stored.resource_type().clone(),
+      stored.resource_uri().clone(),
+      stored.labels().clone(),
+      timestamp_millis,
+      writer,
+      removal_rank,
+      true,
+      signature,
+    )?;
+    if !removal.wins_over(&stored) {
+      // A rolled-back host clock cannot pose as a newer winner: the
+      // removal is refused and the live record stays.
+      return Err(Error::conflict("resource removal clock"));
+    }
+    match crate::resource::store::commit_removal_ctx(
+      store,
+      self.dependencies.entropy.as_ref(),
+      &removal,
+      &stored,
+    )
+    .await?
+    {
+      crate::resource::store::ResourceCommitOutcome::Installed(_) => {
+        self
+          .dependencies
+          .events
+          .emit(crate::ResourceChanged::new(name));
+        Ok(crate::ResourceMutationView::new(
+          crate::resource::select::resource_view(&removal),
+          true,
+        ))
+      }
+      // The register moved between the observation and the commit.
+      crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
+        Err(Error::conflict("resource version"))
       }
       crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => Err(Error::provider(
         crate::ProviderErrorKind::CommitUnknown,

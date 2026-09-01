@@ -488,3 +488,231 @@ async fn restart_preserves_labels_without_event_replay(storage: Arc<dyn StorageF
 
   handle.command(Shutdown::new()).await.unwrap();
 }
+
+/// SC-G09-P0-15: removal requires the exact observed version — a stale
+/// version fails closed and never becomes a newer winner; the exact
+/// removal wins once, emits one event, and is idempotent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g9_remove_resource_requires_the_exact_version() {
+  let node = start_node(
+    0,
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+  )
+  .await;
+  node.handle.command(CreateCluster::new()).await.unwrap();
+  let mut events = node
+    .handle
+    .events::<ResourceChanged>(EventOptions::new())
+    .unwrap();
+
+  let name = resource_name(20);
+  node
+    .handle
+    .command(
+      PutResource::new(ResourceWrite::new(
+        name.clone(),
+        resource_labels("document", 20),
+      ))
+      .unwrap(),
+    )
+    .await
+    .unwrap();
+  // Drain the put's event.
+  let _ = tokio::time::timeout(Duration::from_secs(5), events.recv())
+    .await
+    .unwrap();
+  let stale = node
+    .handle
+    .query(SelectResources::new(
+      Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+      PageSpec::first(8).unwrap(),
+    ))
+    .await
+    .unwrap()
+    .items()[0]
+    .version()
+    .clone();
+
+  // A second write supersedes the first: version one is now stale.
+  node
+    .handle
+    .command(
+      PutResource::new(ResourceWrite::new(
+        name.clone(),
+        resource_labels("blob", 20),
+      ))
+      .unwrap(),
+    )
+    .await
+    .unwrap();
+  let _ = tokio::time::timeout(Duration::from_secs(5), events.recv())
+    .await
+    .unwrap();
+
+  let current = select_names(&node.handle, "relay.woooo.tech/resources/type").await;
+  assert_eq!(current, [name.as_str().to_owned()]);
+  let page = node
+    .handle
+    .query(SelectResources::new(
+      Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+      PageSpec::first(8).unwrap(),
+    ))
+    .await
+    .unwrap();
+  let winner = page.items()[0].version().clone();
+
+  // A stale observed version fails closed: nothing is removed and no
+  // event fires.
+  assert_eq!(
+    node
+      .handle
+      .command(minor_relay::RemoveResource::new(name.clone(), stale))
+      .await
+      .unwrap_err()
+      .kind(),
+    minor_relay::ErrorKind::Conflict,
+    "a stale removal request never wins"
+  );
+  assert!(matches!(
+    events.try_recv().unwrap(),
+    EventReceive::Empty | EventReceive::Closed
+  ));
+  // An unknown name fails NotFound.
+  assert_eq!(
+    node
+      .handle
+      .command(minor_relay::RemoveResource::new(
+        resource_name(21),
+        winner.clone()
+      ))
+      .await
+      .unwrap_err()
+      .kind(),
+    minor_relay::ErrorKind::NotFound,
+  );
+
+  // The exact version removes the resource: the removal wins the tuple
+  // and the resource leaves selection.
+  let outcome = node
+    .handle
+    .command(minor_relay::RemoveResource::new(
+      name.clone(),
+      winner.clone(),
+    ))
+    .await
+    .unwrap();
+  assert!(outcome.is_current_winner());
+  assert!(outcome.accepted().version().is_removal());
+  let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+    .await
+    .unwrap()
+    .unwrap();
+  match event {
+    EventReceive::Item(changed) => assert_eq!(changed.resource(), &name),
+    _ => panic!("expected the removal event"),
+  }
+  assert!(
+    select_names(&node.handle, "relay.woooo.tech/resources/type")
+      .await
+      .is_empty(),
+    "the removed winner leaves the selection"
+  );
+
+  // The pre-removal version is now stale: replaying the request with it
+  // conflicts and emits nothing.
+  assert_eq!(
+    node
+      .handle
+      .command(minor_relay::RemoveResource::new(name.clone(), winner))
+      .await
+      .unwrap_err()
+      .kind(),
+    minor_relay::ErrorKind::Conflict
+  );
+  assert!(matches!(
+    events.try_recv().unwrap(),
+    EventReceive::Empty | EventReceive::Closed
+  ));
+
+  // The exact removal version is idempotent: no new transition, no event.
+  let removal_version = outcome.accepted().version().clone();
+  let again = node
+    .handle
+    .command(minor_relay::RemoveResource::new(name, removal_version))
+    .await
+    .unwrap();
+  assert!(again.is_current_winner());
+  assert!(matches!(
+    events.try_recv().unwrap(),
+    EventReceive::Empty | EventReceive::Closed
+  ));
+
+  let outcome = node.handle.command(Shutdown::new()).await.unwrap();
+  assert_eq!(outcome.reason(), &ShutdownReason::Explicit);
+}
+
+/// SC-G09-P0-16/17: removal touches only the named resource's core
+/// metadata — unrelated resources stay selected, and neither the URI nor
+/// any caller object is consulted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g9_remove_preserves_unrelated_metadata() {
+  let node = start_node(
+    0,
+    Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
+  )
+  .await;
+  node.handle.command(CreateCluster::new()).await.unwrap();
+
+  for seed in [30_u8, 31] {
+    node
+      .handle
+      .command(
+        PutResource::new(ResourceWrite::new(
+          resource_name(seed),
+          resource_labels("document", seed),
+        ))
+        .unwrap(),
+      )
+      .await
+      .unwrap();
+  }
+  let page = node
+    .handle
+    .query(SelectResources::new(
+      Selector::parse("relay.woooo.tech/resources/type=document").unwrap(),
+      PageSpec::first(8).unwrap(),
+    ))
+    .await
+    .unwrap();
+  let target = page
+    .items()
+    .iter()
+    .find(|view| view.name() == &resource_name(30))
+    .unwrap();
+  let version = target.version().clone();
+
+  node
+    .handle
+    .command(minor_relay::RemoveResource::new(resource_name(30), version))
+    .await
+    .unwrap();
+
+  // The unrelated resource is byte-identical and still selected.
+  let remaining = node
+    .handle
+    .query(SelectResources::new(
+      Selector::parse("relay.woooo.tech/resources/type=document").unwrap(),
+      PageSpec::first(8).unwrap(),
+    ))
+    .await
+    .unwrap();
+  assert_eq!(remaining.items().len(), 1);
+  assert_eq!(remaining.items()[0].name(), &resource_name(31));
+  assert_eq!(
+    remaining.items()[0].labels().uri().as_str(),
+    "file:///g9/031"
+  );
+
+  let outcome = node.handle.command(Shutdown::new()).await.unwrap();
+  assert_eq!(outcome.reason(), &ShutdownReason::Explicit);
+}

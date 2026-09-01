@@ -119,6 +119,60 @@ pub(crate) async fn commit_record_ctx(
   }
 }
 
+/// Conditionally commits one signed removal record under an exact-version
+/// precondition (T-G09-05, SC-G09-P0-15): the stored winner must still be
+/// exactly `expected`, and the removal must strictly win the tuple, so a
+/// raced or stale removal can never overwrite a newer record or pose as a
+/// newer wall-clock winner. The commit is one conditional transaction, so
+/// every fault boundary reopens to exactly the old or the new record
+/// without touching unrelated metadata (SC-G09-P0-16).
+pub(crate) async fn commit_removal_ctx(
+  store: &MetadataStore, entropy: &dyn Entropy, record: &ResourceRecordV1,
+  expected: &ResourceRecordV1,
+) -> Result<ResourceCommitOutcome> {
+  debug_assert!(record.removed(), "removal commits carry removal records");
+  let namespace = namespace()?;
+  let key = record_key(record.name());
+  let snapshot = store.snapshot().await?;
+  let Some(existing) = snapshot.get(&namespace, &key).await? else {
+    return Err(Error::not_found("resource record"));
+  };
+  let existing = ResourceRecordV1::decode(existing.as_bytes())?;
+  // The exact observed version must still occupy the register.
+  if &existing != expected {
+    return Ok(ResourceCommitOutcome::Superseded(existing));
+  }
+  // A removal that cannot win the tuple is never committed: the caller
+  // sees a typed conflict instead of a fabricated wall-clock winner.
+  if !record.wins_over(&existing) {
+    return Err(Error::conflict("resource removal tuple"));
+  }
+  let expected = crate::provider::snapshot_expectation(snapshot.as_ref(), &namespace, &key).await?;
+  let transaction = store.prepare_transaction(
+    TransactionId::generate(entropy)?,
+    snapshot.revision().clone(),
+    vec![StoreOperation::Put {
+      namespace,
+      key,
+      expected,
+      value: StoreValue::new(Arc::from(record.encode()?)),
+    }],
+  )?;
+  match store.commit(transaction).await? {
+    crate::CommitOutcome::Committed(receipt) => Ok(ResourceCommitOutcome::Installed(receipt)),
+    crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => {
+      Err(Error::conflict("resource removal"))
+    }
+    crate::CommitOutcome::Unknown {
+      transaction,
+      operation_digest,
+    } => Ok(ResourceCommitOutcome::Indeterminate {
+      transaction,
+      operation_digest,
+    }),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use std::{sync::Arc, time::Duration};

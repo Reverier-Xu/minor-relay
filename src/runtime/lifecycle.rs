@@ -136,6 +136,11 @@ pub(crate) enum Control {
     expected_key: crate::PublicKey,
     reply: oneshot::Sender<Result<crate::RevokeOutcome>>,
   },
+  RemoveResource {
+    name: crate::ResourceName,
+    expected: crate::ResourceVersion,
+    reply: oneshot::Sender<Result<crate::ResourceMutationView>>,
+  },
 }
 
 #[derive(Clone)]
@@ -371,6 +376,19 @@ impl RuntimeClient {
       .send_command(|reply| Control::RevokeNode {
         subject,
         expected_key,
+        reply,
+      })
+      .await
+  }
+
+  /// Creates signed removal evidence for one resource (G9-05).
+  pub(crate) async fn remove_resource(
+    &self, name: crate::ResourceName, expected: crate::ResourceVersion,
+  ) -> Result<crate::ResourceMutationView> {
+    self
+      .send_command(|reply| Control::RemoveResource {
+        name,
+        expected,
         reply,
       })
       .await

@@ -749,14 +749,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G09-05"
 verification_id = "VERIFY-G09-05"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G09-05"
 owner_task = "T-G09-05"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g09-05-resource-removal.sh"]
 timeout_seconds = 1800
 
 [[task]]

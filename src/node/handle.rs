@@ -195,6 +195,14 @@ impl DispatchCommand for crate::RevokeNode {
   }
 }
 
+impl DispatchCommand for crate::RemoveResource {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let (name, expected) = self.into_parts();
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.remove_resource(name, expected).await })
+  }
+}
+
 impl DispatchQuery for GetRoute {
   fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
     let handle = self.handle().clone();

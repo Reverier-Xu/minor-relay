@@ -360,6 +360,33 @@ impl Command for RevokeNode {
   type Output = crate::RevokeOutcome;
 }
 
+/// Creates signed removal evidence for one resource (T-G09-05): the
+/// removal commits only when the locally stored winner still equals
+/// `expected` exactly and the removal strictly wins the tuple, so a stale
+/// request never removes newer metadata and never poses as a newer
+/// wall-clock winner. Removal is limited to core metadata; core never
+/// follows the resource URI or touches the caller's object.
+pub struct RemoveResource {
+  name: crate::ResourceName,
+  expected: crate::ResourceVersion,
+}
+
+impl RemoveResource {
+  pub fn new(name: crate::ResourceName, expected: crate::ResourceVersion) -> Self {
+    Self { name, expected }
+  }
+
+  pub(crate) fn into_parts(self) -> (crate::ResourceName, crate::ResourceVersion) {
+    (self.name, self.expected)
+  }
+}
+
+impl private::Sealed for RemoveResource {}
+
+impl Command for RemoveResource {
+  type Output = crate::ResourceMutationView;
+}
+
 /// A locally revoked identity lost connection and admission authority
 /// (T-G09-04). Emitted once per revocation transition, after the durable
 /// commit; an idempotent repeated revoke emits nothing.
