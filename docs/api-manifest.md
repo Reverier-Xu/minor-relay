@@ -197,7 +197,7 @@ impl Endpoint {
 ```
 
 Every tag and label type has `parse`, `as_str`, and canonical value traits. Reserved resource labels are
-`relay.woooo.tech/resource/type` and `relay.woooo.tech/resource/uri`; caller values remain opaque to core.
+`relay.woooo.tech/resources/type` and `relay.woooo.tech/resources/uri`; caller values remain opaque to core.
 Core never dereferences a `ResourceUri`.
 
 ```rust
