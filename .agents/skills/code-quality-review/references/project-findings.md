@@ -1,5 +1,50 @@
 # minor-relay Verified Findings (G3-era review, 2026-08)
 
+> **G9 gate record (2026-09-01, main @ e64d95d):** all seven verify-g09-* lanes
+> PASS (ran locally 2026-09-01); full Q green on a clean tree (550 passed,
+> 0 failed). Gate closed on its final stable task T-G09-07.
+>
+> ### Delivered in G9 (verified from evidence)
+> - T-G09-01: public ResourceName/ResourceUri/ResourceLabels/ResourceVersion;
+>   G7 golden vector retained as the previous fixture, live/removal vectors
+>   pin the current fixture set; unknown schema/version fail-closed; exact
+>   logical versions across JSON and redb reopens.
+> - T-G09-02: full selector grammar (equality, inequality, in, notin,
+>   existence, non-existence) with escaped values, canonical normalization,
+>   documented bounds; one shared evaluator proven against a reference over
+>   generated label spaces; SelectResources paging with converged-member
+>   parity.
+> - T-G09-03: PutResource (signed candidate, one conditional transaction),
+>   typed event hub, exactly one ResourceChanged per durable committed
+>   winner; writer descriptor published before the commit; maintenance
+>   never erases labels or replays events.
+> - T-G09-04: local revocation family; exact-binding conditional revoke,
+>   session/ admission/ raw-grant enforcement, trust view Revoked status,
+>   JSON crash matrix with consistent reconciliation; content stays
+>   eligible for sync.
+> - T-G09-05: RemoveResource under an exact observed ResourceVersion with
+>   tuple-win requirement; single production caller pinned by the verify
+>   script; unrelated metadata and URI objects untouched.
+> - T-G09-06: journaled leave state machine (intent, replacement key,
+>   identity-swap, bounded wipe, former-key custody, completion) resumable
+>   at startup; ActiveLeave shutdown; IdentityReplaced; JSON crash matrix
+>   over the intent and swap boundaries; JSON/redb restart parity.
+> - T-G09-07: GetResource/PageResources/PageListeners/PageSessions,
+>   caller feature registration into the negotiation registry, remaining
+>   typed events (SessionChanged, MemberChanged, RouteChanged,
+>   RecoveryChanged), external-crate facade proof, and E2E-08.
+>
+> ### G9 notes for the next review
+> - EventHub prune-on-emit is best-effort; a subscriber that never
+>   re-subscribes keeps its sender until the next emit of that type.
+> - The leave wipe keeps storage-internal namespaces (schema, receipt
+>   internals, key custody records) — documented as infrastructure, not
+>   identity metadata; receipt references of wiped records age out
+>   through the retention sweep.
+> - Member descriptors must be first observed at revision 1 before any
+>   owner bump (store revision rule + harness precedent); the facade
+>   tests follow that ordering.
+>
 > **G8 review 2026-08-30 (main @ a6f9b3e, four fresh reviewer lanes +
 > orchestrator):** G8 verdict **PASS**. All five verify-g08-\* lanes PASS;
 > every SC-G08 acceptance phrase mapped to a concrete test (no unmapped
