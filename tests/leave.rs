@@ -16,8 +16,8 @@ use std::{
 use minor_relay::{
   BoxFuture, CreateCluster, Endpoint, Error, ErrorKind, EventOptions, EventReceive,
   IdentityReplaced, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
-  LeaveCluster, Listen, NodeBuilder, PageMembers, PageSpec, PageTrust, PublicKey, PutResource,
-  ReplaceIdentityAndDeleteOldCoreMetadata, ResourceLabels, ResourceName, ResourceUri,
+  LeaveCluster, Listen, NodeBuilder, NodeHandle, PageMembers, PageSpec, PageTrust, PublicKey,
+  PutResource, ReplaceIdentityAndDeleteOldCoreMetadata, ResourceLabels, ResourceName, ResourceUri,
   ResourceWrite, Result, SelectResources, Selector, Shutdown, ShutdownReason, Signature,
   WaitForShutdown,
   extension::{KeyProvider, StorageFactory},
@@ -185,6 +185,26 @@ fn write(name_seed: u8) -> PutResource {
   .unwrap()
 }
 
+/// One resource write with bounded retries: a commit racing the
+/// anti-entropy driver's write transiently refuses with NotReady (the
+/// harness precedent for admission-sensitive commands).
+async fn put_with_retry(handle: &NodeHandle, name_seed: u8) {
+  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  loop {
+    match handle.command(write(name_seed)).await {
+      Ok(_) => return,
+      Err(error) if error.kind() == ErrorKind::NotReady => {
+        assert!(
+          deadline.elapsed() < Duration::from_secs(30),
+          "put never committed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("put failed persistently: {error:?}"),
+    }
+  }
+}
+
 /// SC-G09-P0-18: an acknowledged active leave binds the exact former and
 /// replacement identities, emits one IdentityReplaced, and shuts the node
 /// down with the ActiveLeave reason.
@@ -200,7 +220,7 @@ async fn g9_leave_replaces_identity_and_shuts_down_with_active_leave() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  handle.command(write(1)).await.unwrap();
+  put_with_retry(&handle, 1).await;
   let former = handle
     .query(minor_relay::GetLocalNode::new())
     .await
@@ -291,7 +311,7 @@ async fn leave_restart_shows_only_the_replacement(storage: Arc<dyn StorageFactor
       .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
       .await
       .unwrap();
-    handle.command(write(2)).await.unwrap();
+    put_with_retry(&handle, 2).await;
     let former = handle
       .query(minor_relay::GetLocalNode::new())
       .await
