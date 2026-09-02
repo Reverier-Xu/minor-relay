@@ -124,7 +124,7 @@ fn expect_algorithm(actual: &str) -> Result<()> {
   Ok(())
 }
 
-fn metadata_namespace(tag: &str) -> Result<StoreNamespace> {
+pub(crate) fn metadata_namespace(tag: &str) -> Result<StoreNamespace> {
   let tag = QualifiedTag::parse(tag)?;
   if tag.category() != crate::protocol::tag::CATEGORY_METADATA {
     return Err(Error::invalid_input("identity record namespace"));

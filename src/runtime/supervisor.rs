@@ -1597,7 +1597,13 @@ impl Supervisor {
       .clone();
     let writer = context.identity().node().clone();
     let timestamp_millis = crate::time::now_millis();
-    let removal_rank = stored.removal_rank() + 1;
+    // A synced record may legally carry the maximum rank; a saturated
+    // register cannot host a further removal and fails closed instead of
+    // wrapping the rank order.
+    let removal_rank = stored
+      .removal_rank()
+      .checked_add(1)
+      .ok_or_else(|| Error::conflict("resource removal rank"))?;
     let body = crate::resource::ResourceRecordV1::encode_signed_body(
       &cluster,
       &name,

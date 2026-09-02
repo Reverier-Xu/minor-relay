@@ -108,9 +108,7 @@ pub(crate) async fn sweep_removed_ctx(
   store: &MetadataStore, entropy: &dyn Entropy, clock: &dyn WallClock, retention: Duration,
   cap: usize,
 ) -> Result<usize> {
-  let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
-    super::store::RESOURCE_RECORD_NAMESPACE,
-  )?);
+  let namespace = super::store::namespace()?;
   let now = clock.now();
   let snapshot = store.snapshot().await?;
   let mut scan = snapshot.scan(&namespace, &[]).await?;

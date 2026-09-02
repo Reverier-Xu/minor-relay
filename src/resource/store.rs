@@ -21,10 +21,8 @@ use crate::{
   TransactionId, api::Entropy, storage::MetadataStore,
 };
 
-fn namespace() -> Result<StoreNamespace> {
-  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
-    RESOURCE_RECORD_NAMESPACE,
-  )?))
+pub(crate) fn namespace() -> Result<StoreNamespace> {
+  crate::identity::records::metadata_namespace(RESOURCE_RECORD_NAMESPACE)
 }
 
 fn record_key(name: &ResourceName) -> StoreKey {

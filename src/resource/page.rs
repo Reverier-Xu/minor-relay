@@ -104,9 +104,7 @@ pub(crate) mod sync {
     store: &MetadataStore, cursor: Option<&[u8]>, limit: usize,
   ) -> Result<ResourcePage> {
     let limit = limit.clamp(1, MAX_PAGE_RECORDS);
-    let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
-      super::super::store::RESOURCE_RECORD_NAMESPACE,
-    )?);
+    let namespace = super::super::store::namespace()?;
     let snapshot = store.snapshot().await?;
     let mut scan = snapshot.scan(&namespace, &[]).await?;
     let paged = crate::paging::scan_paged(scan.as_mut(), cursor, limit, |_key, bytes| {

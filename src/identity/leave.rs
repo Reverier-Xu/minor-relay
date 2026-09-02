@@ -135,9 +135,7 @@ impl LeaveIntentV1 {
 }
 
 fn leave_namespace() -> Result<StoreNamespace> {
-  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
-    LEAVE_NAMESPACE,
-  )?))
+  crate::identity::records::metadata_namespace(LEAVE_NAMESPACE)
 }
 
 fn leave_key() -> StoreKey {
@@ -188,7 +186,7 @@ const WIPE_RETRIES: usize = 8;
 async fn wipe_family(
   store: &MetadataStore, entropy: &dyn Entropy, namespace_tag: &str,
 ) -> Result<()> {
-  let namespace = StoreNamespace::new(crate::QualifiedTag::parse(namespace_tag)?);
+  let namespace = crate::identity::records::metadata_namespace(namespace_tag)?;
   let mut retries = 0_usize;
   loop {
     let snapshot = store.snapshot().await?;

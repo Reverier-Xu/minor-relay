@@ -704,7 +704,11 @@ pub(crate) mod store {
   /// Commits one verified issuer-snapshot binding into the authoritative
   /// identity store so member-mode dialing and page verification can use
   /// it (the grant-carrying reconnect path). A node already bound to a
-  /// different key is a key-substitution conflict and fails closed.
+  /// different key is a key-substitution conflict and fails closed. A
+  /// locally revoked identity never gains a new binding through this
+  /// path: re-delivery of its existing binding stays idempotent, but a
+  /// fresh adoption is refused (T-G09-04: revoke removes the authority
+  /// to gain trust through this node).
   pub(crate) async fn adopt_binding_ctx(
     store: &MetadataStore, entropy: &dyn Entropy, node: &NodeId, key: &PublicKey,
   ) -> Result<()> {
@@ -717,6 +721,12 @@ pub(crate) mod store {
         return Err(crate::Error::not_trusted("trust binding key substitution"));
       }
       return Ok(());
+    }
+    if crate::identity::revocation::revoked_key_ctx(store, node)
+      .await?
+      .is_some()
+    {
+      return Err(crate::Error::revoked("trust binding adoption"));
     }
     let binding = crate::identity::records::IdentityBindingV1::new(node.clone(), key.clone());
     let transaction = store.prepare_transaction(

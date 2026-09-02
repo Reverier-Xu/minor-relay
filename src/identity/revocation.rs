@@ -21,17 +21,15 @@ use std::sync::Arc;
 /// The durable namespace of local revocation records.
 pub(crate) use crate::storage::families::REVOCATION_NAMESPACE;
 use crate::{
-  Error, NodeId, PublicKey, Result, StoreKey, StoreNamespace, StoreOperation, StoreValue,
-  TransactionId, api::Entropy, storage::MetadataStore,
+  Error, NodeId, PublicKey, Result, StoreExpectation, StoreKey, StoreNamespace, StoreOperation,
+  StoreValue, TransactionId, api::Entropy, storage::MetadataStore,
 };
 
 /// The current revocation record version byte.
 const REVOCATION_VERSION: u8 = 1;
 
 fn namespace() -> Result<StoreNamespace> {
-  Ok(StoreNamespace::new(crate::QualifiedTag::parse(
-    REVOCATION_NAMESPACE,
-  )?))
+  crate::identity::records::metadata_namespace(REVOCATION_NAMESPACE)
 }
 
 fn revocation_key(subject: &NodeId) -> StoreKey {
@@ -74,8 +72,11 @@ pub(crate) enum RevokeStoreOutcome {
 /// trusted key fails `Conflict`, so a stale or substituted revocation
 /// never lands. A stored revocation for a different key also fails
 /// `Conflict`; the exact same one is idempotent. The commit is one
-/// conditional transaction, so a crash or race reopens to exactly the old
-/// or the new record — never a partial revocation.
+/// conditional transaction that pins both the revocation key's absence
+/// and the trusted binding record's exact digest, so a concurrent binding
+/// change between the snapshot and the commit fails closed instead of
+/// letting the revoke land against a stale key (the custody-lane
+/// precedent in `deletion.rs`).
 pub(crate) async fn revoke_binding_ctx(
   store: &MetadataStore, entropy: &dyn Entropy, subject: &NodeId, expected_key: &PublicKey,
 ) -> Result<RevokeStoreOutcome> {
@@ -83,11 +84,12 @@ pub(crate) async fn revoke_binding_ctx(
   let namespace = namespace()?;
   let store_key = revocation_key(subject);
   let snapshot = store.snapshot().await?;
-  let binding = snapshot
+  let binding_value = snapshot
     .get(&binding_namespace, &binding_key)
     .await?
     .ok_or_else(|| Error::not_found("revocation subject"))?;
-  let binding = crate::identity::records::IdentityBindingV1::decode(binding.as_bytes())
+  let binding_digest = binding_value.digest().clone();
+  let binding = crate::identity::records::IdentityBindingV1::decode(binding_value.as_bytes())
     .map_err(|_| Error::invalid_input("identity binding"))?;
   if binding.public_key() != expected_key {
     return Err(Error::conflict("revocation key"));
@@ -104,12 +106,22 @@ pub(crate) async fn revoke_binding_ctx(
   let transaction = store.prepare_transaction(
     TransactionId::generate(entropy)?,
     snapshot.revision().clone(),
-    vec![StoreOperation::Put {
-      namespace,
-      key: store_key,
-      expected,
-      value: StoreValue::new(Arc::from(encode_value(expected_key))),
-    }],
+    vec![
+      // The revoke lands only against the exact trusted binding observed
+      // above: a raced binding change conflicts instead of silently
+      // missing the live key.
+      StoreOperation::Check {
+        namespace: binding_namespace,
+        key: binding_key,
+        expected: StoreExpectation::Exact(binding_digest),
+      },
+      StoreOperation::Put {
+        namespace,
+        key: store_key,
+        expected,
+        value: StoreValue::new(Arc::from(encode_value(expected_key))),
+      },
+    ],
   )?;
   match store.commit(transaction).await? {
     crate::CommitOutcome::Committed(receipt) => Ok(RevokeStoreOutcome::Revoked(receipt)),

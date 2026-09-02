@@ -51,9 +51,7 @@ pub(crate) async fn select_page_ctx(
   store: &MetadataStore, selector: &Selector, cursor: Option<&crate::PageCursor>, limit: usize,
 ) -> Result<crate::ResourcePage> {
   let limit = limit.clamp(1, crate::paging::MAX_VIEW_PAGE_ITEMS);
-  let namespace = crate::StoreNamespace::new(crate::QualifiedTag::parse(
-    super::store::RESOURCE_RECORD_NAMESPACE,
-  )?);
+  let namespace = super::store::namespace()?;
   let snapshot = store.snapshot().await?;
   let mut scan = snapshot.scan(&namespace, &[]).await?;
   let paged = crate::paging::scan_paged(
