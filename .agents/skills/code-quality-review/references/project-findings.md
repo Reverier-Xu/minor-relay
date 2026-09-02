@@ -2,7 +2,8 @@
 
 > **G9 review 2026-09-02 (main @ 8135662, four fresh reviewer lanes):
 > resources/selector, identity custody, runtime facade, cross-cutting +
-> tests.** G9 verdict **PASS-WITH-GAPS**. All seven verify-g09-* lanes PASS;
+> tests.** G9 verdict **PASS-WITH-GAPS** → remediated to **PASS** (same
+> day; all seven lanes re-run PASS, Q 550/0 clean tree ×5). All seven verify-g09-* lanes PASS;
 > full Q green on a clean tree (550 passed, 0 failed). Every SC-G09
 > acceptance phrase mapped to a proving test except the gaps below; no P0.
 >
@@ -66,6 +67,31 @@
 > verify-g09-02 label naming; retention tombstone-GC resurrection window
 > deserves one doc sentence; ResourceVersion::from_record/CommitReceipt
 > dead_code payloads are a declared G10 wiring obligation.
+>
+> ### Remediated 2026-09-02 (same day)
+> - P1 revoke TOCTOU: the revoke transaction now pins the trusted
+>   binding's digest (58b5041); fresh trust-binding adoption for a
+>   locally revoked identity is refused while re-delivery stays
+>   idempotent; removal-rank increment fails closed on saturation.
+> - P1 JSON-only matrices: both revocation and leave subprocess matrices
+>   are backend-parameterized and run against JSON (13 boundaries) and
+>   redb (6) (cffeb34).
+> - P1 forwarding miswire: the forwarded-route bound is its own
+>   decision-register constant (forwarding.route-capacity-default),
+>   independent of the trace metadata budget (c3b5851).
+> - P2: leave::execute re-drives a pending intent to completion;
+>   E2E-08 asserts the key-custody clause in-file; the delayed-content
+>   lane asserts the revoked writer's binding adoption on the third
+>   member; join_with_retry single-sourced in tests/common;
+>   sign-and-seal single path (sign_with_provider/seal_prepared);
+>   shared conditional-put tail; selector parse loop factored;
+>   namespace construction single-sourced through
+>   records::metadata_namespace (category check restored).
+> - Still open (recorded, own tickets): common::ScriptedKeys::deleting
+>   + NodeHarness consolidation (test-only), raw-grant rejection
+>   isolation test (needs a post-leave rejoin path), runtime_seed
+>   consumption, lib.rs/extension_registry doc refresh, dispatch-impl
+>   macro, retention tombstone-GC doc note.
 >
 > ### What is healthy
 > EventHub design (per-subscription channels, poison-recovering lock,
