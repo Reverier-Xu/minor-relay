@@ -52,16 +52,22 @@ pub(crate) const CRASH_CHILD_TIMEOUT: std::time::Duration = std::time::Duration:
 #[cfg_attr(not(feature = "json"), allow(dead_code))]
 pub(crate) fn run_crash_child(
   test_name: &str, dir_env: &str, point_env: &str, dir: &std::path::Path, point: u8, label: &str,
+  extra_env: &[(&'static str, String)],
 ) {
   use std::process::{Command, Stdio};
 
   use wait_timeout::ChildExt as _;
 
   let executable = std::env::current_exe().unwrap();
-  let mut child = Command::new(executable)
+  let mut command = Command::new(executable);
+  command
     .args(["--exact", test_name, "--ignored", "--nocapture"])
     .env(dir_env, dir)
-    .env(point_env, point.to_string())
+    .env(point_env, point.to_string());
+  for (name, value) in extra_env {
+    command.env(name, value);
+  }
+  let mut child = command
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::null())

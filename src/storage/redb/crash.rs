@@ -79,6 +79,7 @@ fn run_child(dir: &TempDir, point: u8) {
     &dir.path().join("store.redb"),
     point,
     "redb",
+    &[],
   );
 }
 

@@ -134,6 +134,7 @@ fn run_child(dir: &TempDir, point: u8) {
     dir.path(),
     point,
     "resource",
+    &[],
   );
 }
 
@@ -290,6 +291,7 @@ fn run_delete_child(dir: &TempDir, point: u8) {
     dir.path(),
     point,
     "resource delete",
+    &[],
   );
 }
 

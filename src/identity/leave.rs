@@ -687,17 +687,18 @@ mod tests {
   }
 }
 
-#[cfg(all(test, unix, feature = "json"))]
+#[cfg(all(test, unix))]
 mod crash {
   //! Subprocess durability matrix for the leave transition (SC-G09-P0-21).
   //!
-  //! The child drives a leave against a JSON store and aborts at one
-  //! selected commit-path boundary of the intent commit or the identity
-  //! swap. The parent reopens the store — which runs the leave resume —
-  //! and proves the outcome equals exactly the untouched control (the
-  //! intent never committed) or the completed control (replacement
-  //! identity, wiped metadata, former-key tombstone, no intent), never a
-  //! mixed or partial phase.
+  //! The child drives a leave against the selected backend store and
+  //! aborts at one selected commit-path boundary of the intent commit or
+  //! the identity swap. The parent reopens the store — which runs the
+  //! leave resume — and proves the outcome equals exactly the untouched
+  //! control (the intent never committed) or the completed control
+  //! (replacement identity, wiped metadata, former-key tombstone, no
+  //! intent), never a mixed or partial phase. The matrix runs against
+  //! every compiled backend (JSON and redb).
 
   use std::{sync::Arc, time::Duration};
 
@@ -714,16 +715,53 @@ mod crash {
       testing::{ScriptedKeys, SequenceEntropy},
     },
     provider::StorageFactory,
-    storage::{MetadataStore, json::JsonStoreFactory, test_util},
+    storage::{MetadataStore, test_util},
   };
 
   const CRASH_DIR_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_DIR";
   const CRASH_POINT_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_POINT";
   const CRASH_PHASE_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_PHASE";
-  const LAST_POINT: u8 = 13;
+  const CRASH_BACKEND_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_BACKEND";
+  const JSON_LAST_POINT: u8 = 13;
+  const REDB_LAST_POINT: u8 = 6;
 
-  fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
-    Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()))
+  /// The crash backends compiled into this test binary, with each commit
+  /// path's boundary count.
+  // The cfg-gated pushes defeat vec! construction; the allow documents
+  // that the list is compile-time constant, not dynamically extended.
+  #[allow(clippy::vec_init_then_push)]
+  fn backends() -> Vec<(&'static str, u8)> {
+    let mut backends = Vec::with_capacity(2);
+    #[cfg(feature = "json")]
+    backends.push(("json", JSON_LAST_POINT));
+    #[cfg(feature = "redb")]
+    backends.push(("redb", REDB_LAST_POINT));
+    backends
+  }
+
+  fn factory(backend: &str, directory: &std::path::Path) -> Arc<dyn StorageFactory> {
+    match backend {
+      #[cfg(feature = "json")]
+      "json" => Arc::new(crate::storage::json::JsonStoreFactory::new(
+        directory.to_path_buf(),
+      )),
+      #[cfg(feature = "redb")]
+      "redb" => Arc::new(crate::storage::redb::RedbStoreFactory::new(
+        directory.join("store.redb"),
+      )),
+      other => panic!("backend {other} not compiled into this test binary"),
+    }
+  }
+
+  /// Arms the selected backend's compiled-in commit-path hook.
+  fn select_point(backend: &str, point: u8) {
+    match backend {
+      #[cfg(feature = "json")]
+      "json" => crate::storage::json::select_crash_point(point),
+      #[cfg(feature = "redb")]
+      "redb" => crate::storage::redb::select_crash_point(point),
+      other => panic!("backend {other} not compiled into this test binary"),
+    }
   }
 
   /// Providers whose deterministic handles are all resolvable: children
@@ -832,29 +870,18 @@ mod crash {
     }
   }
 
-  pub(super) fn run_child(dir: &TempDir, phase: &str, point: u8) {
-    let executable = std::env::current_exe().unwrap();
-    let mut child = std::process::Command::new(executable)
-      .args([
-        "--exact",
-        "identity::leave::crash::leave_crash_child_entry",
-        "--ignored",
-        "--nocapture",
-      ])
-      .env(CRASH_DIR_ENV, dir.path())
-      .env(CRASH_POINT_ENV, point.to_string())
-      .env(CRASH_PHASE_ENV, phase)
-      .stdin(std::process::Stdio::null())
-      .stdout(std::process::Stdio::null())
-      .stderr(std::process::Stdio::null())
-      .spawn()
-      .unwrap();
-    let status = wait_timeout::ChildExt::wait_timeout(&mut child, test_util::CRASH_CHILD_TIMEOUT)
-      .unwrap()
-      .unwrap_or_else(|| panic!("leave crash child at {phase}/{point} did not exit"));
-    assert!(
-      !status.success(),
-      "leave crash child at {phase}/{point} must terminate abnormally"
+  fn run_child(dir: &TempDir, backend: &str, phase: &str, point: u8) {
+    test_util::run_crash_child(
+      "identity::leave::crash::leave_crash_child_entry",
+      CRASH_DIR_ENV,
+      CRASH_POINT_ENV,
+      dir.path(),
+      point,
+      "leave",
+      &[
+        (CRASH_PHASE_ENV, phase.to_owned()),
+        (CRASH_BACKEND_ENV, backend.to_owned()),
+      ],
     );
   }
 
@@ -867,20 +894,21 @@ mod crash {
       .parse()
       .expect("numeric crash point");
     let phase = std::env::var(CRASH_PHASE_ENV).expect("crash phase");
-    let factory: Arc<dyn StorageFactory> = Arc::new(JsonStoreFactory::new(directory));
+    let backend = std::env::var(CRASH_BACKEND_ENV).unwrap_or_else(|_| "json".to_owned());
+    let factory = factory(&backend, &directory);
     let (keys, entropy, context) = open(&factory).await;
     seed(context.store(), entropy.as_ref()).await;
     match phase.as_str() {
       // Arm before the leave-intent commit (phase A).
       "intent" => {
-        crate::storage::json::select_crash_point(point);
+        select_point(&backend, point);
         let _ = execute(&context, &keys.as_provider(), entropy.as_ref()).await;
       }
       // Commit the intent first, then arm inside the identity swap
       // (phase C, the first commit of the remaining phases).
       "swap" => {
         let (stored, intent) = begin_intent(&context, entropy.as_ref()).await.unwrap();
-        crate::storage::json::select_crash_point(point);
+        select_point(&backend, point);
         let _ = run_leave(
           context.store(),
           &keys.as_provider(),
@@ -895,52 +923,54 @@ mod crash {
   }
 
   /// Every crash boundary of the leave transition resumes to exactly the
-  /// untouched or the completed control state.
+  /// untouched or the completed control state, on every compiled backend.
   #[tokio::test]
   async fn leave_crash_boundaries_resume_to_a_reconciled_phase() {
-    // Untouched control: seeded, no leave.
-    let untouched_dir = TempDir::new().unwrap();
-    let untouched_factory = factory(&untouched_dir);
-    let (_keys, entropy, context) = open(&untouched_factory).await;
-    seed(context.store(), entropy.as_ref()).await;
-    drop(context);
-    let untouched = observe(&untouched_factory).await;
+    for (backend, last_point) in backends() {
+      // Untouched control: seeded, no leave.
+      let untouched_dir = TempDir::new().unwrap();
+      let untouched_factory = factory(backend, untouched_dir.path());
+      let (_keys, entropy, context) = open(&untouched_factory).await;
+      seed(context.store(), entropy.as_ref()).await;
+      drop(context);
+      let untouched = observe(&untouched_factory).await;
 
-    // Completed control: a full leave without faults.
-    let completed_dir = TempDir::new().unwrap();
-    let completed_factory = factory(&completed_dir);
-    let (keys, entropy, context) = open(&completed_factory).await;
-    seed(context.store(), entropy.as_ref()).await;
-    let (_former, _replacement) = execute(&context, &keys.as_provider(), entropy.as_ref())
-      .await
-      .unwrap();
-    drop(context);
-    let completed = observe(&completed_factory).await;
-    assert!(completed.intent.is_none());
-    assert!(completed.noise.iter().all(|present| !present));
-    assert_ne!(completed.identity, untouched.identity);
+      // Completed control: a full leave without faults.
+      let completed_dir = TempDir::new().unwrap();
+      let completed_factory = factory(backend, completed_dir.path());
+      let (keys, entropy, context) = open(&completed_factory).await;
+      seed(context.store(), entropy.as_ref()).await;
+      let (_former, _replacement) = execute(&context, &keys.as_provider(), entropy.as_ref())
+        .await
+        .unwrap();
+      drop(context);
+      let completed = observe(&completed_factory).await;
+      assert!(completed.intent.is_none());
+      assert!(completed.noise.iter().all(|present| !present));
+      assert_ne!(completed.identity, untouched.identity);
 
-    for phase in ["intent", "swap"] {
-      for point in 1..=LAST_POINT {
-        let dir = TempDir::new().unwrap();
-        let factory = factory(&dir);
-        run_child(&dir, phase, point);
-        // The reopen runs the leave resume; the result is one control.
-        let observed = observe(&factory).await;
-        assert!(
-          observed.intent.is_none(),
-          "{phase}/{point}: the resume must clear the leave intent"
-        );
-        let is_untouched =
-          observed.identity == untouched.identity && observed.noise == untouched.noise;
-        let is_completed =
-          observed.identity == completed.identity && observed.noise == completed.noise;
-        assert!(
-          is_untouched ^ is_completed,
-          "{phase}/{point}: state must equal exactly one control, got identity={} noise={:?}",
-          observed.identity,
-          observed.noise,
-        );
+      for phase in ["intent", "swap"] {
+        for point in 1..=last_point {
+          let dir = TempDir::new().unwrap();
+          let factory = factory(backend, dir.path());
+          run_child(&dir, backend, phase, point);
+          // The reopen runs the leave resume; the result is one control.
+          let observed = observe(&factory).await;
+          assert!(
+            observed.intent.is_none(),
+            "{backend}/{phase}/{point}: the resume must clear the leave intent"
+          );
+          let is_untouched =
+            observed.identity == untouched.identity && observed.noise == untouched.noise;
+          let is_completed =
+            observed.identity == completed.identity && observed.noise == completed.noise;
+          assert!(
+            is_untouched ^ is_completed,
+            "{backend}/{phase}/{point}: state must equal exactly one control, got identity={} noise={:?}",
+            observed.identity,
+            observed.noise,
+          );
+        }
       }
     }
   }

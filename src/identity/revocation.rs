@@ -315,7 +315,7 @@ mod tests {
 /// exactly the old (trusted, not revoked) or the new (trusted and revoked
 /// under the exact key) state — never a partial revocation or a damaged
 /// binding — and that the child's transaction reconciles consistently.
-#[cfg(all(test, unix, feature = "json"))]
+#[cfg(all(test, unix))]
 mod crash {
   use std::{sync::Arc, time::Duration};
 
@@ -327,14 +327,30 @@ mod crash {
     api::SystemEntropy,
     identity::records::{self, IdentityBindingV1},
     provider::StorageFactory,
-    storage::{MetadataStore, json::JsonStoreFactory, test_util},
+    storage::{MetadataStore, test_util},
     transport::testing::SeedEntropy,
   };
 
   const CRASH_DIR_ENV: &str = "MINOR_RELAY_REVOKE_CRASH_DIR";
   const CRASH_POINT_ENV: &str = "MINOR_RELAY_REVOKE_CRASH_POINT";
+  const CRASH_BACKEND_ENV: &str = "MINOR_RELAY_REVOKE_CRASH_BACKEND";
   const CHILD_ENTROPY_SEED: u8 = 11;
-  const LAST_POINT: u8 = 13;
+  const JSON_LAST_POINT: u8 = 13;
+  const REDB_LAST_POINT: u8 = 6;
+
+  /// The crash backends compiled into this test binary, with each commit
+  /// path's boundary count.
+  // The cfg-gated pushes defeat vec! construction; the allow documents
+  // that the list is compile-time constant, not dynamically extended.
+  #[allow(clippy::vec_init_then_push)]
+  fn backends() -> Vec<(&'static str, u8)> {
+    let mut backends = Vec::with_capacity(2);
+    #[cfg(feature = "json")]
+    backends.push(("json", JSON_LAST_POINT));
+    #[cfg(feature = "redb")]
+    backends.push(("redb", REDB_LAST_POINT));
+    backends
+  }
 
   fn subject() -> NodeId {
     NodeId::parse("node_000000000000000000051").unwrap()
@@ -344,8 +360,29 @@ mod crash {
     PublicKey::from_bytes([7; 32])
   }
 
-  fn factory(dir: &TempDir) -> Arc<dyn StorageFactory> {
-    Arc::new(JsonStoreFactory::new(dir.path().to_path_buf()))
+  fn factory(backend: &str, directory: &std::path::Path) -> Arc<dyn StorageFactory> {
+    match backend {
+      #[cfg(feature = "json")]
+      "json" => Arc::new(crate::storage::json::JsonStoreFactory::new(
+        directory.to_path_buf(),
+      )),
+      #[cfg(feature = "redb")]
+      "redb" => Arc::new(crate::storage::redb::RedbStoreFactory::new(
+        directory.join("store.redb"),
+      )),
+      other => panic!("backend {other} not compiled into this test binary"),
+    }
+  }
+
+  /// Arms the selected backend's compiled-in commit-path hook.
+  fn select_point(backend: &str, point: u8) {
+    match backend {
+      #[cfg(feature = "json")]
+      "json" => crate::storage::json::select_crash_point(point),
+      #[cfg(feature = "redb")]
+      "redb" => crate::storage::redb::select_crash_point(point),
+      other => panic!("backend {other} not compiled into this test binary"),
+    }
   }
 
   async fn open_store(factory: &Arc<dyn StorageFactory>) -> MetadataStore {
@@ -381,9 +418,9 @@ mod crash {
 
   /// Reproduces the child's exact pending-transaction identity from a
   /// crash-free dry run over the same seeded state and entropy.
-  async fn child_identity() -> CommitReceipt {
+  async fn child_identity(backend: &str) -> CommitReceipt {
     let dir = TempDir::new().unwrap();
-    let factory = factory(&dir);
+    let factory = factory(backend, dir.path());
     seed(&factory).await;
     let store = open_store(&factory).await;
     match revoke_binding_ctx(&store, &SeedEntropy(CHILD_ENTROPY_SEED), &subject(), &key())
@@ -395,7 +432,7 @@ mod crash {
     }
   }
 
-  fn run_child(dir: &TempDir, point: u8) {
+  fn run_child(dir: &TempDir, backend: &str, point: u8) {
     test_util::run_crash_child(
       "identity::revocation::crash::revoke_crash_child_entry",
       CRASH_DIR_ENV,
@@ -403,6 +440,7 @@ mod crash {
       dir.path(),
       point,
       "revocation",
+      &[(CRASH_BACKEND_ENV, backend.to_owned())],
     );
   }
 
@@ -414,9 +452,9 @@ mod crash {
       .expect("crash point")
       .parse()
       .expect("numeric crash point");
-    crate::storage::json::select_crash_point(point);
-    let factory: Arc<dyn StorageFactory> =
-      Arc::new(JsonStoreFactory::new(std::path::PathBuf::from(directory)));
+    let backend = std::env::var(CRASH_BACKEND_ENV).unwrap_or_else(|_| "json".to_owned());
+    select_point(&backend, point);
+    let factory = factory(&backend, &std::path::PathBuf::from(directory));
     let store = MetadataStore::open(&factory, Duration::from_secs(10))
       .await
       .unwrap();
@@ -431,71 +469,75 @@ mod crash {
   /// Every crash boundary reopens to exactly the old or the new state:
   /// the trusted binding is always intact, and the revocation is either
   /// absent or the exact committed key — never partial or substituted.
+  /// The matrix runs against every compiled backend (SC-G09-P0-14: JSON
+  /// and redb).
   #[tokio::test]
   async fn revoke_crash_boundaries_recover_exact_old_or_new_state() {
-    let identity = child_identity().await;
-    let mut aborted_points = Vec::new();
-    let mut committed_points = Vec::new();
-    for point in 1..=LAST_POINT {
-      let dir = TempDir::new().unwrap();
-      let factory = factory(&dir);
-      seed(&factory).await;
-      run_child(&dir, point);
+    for (backend, last_point) in backends() {
+      let identity = child_identity(backend).await;
+      let mut aborted_points = Vec::new();
+      let mut committed_points = Vec::new();
+      for point in 1..=last_point {
+        let dir = TempDir::new().unwrap();
+        let factory = factory(backend, dir.path());
+        seed(&factory).await;
+        run_child(&dir, backend, point);
 
-      let reopened = open_store(&factory).await;
-      let observed = revoked_key_ctx(&reopened, &subject()).await.unwrap();
-      let observed_old = observed.is_none();
-      let observed_new = observed == Some(key());
-      assert!(
-        observed_old ^ observed_new,
-        "point {point} must reopen to old-or-new, got {observed:?}"
-      );
-      // The trusted binding is never damaged by the revocation boundary.
-      let (namespace, store_key) = records::identity_binding_key(&subject()).unwrap();
-      let snapshot = reopened.snapshot().await.unwrap();
-      let binding = snapshot
-        .get(&namespace, &store_key)
-        .await
-        .unwrap()
-        .expect("the trusted binding survives every crash point");
-      let binding = IdentityBindingV1::decode(binding.as_bytes()).unwrap();
-      assert_eq!(binding.public_key(), &key());
-      drop(snapshot);
-      drop(reopened);
+        let reopened = open_store(&factory).await;
+        let observed = revoked_key_ctx(&reopened, &subject()).await.unwrap();
+        let observed_old = observed.is_none();
+        let observed_new = observed == Some(key());
+        assert!(
+          observed_old ^ observed_new,
+          "{backend}/{point} must reopen to old-or-new, got {observed:?}"
+        );
+        // The trusted binding is never damaged by the revocation boundary.
+        let (namespace, store_key) = records::identity_binding_key(&subject()).unwrap();
+        let snapshot = reopened.snapshot().await.unwrap();
+        let binding = snapshot
+          .get(&namespace, &store_key)
+          .await
+          .unwrap()
+          .expect("the trusted binding survives every crash point");
+        let binding = IdentityBindingV1::decode(binding.as_bytes()).unwrap();
+        assert_eq!(binding.public_key(), &key());
+        drop(snapshot);
+        drop(reopened);
 
-      let provider = factory.open(test_util::crash_requirements()).await.unwrap();
-      match provider
-        .reconcile(identity.transaction(), identity.operation_digest())
-        .await
-        .unwrap()
-      {
-        ReconcileOutcome::Aborted => {
-          assert!(
-            observed_old,
-            "point {point} reconciled aborted but shows the revocation"
-          );
-          aborted_points.push(point);
+        let provider = factory.open(test_util::crash_requirements()).await.unwrap();
+        match provider
+          .reconcile(identity.transaction(), identity.operation_digest())
+          .await
+          .unwrap()
+        {
+          ReconcileOutcome::Aborted => {
+            assert!(
+              observed_old,
+              "{backend}/{point} reconciled aborted but shows the revocation"
+            );
+            aborted_points.push(point);
+          }
+          ReconcileOutcome::Committed(_) => {
+            assert!(
+              observed_new,
+              "{backend}/{point} reconciled committed but shows no revocation"
+            );
+            committed_points.push(point);
+          }
+          other => panic!("{backend}/{point} must reconcile decisively, got {other:?}"),
         }
-        ReconcileOutcome::Committed(_) => {
-          assert!(
-            observed_new,
-            "point {point} reconciled committed but shows no revocation"
-          );
-          committed_points.push(point);
-        }
-        other => panic!("point {point} must reconcile decisively, got {other:?}"),
       }
-    }
 
-    assert_eq!(aborted_points.first().copied(), Some(1));
-    assert_eq!(committed_points.last().copied(), Some(LAST_POINT));
-    if let (Some(last_aborted), Some(first_committed)) =
-      (aborted_points.last(), committed_points.first())
-    {
-      assert!(
-        last_aborted < first_committed,
-        "crash boundary must be monotonic"
-      );
+      assert_eq!(aborted_points.first().copied(), Some(1));
+      assert_eq!(committed_points.last().copied(), Some(last_point));
+      if let (Some(last_aborted), Some(first_committed)) =
+        (aborted_points.last(), committed_points.first())
+      {
+        assert!(
+          last_aborted < first_committed,
+          "crash boundary must be monotonic"
+        );
+      }
     }
   }
 }

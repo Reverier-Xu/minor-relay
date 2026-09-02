@@ -769,6 +769,7 @@ mod crash_tests {
       dir.path(),
       point,
       "json migration",
+      &[],
     );
   }
 
@@ -825,6 +826,7 @@ mod crash_tests {
       path,
       point,
       "redb migration",
+      &[],
     );
   }
 

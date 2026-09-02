@@ -384,6 +384,7 @@ mod killed_restart_json {
         dir.path(),
         point,
         "mixed json",
+        &[],
       );
       let store = open_metadata(&json_factory(dir.path())).await;
       let view = logical_view(&store).await;
@@ -449,6 +450,7 @@ mod killed_restart_redb {
         &path,
         point,
         "mixed redb",
+        &[],
       );
       let store = open_metadata(&redb_factory(&path)).await;
       let view = logical_view(&store).await;
