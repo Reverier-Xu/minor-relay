@@ -56,6 +56,11 @@ pub(crate) fn contains(table: &ForwardingTable, trace_id: &TraceId) -> bool {
   locked(table).contains_key(trace_id)
 }
 
+/// The default bound on concurrently forwarded routes. A session-layer
+/// routing bound, deliberately independent of the trace metadata budget
+/// it transiently shared (G9 review remediation).
+pub(crate) const FORWARDING_ROUTE_CAPACITY_DEFAULT: usize = 8_192;
+
 /// Validates and relays one routed open whose destination is another node:
 /// the envelope is re-checked against the session-authenticated holder, the
 /// node's next-hop policy picks exactly one downstream session, and a relay

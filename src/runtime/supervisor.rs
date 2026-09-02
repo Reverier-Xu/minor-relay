@@ -568,7 +568,7 @@ fn session_packet_context(
     dependencies.config.route_policy().cloned(),
     dependencies.sessions.clone(),
     dependencies.routes.clone(),
-    dependencies.config.trace_metadata_limits().active(),
+    crate::session::forward::FORWARDING_ROUTE_CAPACITY_DEFAULT,
     dependencies.config.parser_cbor_limits(),
   )
 }
@@ -1500,30 +1500,8 @@ impl Supervisor {
       .clone();
     let writer = context.identity().node().clone();
     let timestamp_millis = crate::time::now_millis();
-    let labels = write.labels();
-    let body = crate::resource::ResourceRecordV1::encode_signed_body(
-      &cluster,
-      write.name(),
-      labels.resource_type(),
-      labels.uri(),
-      labels.custom_labels(),
-      timestamp_millis,
-      &writer,
-      0,
-      false,
-    )?;
-    let signature = self
-      .dependencies
-      .keys
-      .sign(
-        context.identity().handle(),
-        &crate::identity::signature::signature_message(
-          crate::resource::RESOURCE_RECORD_V1_DOMAIN,
-          &body,
-        ),
-      )
-      .await?;
-    let record = crate::resource::ResourceRecordV1::seal(
+    let labels = write.labels().clone();
+    let record = crate::resource::ResourceRecordV1::sign_with_provider(
       cluster,
       write.name().clone(),
       labels.resource_type().clone(),
@@ -1533,8 +1511,10 @@ impl Supervisor {
       writer,
       0,
       false,
-      signature,
-    )?;
+      &self.dependencies.keys,
+      context.identity().handle(),
+    )
+    .await?;
     let accepted = crate::resource::select::resource_view(&record);
     match crate::resource::store::commit_record_ctx(
       context.store(),

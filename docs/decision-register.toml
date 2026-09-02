@@ -229,6 +229,13 @@ owner_task = "T-G05-04"
 source = "ADR-0007#endpoints-sessions-and-recovery"
 
 [[constant]]
+id = "forwarding.route-capacity-default"
+value = "8192"
+unit = "concurrent forwarded routes"
+owner_task = "T-G09-07"
+source = "G9 review remediation: a session-layer routing bound, deliberately independent of the trace metadata budget it transiently shared"
+
+[[constant]]
 id = "trace.metadata-active-default"
 value = "8192"
 unit = "active trace records"

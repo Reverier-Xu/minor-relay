@@ -350,27 +350,7 @@ impl Selector {
       return Err(Error::invalid_input("selector input"));
     }
     let mut parser = SelectorParser::new(value);
-    let mut predicates = Vec::new();
-    loop {
-      parser.skip_whitespace();
-      if parser.peek().is_none() {
-        break;
-      }
-      if predicates.len() >= SELECTOR_MAX_PREDICATES {
-        return Err(Error::resource_exhausted("selector predicates"));
-      }
-      let predicate = if parser.peek() == Some('!') {
-        parser.advance();
-        Predicate::NotExists(parser.parse_key()?)
-      } else {
-        let key = parser.parse_key()?;
-        match parser.parse_operator_tail(&key)? {
-          Some(predicate) => predicate,
-          None => Predicate::Exists(key),
-        }
-      };
-      predicates.push(predicate);
-    }
+    let predicates = Self::parse_predicate_stream(&mut parser, true)?;
     if predicates.is_empty() {
       return Err(Error::invalid_input("selector input"));
     }
@@ -394,11 +374,23 @@ impl Selector {
   /// failure is an internal invariant break.
   fn parse_predicates(canonical: &str) -> Result<Vec<Predicate>> {
     let mut parser = SelectorParser::new(canonical);
+    Self::parse_predicate_stream(&mut parser, false)
+  }
+
+  /// The one predicate-parsing loop behind both entry points: raw input
+  /// enforces the predicate-count bound, the canonical reparse does not
+  /// (deduplication can only shrink it).
+  fn parse_predicate_stream(
+    parser: &mut SelectorParser<'_>, enforce_predicate_bound: bool,
+  ) -> Result<Vec<Predicate>> {
     let mut predicates = Vec::new();
     loop {
       parser.skip_whitespace();
       if parser.peek().is_none() {
         break;
+      }
+      if enforce_predicate_bound && predicates.len() >= SELECTOR_MAX_PREDICATES {
+        return Err(Error::resource_exhausted("selector predicates"));
       }
       let predicate = if parser.peek() == Some('!') {
         parser.advance();

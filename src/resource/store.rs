@@ -89,7 +89,27 @@ pub(crate) async fn commit_record_ctx(
       return Ok(ResourceCommitOutcome::Superseded(existing));
     }
   }
-  let expected = crate::provider::snapshot_expectation(snapshot.as_ref(), &namespace, &key).await?;
+  commit_put_ctx(
+    store,
+    entropy,
+    snapshot.as_ref(),
+    namespace,
+    key,
+    record,
+    "resource record",
+  )
+  .await
+}
+
+/// The shared conditional-put tail of both register commits (G9 review):
+/// one snapshot-exact CAS, one typed outcome mapping. The caller's
+/// snapshot view stays the single authority for both the per-key
+/// expectation and the CAS revision.
+async fn commit_put_ctx(
+  store: &MetadataStore, entropy: &dyn Entropy, snapshot: &dyn crate::provider::StoreSnapshot,
+  namespace: StoreNamespace, key: StoreKey, record: &ResourceRecordV1, conflict: &'static str,
+) -> Result<ResourceCommitOutcome> {
+  let expected = crate::provider::snapshot_expectation(snapshot, &namespace, &key).await?;
   let transaction = store.prepare_transaction(
     TransactionId::generate(entropy)?,
     snapshot.revision().clone(),
@@ -105,7 +125,7 @@ pub(crate) async fn commit_record_ctx(
     // A raced writer moved the register between snapshot and commit: the
     // exact-version expectation fails closed with a typed conflict.
     crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => {
-      Err(Error::conflict("resource record"))
+      Err(Error::conflict(conflict))
     }
     crate::CommitOutcome::Unknown {
       transaction,
@@ -145,30 +165,16 @@ pub(crate) async fn commit_removal_ctx(
   if !record.wins_over(&existing) {
     return Err(Error::conflict("resource removal tuple"));
   }
-  let expected = crate::provider::snapshot_expectation(snapshot.as_ref(), &namespace, &key).await?;
-  let transaction = store.prepare_transaction(
-    TransactionId::generate(entropy)?,
-    snapshot.revision().clone(),
-    vec![StoreOperation::Put {
-      namespace,
-      key,
-      expected,
-      value: StoreValue::new(Arc::from(record.encode()?)),
-    }],
-  )?;
-  match store.commit(transaction).await? {
-    crate::CommitOutcome::Committed(receipt) => Ok(ResourceCommitOutcome::Installed(receipt)),
-    crate::CommitOutcome::Conflict | crate::CommitOutcome::Aborted => {
-      Err(Error::conflict("resource removal"))
-    }
-    crate::CommitOutcome::Unknown {
-      transaction,
-      operation_digest,
-    } => Ok(ResourceCommitOutcome::Indeterminate {
-      transaction,
-      operation_digest,
-    }),
-  }
+  commit_put_ctx(
+    store,
+    entropy,
+    snapshot.as_ref(),
+    namespace,
+    key,
+    record,
+    "resource removal",
+  )
+  .await
 }
 
 #[cfg(test)]

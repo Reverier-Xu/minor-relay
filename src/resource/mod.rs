@@ -22,7 +22,6 @@
 
 use std::{fmt, sync::Arc};
 
-use ed25519_dalek::Signer;
 use minicbor::{Decode, Encode, bytes::ByteVec};
 
 use crate::{
@@ -416,6 +415,29 @@ impl ResourceRecordV1 {
       removal_rank,
       removed,
     )?;
+    Self::seal_prepared(
+      body,
+      cluster,
+      name,
+      resource_type,
+      resource_uri,
+      labels,
+      timestamp_millis,
+      writer,
+      removal_rank,
+      removed,
+      signature,
+    )
+  }
+
+  /// Seals from an already-encoded canonical body: one encode, one digest
+  /// (shared by `sign`, `sign_with_provider`, and the write-shape probe).
+  #[allow(clippy::too_many_arguments)]
+  fn seal_prepared(
+    body: Vec<u8>, cluster: ClusterId, name: ResourceName, resource_type: LabelValue,
+    resource_uri: ResourceUri, labels: LabelSet, timestamp_millis: u64, writer: NodeId,
+    removal_rank: u64, removed: bool, signature: Signature,
+  ) -> Result<Self> {
     Ok(Self {
       cluster,
       name,
@@ -433,7 +455,7 @@ impl ResourceRecordV1 {
 
   /// Signs the canonical body with the given signing key and assembles the
   /// record (test and vector construction; production callers go through
-  /// their key provider's sign operation).
+  /// [`ResourceRecordV1::sign_with_provider`]).
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn sign(
     cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: ResourceUri,
@@ -451,8 +473,14 @@ impl ResourceRecordV1 {
       removal_rank,
       removed,
     )?;
-    let signature = signing_key.sign(&signature_message(RESOURCE_RECORD_V1_DOMAIN, &body));
-    Self::seal(
+    use ed25519_dalek::Signer as _;
+    let signature = Signature::from_bytes(
+      signing_key
+        .sign(&signature_message(RESOURCE_RECORD_V1_DOMAIN, &body))
+        .to_bytes(),
+    );
+    Self::seal_prepared(
+      body,
       cluster,
       name,
       resource_type,
@@ -462,7 +490,46 @@ impl ResourceRecordV1 {
       writer,
       removal_rank,
       removed,
-      Signature::from_bytes(signature.to_bytes()),
+      signature,
+    )
+  }
+
+  /// Assembles the record from a signature produced by the caller's key
+  /// provider over the canonical signed body — the single production
+  /// construction path (G9 review: one sign-and-seal pipeline for put and
+  /// remove, no double encode, no transposable argument lists).
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) async fn sign_with_provider(
+    cluster: ClusterId, name: ResourceName, resource_type: LabelValue, resource_uri: ResourceUri,
+    labels: LabelSet, timestamp_millis: u64, writer: NodeId, removal_rank: u64, removed: bool,
+    keys: &Arc<dyn crate::provider::KeyProvider>, handle: &crate::KeyHandle,
+  ) -> Result<Self> {
+    let body = Self::encode_signed_body(
+      &cluster,
+      &name,
+      &resource_type,
+      &resource_uri,
+      &labels,
+      timestamp_millis,
+      &writer,
+      removal_rank,
+      removed,
+    )?;
+    let signature = keys
+      .sign(handle, &signature_message(RESOURCE_RECORD_V1_DOMAIN, &body))
+      .await?;
+    Self::seal_prepared(
+      body,
+      cluster,
+      name,
+      resource_type,
+      resource_uri,
+      labels,
+      timestamp_millis,
+      writer,
+      removal_rank,
+      removed,
+      signature,
     )
   }
 
