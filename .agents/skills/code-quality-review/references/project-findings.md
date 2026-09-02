@@ -1,49 +1,81 @@
 # minor-relay Verified Findings (G3-era review, 2026-08)
 
-> **G9 gate record (2026-09-01, main @ e64d95d):** all seven verify-g09-* lanes
-> PASS (ran locally 2026-09-01); full Q green on a clean tree (550 passed,
-> 0 failed). Gate closed on its final stable task T-G09-07.
+> **G9 review 2026-09-02 (main @ 8135662, four fresh reviewer lanes):
+> resources/selector, identity custody, runtime facade, cross-cutting +
+> tests.** G9 verdict **PASS-WITH-GAPS**. All seven verify-g09-* lanes PASS;
+> full Q green on a clean tree (550 passed, 0 failed). Every SC-G09
+> acceptance phrase mapped to a proving test except the gaps below; no P0.
 >
-> ### Delivered in G9 (verified from evidence)
-> - T-G09-01: public ResourceName/ResourceUri/ResourceLabels/ResourceVersion;
->   G7 golden vector retained as the previous fixture, live/removal vectors
->   pin the current fixture set; unknown schema/version fail-closed; exact
->   logical versions across JSON and redb reopens.
-> - T-G09-02: full selector grammar (equality, inequality, in, notin,
->   existence, non-existence) with escaped values, canonical normalization,
->   documented bounds; one shared evaluator proven against a reference over
->   generated label spaces; SelectResources paging with converged-member
->   parity.
-> - T-G09-03: PutResource (signed candidate, one conditional transaction),
->   typed event hub, exactly one ResourceChanged per durable committed
->   winner; writer descriptor published before the commit; maintenance
->   never erases labels or replays events.
-> - T-G09-04: local revocation family; exact-binding conditional revoke,
->   session/ admission/ raw-grant enforcement, trust view Revoked status,
->   JSON crash matrix with consistent reconciliation; content stays
->   eligible for sync.
-> - T-G09-05: RemoveResource under an exact observed ResourceVersion with
->   tuple-win requirement; single production caller pinned by the verify
->   script; unrelated metadata and URI objects untouched.
-> - T-G09-06: journaled leave state machine (intent, replacement key,
->   identity-swap, bounded wipe, former-key custody, completion) resumable
->   at startup; ActiveLeave shutdown; IdentityReplaced; JSON crash matrix
->   over the intent and swap boundaries; JSON/redb restart parity.
-> - T-G09-07: GetResource/PageResources/PageListeners/PageSessions,
->   caller feature registration into the negotiation registry, remaining
->   typed events (SessionChanged, MemberChanged, RouteChanged,
->   RecoveryChanged), external-crate facade proof, and E2E-08.
+> ### P1 (fix before attestation)
+> 1. revocation.rs:88-116 — the revoke transaction pins only the
+>    revocation key, not the trusted binding's digest: a concurrent
+>    binding change between snapshot and commit lets the revoke commit
+>    against a stale key and silently miss. Fix: add `Check …
+>    Exact(binding digest)` as deletion.rs:93-101 does.
+> 2. revocation.rs crash matrix + leave.rs crash matrix are JSON-only;
+>    SC-G09-P0-14 says "JSON/redb" and P0-21 says "both backends". redb's
+>    select_crash_point exists (storage/redb/store.rs:39) and is used by
+>    the migration/mixed lanes — add the redb arms.
+> 3. supervisor.rs:571 — `forwarding_capacity` is wired to
+>    `trace_metadata_limits().active()`: two subsystem bounds keyed off one
+>    unrelated config knob. Give forwarding its own config knob.
 >
-> ### G9 notes for the next review
-> - EventHub prune-on-emit is best-effort; a subscriber that never
->   re-subscribes keeps its sender until the next emit of that type.
-> - The leave wipe keeps storage-internal namespaces (schema, receipt
->   internals, key custody records) — documented as infrastructure, not
->   identity metadata; receipt references of wiped records age out
->   through the retention sweep.
-> - Member descriptors must be first observed at revision 1 before any
->   owner bump (store revision rule + harness precedent); the facade
->   tests follow that ordering.
+> ### P2 (evidence gaps + should-fix)
+> - No isolating test for revoked-issuer raw-grant rejection
+>   (session/driver.rs:489) or responder-side join-admission revocation
+>   (driver.rs:245); tests/revocation.rs rejoin assertion accepts three
+>   kinds and cannot attribute the failure.
+> - Snapshot binding adoption of a revoked issuer's member (the
+>   "independently trusted binding" half of P0-14) unasserted.
+> - trust.rs adopt_binding_ctx never consults local revocation — the
+>   never-re-adopt property is structural, not enforced.
+> - leave::execute refuses a pending intent; a mid-phase live-process
+>   failure leaves the node serving with no way to re-drive (restart only).
+> - supervisor.rs:1600 — `removal_rank + 1` unchecked add (a synced
+>   u64::MAX rank panics debug / wraps release).
+> - commit_record_ctx / commit_removal_ctx share an identical prepare/
+>   commit tail (store.rs); put_resource/remove_resource repeat the
+>   sign-then-seal pipeline (supervisor) with a double body encode.
+> - Selector::parse / parse_predicates loop written twice (routing.rs).
+> - namespace() helper duplicated 8×; three copies omit the
+>   CATEGORY_METADATA check the canonical records::metadata_namespace does.
+> - lifecycle.rs:518-661 test harness duplicates identity::testing
+>   (FaultingFactory/CommitFault already shared).
+> - Integration harness duplication: join_with_retry 3×, delete-capable
+>   key providers 2× (LeaveKeys/LeaveCapableKeys ~150 lines each because
+>   common::ScriptedKeys::delete hard-fails), Node/start_node/listen 7×,
+>   open_store 10×, resource sign fixture 5×, trust helper 2×,
+>   PutResource helper 4×. One `common::NodeHarness` + `ScriptedKeys::
+>   deleting()` collapses most of it.
+> - E2E-08 key-intent clause attested only jointly across tests/leave.rs
+>   (deleted_count) and tests/facade.rs; add the deleted_count assert to
+>   e2e08 itself.
+>
+> ### P3 (hygiene)
+> ResourceUri duplicates LabelValue's bound (share a bounded-text
+> constructor); two distinct `ResourcePage` types (rename the internal one
+> ResourceRecordPage); crash-matrix LAST_POINT=13 pinned despite its own
+> comment; cursor-tail `next.map(PageCursor::new)` repeated 4× (paging
+> helper); pending-acks drain written twice (run_session end + retire);
+> DispatchCommand/DispatchQuery impl boilerplate (macro optional);
+> page_sessions silently drops unresolvable feature digests; lib.rs and
+> extension_registry.rs stale module docs; record_rejection magic
+> usize::MAX capacity; leave_cluster retires sessions without
+> SessionChanged (document the asymmetry); tests/leave.rs
+> `former_handle_bytes` holds a NodeId; fixed-sleep absence windows;
+> verify-g09-02 label naming; retention tombstone-GC resurrection window
+> deserves one doc sentence; ResourceVersion::from_record/CommitReceipt
+> dead_code payloads are a declared G10 wiring obligation.
+>
+> ### What is healthy
+> EventHub design (per-subscription channels, poison-recovering lock,
+> prune semantics) matches its no-replay tests; the removal
+> precondition/tuple-win layering is correct under one snapshot; the
+> selector parser bounds and escape round-trips were hand-traced and are
+> property-pinned; the revocation/leave crash matrices reconcile
+> decisively at every point; the verify-g09-04 namespace-catalog diff
+> guard is a strong single-source check; no unsafe, no unwrap/expect in
+> production, no stringly-typed registries found in any lane.
 >
 > **G8 review 2026-08-30 (main @ a6f9b3e, four fresh reviewer lanes +
 > orchestrator):** G8 verdict **PASS**. All five verify-g08-\* lanes PASS;
