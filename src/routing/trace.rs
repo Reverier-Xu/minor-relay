@@ -205,7 +205,9 @@ impl TraceRecord {
     self
   }
 
-  fn encode(&self) -> Result<Vec<u8>> {
+  /// Canonical wire encoding of the trace record; the G10 compatibility
+  /// freeze reader shares this exact encoder.
+  pub(crate) fn encode(&self) -> Result<Vec<u8>> {
     encode_canonical_record(self)
   }
 }

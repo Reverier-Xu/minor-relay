@@ -50,6 +50,12 @@ mod time;
 mod transport;
 mod view;
 
+/// The frozen `0.1.0` compatibility manifest (T-G10-01). Test-only: every
+/// golden vector is consumed through the compatibility and migration
+/// suites; the production wire/record encoders stay the single owners.
+#[cfg(test)]
+mod compatibility;
+
 #[cfg(test)]
 mod simulation;
 

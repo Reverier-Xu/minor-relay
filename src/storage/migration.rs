@@ -40,7 +40,9 @@ fn schema_namespace() -> Result<StoreNamespace> {
   )?))
 }
 
-fn encode_schema_record(kind: u8, tag: &str, digest: Option<&Digest>) -> StoreValue {
+/// Encodes one canonical migration schema-record variant; the migration
+/// engine and the G10 compatibility freeze reader share this encoder.
+pub(crate) fn encode_schema_record(kind: u8, tag: &str, digest: Option<&Digest>) -> StoreValue {
   let mut bytes = Vec::with_capacity(2 + tag.len() + 32);
   bytes.push(kind);
   bytes.push(tag.len() as u8);
@@ -51,7 +53,9 @@ fn encode_schema_record(kind: u8, tag: &str, digest: Option<&Digest>) -> StoreVa
   StoreValue::new(Arc::from(bytes))
 }
 
-fn decode_schema_record(value: &StoreValue) -> Result<(u8, String, Option<Digest>)> {
+/// The canonical migration schema-record decoder; the G10 compatibility
+/// freeze reader consumes the same fail-closed path as the engine.
+pub(crate) fn decode_schema_record(value: &StoreValue) -> Result<(u8, String, Option<Digest>)> {
   let bytes = value.as_bytes();
   let (kind, rest) = bytes.split_first().ok_or_else(corrupt)?;
   let (tag_len, rest) = rest.split_first().ok_or_else(corrupt)?;
@@ -298,6 +302,16 @@ const MIGRATION_TRANSACTION_DOMAIN: &[u8] = b"relay.woooo.tech/migration-transac
 /// Must stay byte-identical forever (it anchors edge identity).
 const MIGRATION_IMPLEMENTATION_DOMAIN: &[u8] = b"relay.woooo.tech/migration-implementation-v1";
 
+/// Derives the domain-separated implementation digest of one migration
+/// tag. Production edge registration and the G10 compatibility freeze
+/// reader share this single derivation.
+pub(crate) fn implementation_digest(tag: &str) -> Digest {
+  let mut hasher = Sha256::new();
+  hasher.update(MIGRATION_IMPLEMENTATION_DOMAIN);
+  hasher.update(tag.as_bytes());
+  Digest::from_bytes(hasher.finalize().into())
+}
+
 /// Derives a deterministic migration transaction-id value: the
 /// domain-separated SHA-256 over the ordered parts, truncated to the
 /// first 16 bytes and read big-endian. The base stamp passes its schema
@@ -316,6 +330,17 @@ fn migration_transaction_value(parts: &[&[u8]]) -> Result<u128> {
   Ok(u128::from_be_bytes(bytes))
 }
 
+// The declared metadata schema chain frozen for the `0.1.0` wire/metadata
+// compatibility contract (T-G10-01): the base version, the intermediate
+// version, the current target, and each declared edge tag. These
+// literals are frozen; every migration fixture and the compatibility
+// manifest must agree with them byte-for-byte.
+pub(crate) const BASE_VERSION: &str = "relay.woooo.tech/schemas/metadata-test-v1";
+pub(crate) const V2: &str = "relay.woooo.tech/schemas/metadata-test-v2";
+pub(crate) const V3: &str = "relay.woooo.tech/schemas/metadata-test-v3";
+pub(crate) const EDGE_ONE_TAG: &str = "relay.woooo.tech/schemas/migration-edge-one-v1";
+pub(crate) const EDGE_TWO_TAG: &str = "relay.woooo.tech/schemas/migration-edge-two-v1";
+
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
@@ -325,21 +350,13 @@ mod tests {
     StoreRequirements, StoreRevision, provider::StorageFactory, storage::test_util as util,
   };
 
-  pub(super) const BASE_VERSION: &str = "relay.woooo.tech/schemas/metadata-test-v1";
-  pub(super) const V2: &str = "relay.woooo.tech/schemas/metadata-test-v2";
-  pub(super) const V3: &str = "relay.woooo.tech/schemas/metadata-test-v3";
-  pub(super) const EDGE_ONE_TAG: &str = "relay.woooo.tech/schemas/migration-edge-one-v1";
-  pub(super) const EDGE_TWO_TAG: &str = "relay.woooo.tech/schemas/migration-edge-two-v1";
   /// The edge fixtures migrate records into this namespace; single-sourced
   /// because the digest-reconstruction tests must agree with the edge
   /// transforms on the exact namespace text.
   pub(super) const MODERN_NAMESPACE: &str = "relay.woooo.tech/migration/modern-v1";
 
   pub(super) fn fixture_digest(tag: &str) -> Digest {
-    let mut hasher = Sha256::new();
-    hasher.update(MIGRATION_IMPLEMENTATION_DOMAIN);
-    hasher.update(tag.as_bytes());
-    Digest::from_bytes(hasher.finalize().into())
+    super::implementation_digest(tag)
   }
 
   /// Edge one: renames every record from the legacy namespace into the
@@ -665,10 +682,7 @@ mod crash_tests {
   use std::sync::Arc;
 
   use super::{
-    tests::{
-      BASE_VERSION, EDGE_ONE_TAG, MODERN_NAMESPACE, V2, fixture_digest, plan_edge_one,
-      registry_one_edge,
-    },
+    tests::{MODERN_NAMESPACE, fixture_digest, plan_edge_one, registry_one_edge},
     *,
   };
   use crate::{

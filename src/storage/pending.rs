@@ -356,7 +356,9 @@ impl PendingTransactionV1 {
     &self.planned_operations
   }
 
-  pub(super) fn encode(&self) -> Result<Vec<u8>> {
+  /// Canonical wire encoding of the pending-transaction record; shared
+  /// by the receipt engine and the G10 compatibility freeze reader.
+  pub(crate) fn encode(&self) -> Result<Vec<u8>> {
     encode_canonical(
       &PendingTransactionWire {
         schema: PENDING_SCHEMA.to_owned(),
@@ -374,7 +376,9 @@ impl PendingTransactionV1 {
     )
   }
 
-  pub(super) fn decode(bytes: &[u8]) -> Result<Self> {
+  /// The canonical pending-transaction decoder; the G10 compatibility
+  /// freeze reader consumes the same fail-closed path as the engine.
+  pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
     let wire: PendingTransactionWire =
       decode_canonical_strict(bytes, PENDING_LIMITS, "pending transaction canonical form")?;
     if wire.schema != PENDING_SCHEMA {
