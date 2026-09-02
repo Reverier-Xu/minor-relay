@@ -1,0 +1,79 @@
+schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+status = "accepted"
+target = "wire_decode"
+owner_task = "T-G10-03"
+reviewer_task = "T-G10-03"
+privacy_screen = { tool = "owner-manual-review", version = "1", result = "approved" }
+minimizer = { tool = "none", version = "0" }
+aggregate = { entry_count = 10, total_bytes = 863 }
+
+[[entry]]
+digest = "8dfcb4614675cfddefaa8d5594b1345780ce9c29208cc9bf8fdf6835e67297ce"
+byte_count = 167
+origin = "golden-fixture"
+lineage = "compatibility manifest open-direct-v1"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "656b97c6f45f7b6abfdba05b70ab4df84ffe10bae6b2b3c01bfb11fbcdccadd6"
+byte_count = 226
+origin = "golden-fixture"
+lineage = "compatibility manifest open-routed-v1"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "008519f79e584b22479bea6c6f8854733cd3e9521074200a6cca1dd9b4f62ebc"
+byte_count = 42
+origin = "golden-fixture"
+lineage = "compatibility manifest chunk-v1"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "629023e8a4a5754a05080f37c8964a366372f8083ef8ca0871e8433af016ac48"
+byte_count = 30
+origin = "golden-fixture"
+lineage = "compatibility manifest end-v1"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "34e7acff0155fb8650b397615fe8c5b4ef3f6ffeef3d86934aad1270e11d61b6"
+byte_count = 34
+origin = "golden-fixture"
+lineage = "compatibility manifest ack-v1"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+byte_count = 0
+origin = "synthetic-generator"
+lineage = "empty input"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "3720a35b3f0be6baa551e4613fda5affff8e8032ec035ee8f6adce174a8f6162"
+byte_count = 20
+origin = "synthetic-generator"
+lineage = "truncated open frame"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "4c06e5be613fe23ee392105bc7ac7ac5a64c5010b09f75c74c6879520f494688"
+byte_count = 167
+origin = "synthetic-generator"
+lineage = "bit-inverted open frame"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "6f3a97bac7d59072a3b9d692b4a203c0735cf21e9a8c40d4aab5d6952d0b6697"
+byte_count = 11
+origin = "synthetic-generator"
+lineage = "oversized prelude body length"
+schema_tags = ["packet kind 0x0010..0x0013"]
+
+[[entry]]
+digest = "b07073a1c0744f6fb2653a583c45e7751613cbb0d1fb5f2b92dc9eefe10e9c5d"
+byte_count = 166
+origin = "synthetic-generator"
+lineage = "open frame missing final byte"
+schema_tags = ["packet kind 0x0010..0x0013"]
+

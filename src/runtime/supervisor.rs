@@ -1030,7 +1030,7 @@ impl Supervisor {
       Ok(removed) => {
         self
           .trace_records
-          .fetch_update(
+          .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |live| Some(live.saturating_sub(removed)),

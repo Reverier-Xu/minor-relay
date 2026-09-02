@@ -50,6 +50,14 @@ mod time;
 mod transport;
 mod view;
 
+/// The bounded fuzz adapters for the canonical decoder/selector fuzz
+/// targets (T-G10-03). Hidden from every normal build: the corpus replay
+/// suites use them under `cfg(test)` and the libFuzzer targets under
+/// `cfg(fuzzing)`; nothing else consumes them.
+#[cfg(any(test, fuzzing))]
+#[doc(hidden)]
+pub mod fuzz_adapters;
+
 /// The frozen `0.1.0` compatibility manifest (T-G10-01). Test-only: every
 /// golden vector is consumed through the compatibility and migration
 /// suites; the production wire/record encoders stay the single owners.

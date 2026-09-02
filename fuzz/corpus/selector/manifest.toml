@@ -1,0 +1,100 @@
+schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+status = "accepted"
+target = "selector"
+owner_task = "T-G10-03"
+reviewer_task = "T-G10-03"
+privacy_screen = { tool = "owner-manual-review", version = "1", result = "approved" }
+minimizer = { tool = "none", version = "0" }
+aggregate = { entry_count = 13, total_bytes = 2477 }
+
+[[entry]]
+digest = "0f60d7fda356207c5faf9d6cae9059785621c3248f7376f1950260c2b48bdbbf"
+byte_count = 33
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "1c0c36169bd47f86a017e663696500cf4fce25a4b9e202e31e4a1c7669a41e96"
+byte_count = 31
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "d586f0729b02d4c7f9025e4c5cbc4c061efc8a16766a8218e45d713a6dc35a6e"
+byte_count = 39
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "5046bc7915e3148d35c67da45060cf5105942b4a6596881777119cecaece64d8"
+byte_count = 34
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "e3d0fd8f8c43c666f08a59c95cae75a89cc0cda67e83e03d779770ba40db5e0a"
+byte_count = 28
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "95a2825e2ff2e6dbf39eb1c5a2a95299ee17fff7fa022a24b919fc1f4c4a269b"
+byte_count = 55
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "27e6f9551254eef28bda15093fa3b5627da20e5587dc45ae3e57e60589ef4f40"
+byte_count = 37
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "db6acc757331ca14e4095d6c0a7f45c6a8936fce8994658b781ff79b17f2600d"
+byte_count = 35
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+byte_count = 0
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "39c899c7bdb0f51632c2a1b54304c2e8473a3c45d5b5ce691fc3d970d121084d"
+byte_count = 66
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "eca6cb048417256ff1a830b5618bf8a751c61fa31465cd7d9457dcf7c512312c"
+byte_count = 46
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "42dc8d76af2df2240833a0ae5d1e248e2f6650d2f2d767fb025314b2718eba78"
+byte_count = 1050
+origin = "synthetic-generator"
+lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
+schema_tags = ["selector"]
+
+[[entry]]
+digest = "25b8691b88cb6ee5a31e64478eaf853cbd5fe2db4a9e57efe4e4bb66bf082bba"
+byte_count = 1023
+origin = "synthetic-generator"
+lineage = "regression: canonical selector form exceeded the input bound (selector fuzz target finding, minimized, T-G10-03)"
+schema_tags = ["selector"]
+

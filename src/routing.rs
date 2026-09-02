@@ -360,6 +360,15 @@ impl Selector {
     canonical.sort();
     canonical.dedup();
     let canonical = canonical.join(" ");
+    // The canonical form is the stored, compared, and re-parsed
+    // representation, so it must obey the same frozen input bound as the
+    // raw expression: an escaping expansion that would push the canonical
+    // form past the bound fails closed here instead of shipping a
+    // selector whose own canonical text cannot reparse (the round-trip
+    // invariant found by the selector fuzz target).
+    if canonical.len() > SELECTOR_INPUT_MAX_BYTES {
+      return Err(Error::invalid_input("selector input"));
+    }
     // Reparse the joined canonical text so the stored predicate list is
     // exactly the canonical form's parse (canonical text round-trips).
     let reparsed = Self::parse_predicates(&canonical)?;
@@ -1315,6 +1324,36 @@ mod tests {
     assert_eq!(
       Selector::parse(&oversized).unwrap_err().kind(),
       ErrorKind::InvalidInput
+    );
+    // Canonical-form limit (selector fuzz finding, T-G10-03): a set's
+    // closing parenthesis may directly abut the next predicate with no
+    // whitespace, and the canonical form inserts the separator space, so
+    // an input within the raw byte bound can canonicalize past the same
+    // bound. Such an input fails closed instead of shipping a selector
+    // whose own canonical text cannot reparse. Eight notin pairs sit one
+    // byte under the raw bound and one over the canonical bound.
+    let key = |index: usize| format!("relay.woooo.tech/labels/{}{index:0>2}", "a".repeat(32));
+    let expands = (0..8)
+      .map(|index| format!("{} notin (ed){}", key(index), key(index + 16)))
+      .collect::<Vec<_>>()
+      .join(" ");
+    assert!(expands.len() <= super::SELECTOR_INPUT_MAX_BYTES);
+    assert_eq!(
+      Selector::parse(&expands).unwrap_err().kind(),
+      ErrorKind::InvalidInput
+    );
+    // With the whitespace present the same shape fits both bounds and
+    // the canonical text stays a reparse fixed point.
+    let fits = (0..7)
+      .map(|index| format!("{} notin (ed) {}", key(index), key(index + 16)))
+      .collect::<Vec<_>>()
+      .join(" ");
+    assert!(fits.len() <= super::SELECTOR_INPUT_MAX_BYTES);
+    let selector = Selector::parse(&fits).unwrap();
+    assert!(selector.as_str().len() <= super::SELECTOR_INPUT_MAX_BYTES);
+    assert_eq!(
+      Selector::parse(selector.as_str()).unwrap().as_str(),
+      selector.as_str()
     );
     // Predicate count limit.
     let many = (0..super::SELECTOR_MAX_PREDICATES + 1)

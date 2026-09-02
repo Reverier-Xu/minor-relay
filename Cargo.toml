@@ -87,4 +87,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wait-timeout = "0.2"
 
 [lints.rust]
-unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+unsafe_code     = "forbid"
