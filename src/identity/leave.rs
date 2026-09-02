@@ -383,16 +383,17 @@ async fn run_leave(
 
 /// Executes one active leave: journals the intent, then runs the phases.
 /// Returns the exact former and replacement identities for the outcome.
+/// A pending intent (left by a mid-phase failure) is resumed to
+/// completion instead of refusing: the operator can always re-drive a
+/// leave, and the resume is the same crash-recovery path startup uses.
 pub(crate) async fn execute(
   context: &LocalIdentityContext, keys: &Arc<dyn KeyProvider>, entropy: &dyn Entropy,
 ) -> Result<(NodeId, NodeId)> {
   let store = context.store();
-  if discover_leave_intent(store).await?.is_some() {
-    // A startup resume completes any pending leave before the node
-    // serves, so a live node never sees one.
-    return Err(Error::conflict("leave in progress"));
-  }
-  let (stored, intent) = begin_intent(context, entropy).await?;
+  let (stored, intent) = match discover_leave_intent(store).await? {
+    Some((stored, intent)) => (stored, intent),
+    None => begin_intent(context, entropy).await?,
+  };
   run_leave(store, keys, entropy, &stored, &intent).await?;
   Ok((intent.former_node.clone(), intent.replacement_node.clone()))
 }
@@ -631,12 +632,18 @@ mod tests {
         .is_some()
     );
 
-    // The startup resume reconciles the provider outcome and completes.
-    let replacement = resume_if_pending(&context, &keys.as_provider(), entropy.as_ref())
+    // Re-driving the live command resumes the pending intent and
+    // completes — the operator is never stuck with a serving node that
+    // holds an unresolvable leave (the startup resume path is identical).
+    let (former, replacement) = execute(&context, &keys.as_provider(), entropy.as_ref())
       .await
-      .unwrap()
-      .expect("a pending leave resumes to completion");
-    assert_ne!(replacement.node(), &former_node);
+      .unwrap();
+    assert_eq!(former, former_node);
+    assert_ne!(replacement, former_node);
+    let replacement_identity = resume_if_pending(&context, &keys.as_provider(), entropy.as_ref())
+      .await
+      .unwrap();
+    assert!(replacement_identity.is_none(), "the leave completed");
     assert_wiped(context.store()).await;
     assert!(
       discover_leave_intent(context.store())

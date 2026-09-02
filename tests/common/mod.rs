@@ -15,6 +15,7 @@ use std::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
   },
+  time::Duration,
 };
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -31,6 +32,39 @@ use tokio::sync::Notify;
 pub const LOCAL_IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
 pub const KEY_CREATION_INTENT_NAMESPACE: &str = "relay.woooo.tech/metadata/key-creation-intent-v1";
 pub const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
+
+/// One join with bounded retries against one stable credential: the
+/// accept loop precomputes its join hint, so rotating on every retry
+/// would invalidate the in-flight accept's hint forever (rotate once,
+/// retry with the same secret). Admission-sensitive operations
+/// transiently refuse while concurrent metadata commits hold the store.
+pub async fn join_with_retry(
+  node: &minor_relay::NodeHandle, issuer: &minor_relay::NodeHandle, endpoint: minor_relay::Endpoint,
+) {
+  use minor_relay::{JoinCluster, JoinCredential, RotateJoinCredential};
+  let issued = issuer.command(RotateJoinCredential::new()).await.unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  let mut attempts = 0_u32;
+  loop {
+    attempts += 1;
+    let credential = JoinCredential::parse(&secret).unwrap();
+    match node
+      .command(JoinCluster::new(endpoint.clone(), credential))
+      .await
+    {
+      Ok(_) => return,
+      Err(error) => {
+        assert!(
+          deadline.elapsed() < Duration::from_secs(60),
+          "join never succeeded: {error:?}"
+        );
+        let backoff = Duration::from_millis(100 * (1_u64 << attempts.min(4)));
+        tokio::time::sleep(backoff).await;
+      }
+    }
+  }
+}
 
 pub fn required_capabilities() -> StoreCapabilities {
   StoreCapabilities::new(DurabilityLevel::OsCrashDurable)

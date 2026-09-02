@@ -63,33 +63,6 @@ async fn local_id(node: &NodeHandle) -> NodeId {
     .clone()
 }
 
-/// One join with bounded retries against one stable credential (the
-/// accept loop precomputes its join hint, so rotating per retry would
-/// invalidate the in-flight accept's hint).
-async fn join_with_retry(node: &NodeHandle, issuer: &NodeHandle, endpoint: Endpoint) {
-  let issued = issuer.command(RotateJoinCredential::new()).await.unwrap();
-  let secret = issued.credential().expose_secret().to_owned();
-  let deadline = std::time::Instant::now() + Duration::from_secs(60);
-  let mut attempts = 0_u32;
-  loop {
-    attempts += 1;
-    let credential = JoinCredential::parse(&secret).unwrap();
-    match node
-      .command(JoinCluster::new(endpoint.clone(), credential))
-      .await
-    {
-      Ok(_) => return,
-      Err(error) => {
-        assert!(
-          deadline.elapsed() < Duration::from_secs(60),
-          "join never succeeded: {error:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100 * (1_u64 << attempts.min(4)))).await;
-      }
-    }
-  }
-}
-
 /// The member's trusted public key as the issuer observes it. Trust
 /// bindings arrive through the admission commit and ordinary sync, so the
 /// observation is polled with a bound.
@@ -161,7 +134,7 @@ async fn g9_revoke_closes_sessions_denies_reconnect_and_preserves_metadata() {
 
   let mut member = start_node(1).await;
   member.endpoint = listen(&member).await;
-  join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
   member.id = local_id(&member.handle).await;
 
   // The member commits a resource the issuer converges on before the
@@ -305,7 +278,7 @@ async fn g9_revoke_is_exact_and_idempotent() {
 
   let mut member = start_node(1).await;
   member.endpoint = listen(&member).await;
-  join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
   member.id = local_id(&member.handle).await;
   let member_key = trusted_key(&issuer.handle, &member.id).await;
 
@@ -392,7 +365,7 @@ async fn g9_delayed_content_converges_after_revoke() {
   let issuer_endpoint = listen(&issuer).await;
 
   let member = start_node(1).await;
-  join_with_retry(&member.handle, &issuer.handle, issuer_endpoint.clone()).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint.clone()).await;
   let member_id = local_id(&member.handle).await;
 
   member.handle.command(write(2)).await.unwrap();
@@ -420,7 +393,7 @@ async fn g9_delayed_content_converges_after_revoke() {
     .unwrap();
 
   let third = start_node(2).await;
-  join_with_retry(&third.handle, &issuer.handle, issuer_endpoint).await;
+  common::join_with_retry(&third.handle, &issuer.handle, issuer_endpoint).await;
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   while !selected_names(&third.handle)
     .await
@@ -432,6 +405,35 @@ async fn g9_delayed_content_converges_after_revoke() {
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
   }
+
+  // The revoked writer's binding also converges to the third member as
+  // an independently trusted binding through a current member's snapshot
+  // (SC-G09-P0-14): content and binding both converge, while only the
+  // revoking node treats the identity as unauthorized.
+  let member_key_on_third = tokio::time::timeout(Duration::from_secs(30), async {
+    loop {
+      let page = third
+        .handle
+        .query(PageTrust::new(PageSpec::first(8).unwrap()))
+        .await
+        .unwrap();
+      if let Some(view) = page
+        .items()
+        .iter()
+        .find(|view| view.node_id() == &member_id)
+      {
+        break view.status();
+      }
+      assert!(
+        deadline.elapsed() < Duration::from_secs(30),
+        "binding never converged"
+      );
+      tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+  })
+  .await
+  .unwrap();
+  assert_eq!(member_key_on_third, minor_relay::TrustStatus::Trusted);
 
   for node in [issuer, member, third] {
     node.handle.command(Shutdown::new()).await.unwrap();

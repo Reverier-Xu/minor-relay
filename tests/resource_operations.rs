@@ -9,9 +9,9 @@
 use std::{sync::Arc, time::Duration};
 
 use minor_relay::{
-  CreateCluster, Endpoint, EventOptions, EventReceive, JoinCluster, NodeBuilder, NodeConfig,
-  NodeHandle, PageSpec, PutResource, ResourceChanged, ResourceLabels, ResourceName, ResourceUri,
-  ResourceWrite, RotateJoinCredential, SelectResources, Selector, Shutdown, ShutdownReason,
+  CreateCluster, Endpoint, EventOptions, EventReceive, NodeBuilder, NodeConfig, NodeHandle,
+  PageSpec, PutResource, ResourceChanged, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
+  SelectResources, Selector, Shutdown, ShutdownReason,
   extension::{KeyProvider, StorageFactory},
 };
 
@@ -81,40 +81,6 @@ async fn select_names(node: &NodeHandle, selector: &str) -> Vec<String> {
     .iter()
     .map(|view| view.name().as_str().to_owned())
     .collect()
-}
-
-/// One join with bounded retries against one stable credential: the
-/// accept loop precomputes its join hint, so rotating on every retry
-/// would invalidate the in-flight accept's hint forever (the harness
-/// precedent: rotate once, retry with the same secret).
-async fn join_with_retry(node: &Node, issuer: &Node, endpoint: Endpoint) {
-  let issued = issuer
-    .handle
-    .command(RotateJoinCredential::new())
-    .await
-    .unwrap();
-  let secret = issued.credential().expose_secret().to_owned();
-  let deadline = std::time::Instant::now() + Duration::from_secs(60);
-  let mut attempts = 0_u32;
-  loop {
-    attempts += 1;
-    let credential = minor_relay::JoinCredential::parse(&secret).unwrap();
-    match node
-      .handle
-      .command(JoinCluster::new(endpoint.clone(), credential))
-      .await
-    {
-      Ok(_) => return,
-      Err(error) => {
-        assert!(
-          deadline.elapsed() < Duration::from_secs(60),
-          "join never succeeded: {error:?}"
-        );
-        let backoff = Duration::from_millis(100 * (1_u64 << attempts.min(4)));
-        tokio::time::sleep(backoff).await;
-      }
-    }
-  }
 }
 
 /// SC-G09-P0-09/11: one valid write commits its complete signed candidate
@@ -253,7 +219,7 @@ async fn g9_concurrent_resource_writes_converge_to_one_winner() {
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),
   )
   .await;
-  join_with_retry(&member, &issuer, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint.clone()).await;
 
   // Both members write the same name concurrently with competing labels.
   let shared = resource_name(3);
@@ -377,7 +343,7 @@ async fn g9_maintenance_preserves_labels_and_emits_nothing() {
     .handle
     .events::<ResourceChanged>(EventOptions::new())
     .unwrap();
-  join_with_retry(&member, &issuer, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint.clone()).await;
 
   // The resource converges to the member through ordinary sync...
   let deadline = std::time::Instant::now() + Duration::from_secs(30);

@@ -10,13 +10,13 @@
 use std::{sync::Arc, time::Duration};
 
 use minor_relay::{
-  BoxFuture, CreateCluster, Endpoint, ErrorKind, EventOptions, EventReceive, GetResource,
-  JoinCluster, Listen, LoadBalancingPolicy, NodeBuilder, NodeConfig, NodeHandle, NodeId,
-  PacketMetadata, PacketPolicy, PacketTarget, PageListeners, PageMembers, PageResources,
-  PageSessions, PageSpec, PageTopology, PageTrust, ProtocolDefinition, ProtocolTag, PutResource,
-  RemoveResource, ResourceChanged, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
-  Result, RevokeNode, RoutingPolicy, SelectResources, Selector, SessionChanged, Shutdown,
-  ShutdownReason, UpdateNodeMetadata, extension::KeyProvider,
+  BoxFuture, CreateCluster, Endpoint, ErrorKind, EventOptions, EventReceive, GetResource, Listen,
+  LoadBalancingPolicy, NodeBuilder, NodeConfig, NodeHandle, NodeId, PacketMetadata, PacketPolicy,
+  PacketTarget, PageListeners, PageMembers, PageResources, PageSessions, PageSpec, PageTopology,
+  PageTrust, ProtocolDefinition, ProtocolTag, PutResource, RemoveResource, ResourceChanged,
+  ResourceLabels, ResourceName, ResourceUri, ResourceWrite, Result, RevokeNode, RoutingPolicy,
+  SelectResources, Selector, SessionChanged, Shutdown, ShutdownReason, UpdateNodeMetadata,
+  extension::KeyProvider,
 };
 
 mod common;
@@ -130,39 +130,13 @@ async fn listen(node: &Node) -> Endpoint {
   listener.endpoint().clone()
 }
 
-async fn join_with_retry(node: &NodeHandle, issuer: &NodeHandle, endpoint: Endpoint) {
-  let issued = issuer
-    .command(minor_relay::RotateJoinCredential::new())
-    .await
-    .unwrap();
-  let secret = issued.credential().expose_secret().to_owned();
-  let deadline = std::time::Instant::now() + Duration::from_secs(60);
-  let mut attempts = 0_u32;
-  loop {
-    attempts += 1;
-    let credential = minor_relay::JoinCredential::parse(&secret).unwrap();
-    match node
-      .command(JoinCluster::new(endpoint.clone(), credential))
-      .await
-    {
-      Ok(_) => return,
-      Err(error) => {
-        assert!(
-          deadline.elapsed() < Duration::from_secs(60),
-          "join never succeeded: {error:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100 * (1_u64 << attempts.min(4)))).await;
-      }
-    }
-  }
-}
-
 /// A deterministic key provider with working deletion: the leave's
 /// custody lane needs a provider whose delete actually applies.
 #[derive(Debug, Default)]
 struct LeaveCapableKeys {
   records: std::sync::Mutex<std::collections::BTreeMap<Vec<u8>, ed25519_dalek::SigningKey>>,
   operations: std::sync::Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>,
+  deleted: std::sync::Mutex<Vec<Vec<u8>>>,
   next: std::sync::Mutex<u64>,
 }
 
@@ -231,12 +205,24 @@ impl LeaveCapableKeys {
   }
 
   fn remove(&self, handle: &minor_relay::KeyHandle) -> bool {
-    self
+    let removed = self
       .records
       .lock()
       .unwrap()
       .remove(handle.expose_provider_handle())
-      .is_some()
+      .is_some();
+    if removed {
+      self
+        .deleted
+        .lock()
+        .unwrap()
+        .push(handle.expose_provider_handle().to_vec());
+    }
+    removed
+  }
+
+  fn deleted_count(&self) -> usize {
+    self.deleted.lock().unwrap().len()
   }
 
   fn contains(&self, handle: &minor_relay::KeyHandle) -> bool {
@@ -343,8 +329,9 @@ async fn e2e08_resources_revoke_and_leave() {
   std::fs::write(&object_path, b"caller-owned").unwrap();
 
   let issuer_storage = Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
-  let issuer_keys: Arc<dyn KeyProvider> = Arc::new(LeaveCapableKeys::default());
-  let issuer_handle = NodeBuilder::new(issuer_storage, issuer_keys)
+  let issuer_keys = Arc::new(LeaveCapableKeys::default());
+  let provider: Arc<dyn KeyProvider> = issuer_keys.clone();
+  let issuer_handle = NodeBuilder::new(issuer_storage, provider)
     .config(
       NodeConfig::new()
         .with_anti_entropy_interval(SYNC_INTERVAL)
@@ -362,7 +349,7 @@ async fn e2e08_resources_revoke_and_leave() {
 
   let mut member = start_node(1, false).await;
   member.endpoint = listen(&member).await;
-  join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
   let member_id = member
     .handle
     .query(minor_relay::GetLocalNode::new())
@@ -467,6 +454,9 @@ async fn e2e08_resources_revoke_and_leave() {
     .await
     .unwrap();
   assert_eq!(reason, ShutdownReason::ActiveLeave);
+  // The leave deleted exactly the former identity's key through the
+  // custody protocol (the key-intents clause of E2E-08).
+  assert_eq!(issuer_keys.deleted_count(), 1);
 
   assert_eq!(
     std::fs::read(&object_path).unwrap(),
@@ -497,7 +487,7 @@ async fn g9_facade_core_only_operations() {
 
   let mut member = start_node(1, true).await;
   member.endpoint = listen(&member).await;
-  join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
   let member_id = member
     .handle
     .query(minor_relay::GetLocalNode::new())
@@ -728,7 +718,7 @@ async fn g9_resource_labels_never_enable_protocols() {
 
   let mut member = start_node(1, false).await;
   member.endpoint = listen(&member).await;
-  join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
+  common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
 
   // A resource claiming to be the echo protocol.
   member
