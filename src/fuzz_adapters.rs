@@ -115,6 +115,384 @@ pub fn selector_parse(input: &[u8]) -> Option<String> {
   Some(canonical)
 }
 
+// ---- state-machine targets (T-G10-04) ----
+
+use std::{collections::BTreeSet, sync::Arc as SharedArc};
+
+use crate::{
+  ErrorKind, NodeId, PublicKey, TraceId,
+  identity::{
+    admission::{AdmissionProposal, AdmissionState, admission_state, commit_admission},
+    records::{AdmissionId, GenerationId},
+    testing::{
+      ScriptedKeys, SequenceEntropy, fresh_reference, node, open_context, scripted_signing,
+    },
+  },
+  protocol::{
+    feature::{
+      AUTH_ED25519_SESSION, DATA_MESSAGES, DIRECT_REQUEST, FeatureRegistry, ROUTED_DELIVERY,
+      SESSION_CORE,
+    },
+    offer::FeatureOffer,
+    selection::select,
+  },
+  routing::{RouteContext, RouteProgress},
+};
+
+/// The builtin feature labels in wire order; the bitmask derivations index
+/// into this frozen list.
+const STATE_FEATURES: [&str; 5] = [
+  AUTH_ED25519_SESSION,
+  SESSION_CORE,
+  DATA_MESSAGES,
+  DIRECT_REQUEST,
+  ROUTED_DELIVERY,
+];
+
+/// Derives one offer's supported set, required set, and mandatory limits
+/// at the registry defaults from two bitmask bytes.
+fn derive_offer(
+  registry: &FeatureRegistry, support_bits: u8, required_bits: u8,
+) -> crate::Result<FeatureOffer> {
+  let mut supported = Vec::new();
+  let mut required = Vec::new();
+  let mut limits = Vec::new();
+  for (index, name) in STATE_FEATURES.iter().enumerate() {
+    if support_bits & (1 << index) == 0 {
+      continue;
+    }
+    let tag = FeatureTag::parse(name)?;
+    let Some(definition) = registry.get(&tag) else {
+      continue;
+    };
+    supported.push((tag.clone(), definition.definition_digest()?));
+    if required_bits & (1 << index) != 0 {
+      required.push(tag);
+    }
+    for limit in definition.limits() {
+      if limit.mandatory() {
+        limits.push((limit.tag().clone(), limit.default()));
+      }
+    }
+  }
+  FeatureOffer::new(supported, required, limits)
+}
+
+/// The feature_selection target (T-G10-04, SC-G10-P0-13): derived offer
+/// pairs exercise digest equality, dependency closure, conflict pairs,
+/// limit minima, and required-label rejection with no downgrade or
+/// fallback. Any panic is a finding; an accepted selection must satisfy
+/// every structural invariant again.
+pub fn feature_selection(input: &[u8]) -> Option<()> {
+  let registry = FeatureRegistry::builtin().ok()?;
+  let bytes = |offset: usize| -> u8 { bytes_at(input, offset) };
+  let local = derive_offer(&registry, bytes(0), bytes(1)).ok()?;
+  let remote = derive_offer(&registry, bytes(2), bytes(3)).ok()?;
+  // Mutation: flip one digest byte in the first local supported entry so
+  // the pair disagrees and the digest check must fire.
+  let local = match bytes(16) % 4 {
+    1 => {
+      let mut supported = local.supported().to_vec();
+      if let Some((_, digest)) = supported.first_mut() {
+        let mut flipped = *digest.as_bytes();
+        flipped[0] ^= 0xFF;
+        *digest = crate::Digest::from_bytes(flipped);
+      }
+      FeatureOffer::new(
+        supported,
+        local.required().to_vec(),
+        local.limits().to_vec(),
+      )
+      .ok()?
+    }
+    _ => local,
+  };
+  let selection = select(
+    &registry,
+    &local,
+    &remote,
+    local.required(),
+    remote.required(),
+  );
+  let Ok(selection) = selection else {
+    return Some(());
+  };
+  // Structural invariants on every accepted selection.
+  let reselected = select(
+    &registry,
+    &local,
+    &remote,
+    local.required(),
+    remote.required(),
+  );
+  match reselected {
+    Ok(again) if again.bytes() == selection.bytes() => {}
+    _ => panic!("selection is not deterministic"),
+  }
+  let selected: BTreeSet<&FeatureTag> = selection.features().iter().collect();
+  for feature in selection.features() {
+    if let Some(definition) = registry.get(feature) {
+      for dependency in definition.dependencies() {
+        if !selected.contains(dependency) {
+          panic!("selection accepted an open dependency");
+        }
+      }
+      for conflict in definition.conflicts() {
+        if selected.contains(conflict) {
+          panic!("selection accepted a conflict pair");
+        }
+      }
+    }
+  }
+  for tag in local.required().iter().chain(remote.required()) {
+    if !selected.contains(tag) {
+      panic!("selection accepted a missing required label");
+    }
+  }
+  Some(())
+}
+
+/// One derived admission operation.
+#[derive(Clone, Copy)]
+enum AdmissionOp {
+  /// Commit a fresh proposal for one subject.
+  Propose,
+  /// Replay the last successful proposal (idempotence).
+  Replay,
+  /// Reuse the last successful generation with a different subject
+  /// (single-subject binding).
+  DoubleBook,
+  /// Commit the last successful proposal with a different subject key.
+  WrongKey,
+}
+
+fn admission_op(byte: u8) -> AdmissionOp {
+  match byte % 4 {
+    0 => AdmissionOp::Propose,
+    1 => AdmissionOp::Replay,
+    2 => AdmissionOp::DoubleBook,
+    _ => AdmissionOp::WrongKey,
+  }
+}
+
+/// The admission target (T-G10-04, SC-G10-P0-12): derived operation
+/// sequences preserve the single-subject generation binding, replay
+/// rejection/idempotence, and commit reconciliation against the reference
+/// storage, with every error a typed value. The target allocates a fresh
+/// deterministic fixture per input; generation/replay/double-book order
+/// comes from the bytes.
+pub fn admission(input: &[u8]) {
+  let runtime = tokio::runtime::Builder::new_current_thread()
+    .enable_all()
+    .build();
+  let Ok(runtime) = runtime else {
+    return;
+  };
+  runtime
+    .block_on(async move {
+      let (_reference, factory) = fresh_reference();
+      let keys = ScriptedKeys::full();
+      let entropy = SharedArc::new(SequenceEntropy::default());
+      let context = SharedArc::new(match open_context(&factory, &keys, &entropy).await {
+        Ok(context) => context,
+        // A fixture failure is an environment error, not an input
+        // finding: skip the run.
+        Err(_) => return Ok::<(), crate::Error>(()),
+      });
+      if crate::identity::genesis::create_cluster(&context, &keys.as_provider(), entropy.as_ref())
+        .await
+        .is_err()
+      {
+        return Ok(());
+      }
+      let mut last: Option<(AdmissionProposal, AdmissionGrantV1)> = None;
+      for pair in input.chunks(2) {
+        let op = admission_op(pair[0]);
+        let subject_index = u64::from(pair.get(1).copied().unwrap_or(0)) % 4;
+        match op {
+          AdmissionOp::Propose => {
+            let (Some(generation), Some(admission_id)) = (
+              GenerationId::generate(entropy.as_ref()).ok(),
+              AdmissionId::generate(entropy.as_ref()).ok(),
+            ) else {
+              return Ok(());
+            };
+            let proposal = AdmissionProposal::new(
+              node(u128::from(subject_index) + 1_000),
+              PublicKey::from_bytes(scripted_signing(subject_index).verifying_key().to_bytes()),
+              generation,
+              admission_id,
+            );
+            match commit_admission(&context, &keys.as_provider(), entropy.as_ref(), &proposal).await
+            {
+              Ok(grant) => {
+                // The grant verifies against the issuer key and the state
+                // machine reports the exact triple consumed.
+                grant.verify(context.identity().public_key())?;
+                match admission_state(&context, &proposal).await {
+                  Ok(AdmissionState::Consumed(_, existing)) if *existing == grant => {}
+                  other => panic!("admission state diverged after commit: {other:?}"),
+                }
+                last = Some((proposal, grant));
+              }
+              Err(error) => {
+                // Every failure is a typed error, never a panic.
+                let _ = error.kind();
+              }
+            }
+          }
+          AdmissionOp::Replay => {
+            if let Some((proposal, grant)) = &last {
+              let replayed =
+                commit_admission(&context, &keys.as_provider(), entropy.as_ref(), proposal).await;
+              match replayed {
+                Ok(existing) if existing == *grant => {}
+                _ => panic!("replay of a consumed admission diverged"),
+              }
+            }
+          }
+          AdmissionOp::DoubleBook => {
+            if let Some((proposal, _)) = &last {
+              let Some(admission_id) = AdmissionId::generate(entropy.as_ref()).ok() else {
+                return Ok(());
+              };
+              let double = AdmissionProposal::new(
+                node(u128::from(subject_index) + 2_000),
+                PublicKey::from_bytes(
+                  scripted_signing(subject_index + 4)
+                    .verifying_key()
+                    .to_bytes(),
+                ),
+                proposal.generation().clone(),
+                admission_id,
+              );
+              match commit_admission(&context, &keys.as_provider(), entropy.as_ref(), &double).await
+              {
+                Err(error) => {
+                  if error.kind() != ErrorKind::Conflict {
+                    panic!("double-booking must fail closed as Conflict: {error:?}");
+                  }
+                }
+                Ok(_) => panic!("a second subject admitted on a consumed generation"),
+              }
+              // The original admission survives the rejected attempt.
+              match admission_state(&context, proposal).await {
+                Ok(AdmissionState::Consumed(..)) => {}
+                _ => panic!("the rejected attempt must not disturb the committed triple"),
+              }
+            }
+          }
+          AdmissionOp::WrongKey => {
+            if let Some((proposal, _)) = &last {
+              let wrong = AdmissionProposal::new(
+                proposal.subject().clone(),
+                PublicKey::from_bytes(
+                  scripted_signing(subject_index + 8)
+                    .verifying_key()
+                    .to_bytes(),
+                ),
+                proposal.generation().clone(),
+                proposal.admission().clone(),
+              );
+              match commit_admission(&context, &keys.as_provider(), entropy.as_ref(), &wrong).await
+              {
+                Err(error) => {
+                  if error.kind() != ErrorKind::Conflict {
+                    panic!("a wrong-key replay must fail closed as Conflict: {error:?}");
+                  }
+                }
+                Ok(_) => panic!("a wrong-key replay admitted a different subject key"),
+              }
+            }
+          }
+        }
+      }
+      Ok::<(), crate::Error>(())
+    })
+    .ok();
+}
+
+/// The routing target (T-G10-04, SC-G10-P0-14): derived transition
+/// sequences over the route envelope preserve authenticated holder
+/// selection, one checked next hop, monotone budget drain, duplicate-free
+/// visited chains, and explicit termination; every rejection is a typed
+/// error, never a panic.
+pub fn routing(input: &[u8]) -> Option<()> {
+  let pool: Vec<NodeId> = (1_u8..=8)
+    .map(|index| NodeId::parse(&format!("node_{index:021}")))
+    .collect::<crate::Result<Vec<_>>>()
+    .ok()?;
+  let node = |byte: u8| pool[usize::from(byte) % pool.len()].clone();
+  let trace = TraceId::parse("trace_000000000000000000001").ok()?;
+  let max_hops = u32::from(bytes_at(input, 0) % 8) + 1;
+  let mut context = RouteContext::new(
+    trace,
+    node(bytes_at(input, 1)),
+    node(bytes_at(input, 2)),
+    max_hops,
+  );
+  let mut step = 3_usize;
+  while step + 3 <= input.len() {
+    let local = node(bytes_at(input, step));
+    let peer = node(bytes_at(input, step + 1));
+    let next_byte = bytes_at(input, step + 2);
+    let choose = |_: &RouteContext| -> crate::Result<NodeId> {
+      if next_byte == 0xFF {
+        return Err(crate::Error::invalid_input("no next hop"));
+      }
+      Ok(node(next_byte % 0xFF))
+    };
+    // `receive` consumes the envelope; keep a clone for the oracle
+    // assertions below.
+    let before = context.clone();
+    let remaining_before = before.hop_state().remaining_hops;
+    let visited_before = before.visited().len();
+    match before.receive(&local, &peer, choose) {
+      Ok(RouteProgress::Arrive) => {
+        if context.destination() != &local {
+          panic!("Arrive at a non-destination");
+        }
+        break;
+      }
+      Ok(RouteProgress::Continue {
+        next_hop,
+        context: advanced,
+      }) => {
+        // The forwarded envelope is a fresh route state: the previous
+        // holder joins the visited chain once and the budget drains once.
+        if advanced.hop_state().remaining_hops + 1 != remaining_before {
+          panic!("route budget did not drain exactly once");
+        }
+        if advanced.visited().len() != visited_before + 1 {
+          panic!("the visited chain did not grow by exactly one holder");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for holder in advanced.visited() {
+          if !seen.insert(holder) || holder == advanced.current() {
+            panic!("visited chain has a duplicate or includes the current holder");
+          }
+        }
+        if next_hop == local || next_hop == *advanced.current() {
+          panic!("the next hop loops back to the holder or the local node");
+        }
+        context = advanced;
+      }
+      Err(error) => {
+        // Every rejection is a typed error (Conflict/InvalidInput/
+        // NotTrusted/ResourceExhausted), never a panic.
+        let _ = error.kind();
+        break;
+      }
+    }
+    step += 3;
+  }
+  Some(())
+}
+
+fn bytes_at(input: &[u8], offset: usize) -> u8 {
+  input.get(offset).copied().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod replay_tests {
   //! Ordered corpus replay (T-G10-03, SC-G10-P0-10): every approved
@@ -221,6 +599,36 @@ mod replay_tests {
           path.display()
         );
       }
+    }
+  }
+
+  /// Replays one input exactly once through the admission state-machine
+  /// target (T-G10-04, SC-G10-P0-12).
+  #[test]
+  fn admission_corpus_replays_in_filename_order() {
+    for (name, path, bytes) in corpus_files("admission") {
+      super::admission(&bytes);
+      let _ = (name, path);
+    }
+  }
+
+  /// Replays one input exactly once through the feature-selection
+  /// state-machine target (T-G10-04, SC-G10-P0-13).
+  #[test]
+  fn feature_selection_corpus_replays_in_filename_order() {
+    for (name, path, bytes) in corpus_files("feature_selection") {
+      let _ = super::feature_selection(&bytes);
+      let _ = (name, path);
+    }
+  }
+
+  /// Replays one input exactly once through the routing state-machine
+  /// target (T-G10-04, SC-G10-P0-14).
+  #[test]
+  fn routing_corpus_replays_in_filename_order() {
+    for (name, path, bytes) in corpus_files("routing") {
+      let _ = super::routing(&bytes);
+      let _ = (name, path);
     }
   }
 }

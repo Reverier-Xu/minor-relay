@@ -385,7 +385,8 @@ impl MetadataStore {
       .map_err(|_| Error::internal("metadata storage commit state"))
   }
 }
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
+#[cfg_attr(fuzzing, allow(dead_code))]
 pub(crate) mod test_util;
 
 pub(crate) mod families;
@@ -403,7 +404,7 @@ pub(crate) mod receipt;
 #[cfg(feature = "redb")]
 pub(crate) mod redb;
 
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 pub(crate) mod contract;
 
 #[cfg(test)]

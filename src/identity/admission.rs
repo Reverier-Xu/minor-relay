@@ -51,6 +51,22 @@ impl AdmissionProposal {
       admission,
     }
   }
+
+  /// The node being admitted; the fuzz target's conflict derivations
+  /// rebuild proposals from these exact fields.
+  pub(crate) const fn subject(&self) -> &NodeId {
+    &self.subject
+  }
+
+  /// The credential generation this proposal binds (single-subject).
+  pub(crate) const fn generation(&self) -> &GenerationId {
+    &self.generation
+  }
+
+  /// The admission attempt identifier.
+  pub(crate) const fn admission(&self) -> &AdmissionId {
+    &self.admission
+  }
 }
 
 /// The durable outcome of an admission attempt.

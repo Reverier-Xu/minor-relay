@@ -7,12 +7,11 @@ use std::{
   },
 };
 
-use super::{
-  helpers::reference_revision,
-  runner::{
-    storage_contract_conflicts_atomicity_and_idempotence,
-    storage_contract_snapshot_lookup_and_ordering,
-  },
+use super::helpers::reference_revision;
+#[cfg(test)]
+use super::runner::{
+  storage_contract_conflicts_atomicity_and_idempotence,
+  storage_contract_snapshot_lookup_and_ordering,
 };
 use crate::{
   BoxFuture, CommitOutcome, CommitReceipt, Digest, Error, ProviderErrorContext, ProviderErrorKind,
@@ -358,6 +357,9 @@ fn reference_commit(
   Ok(CommitOutcome::Committed(receipt))
 }
 
+/// Runs the full storage contract suite against the reference factory
+/// (contract-evidence only; the fuzz build consumes the factory itself).
+#[cfg(test)]
 pub(crate) async fn run_storage_contract<F>(fresh: F)
 where
   F: Fn() -> Arc<dyn StorageFactory>, {

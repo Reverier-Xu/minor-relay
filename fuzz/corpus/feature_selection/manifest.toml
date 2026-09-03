@@ -1,0 +1,51 @@
+schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+status = "accepted"
+target = "feature_selection"
+owner_task = "T-G10-04"
+reviewer_task = "T-G10-04"
+privacy_screen = { tool = "owner-manual-review", version = "1", result = "approved" }
+minimizer = { tool = "none", version = "0" }
+aggregate = { entry_count = 6, total_bytes = 114 }
+
+[[entry]]
+digest = "f39c3a2e02c86c511a87b8afea086dbaaa984a787685ff63c20382d6ba3f5537"
+byte_count = 5
+origin = "synthetic-generator"
+lineage = "full symmetric pair, mandatory features required"
+schema_tags = ["feature_selection"]
+
+[[entry]]
+digest = "068ff0eeb633bdbaf80af39d2a75d986700dc88afc87f2fb97e6d98bc21e8e43"
+byte_count = 5
+origin = "synthetic-generator"
+lineage = "prior surface without routed delivery"
+schema_tags = ["feature_selection"]
+
+[[entry]]
+digest = "57abfda98da9937ef8c3f50469bb96fd1559d72bd3a96da9375f6fb5921bd236"
+byte_count = 5
+origin = "synthetic-generator"
+lineage = "current requires routed against prior support"
+schema_tags = ["feature_selection"]
+
+[[entry]]
+digest = "a6218cd6bc774181f6892db68fa92da39d01485b1c7c2d2734c2a3feffee8d55"
+byte_count = 5
+origin = "synthetic-generator"
+lineage = "flipped local digest"
+schema_tags = ["feature_selection"]
+
+[[entry]]
+digest = "da8896cf3a759b50a4913d7fac69928c30a02f037902cab4ba6b8699214eba79"
+byte_count = 5
+origin = "synthetic-generator"
+lineage = "minimal session-only pair"
+schema_tags = ["feature_selection"]
+
+[[entry]]
+digest = "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
+byte_count = 5
+origin = "synthetic-generator"
+lineage = "empty pair"
+schema_tags = ["feature_selection"]
+

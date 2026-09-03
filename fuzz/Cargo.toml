@@ -32,6 +32,27 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "admission"
+path = "fuzz_targets/admission.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "feature_selection"
+path = "fuzz_targets/feature_selection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "routing"
+path = "fuzz_targets/routing.rs"
+test = false
+doc = false
+bench = false
+
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]

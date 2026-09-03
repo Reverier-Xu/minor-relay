@@ -42,14 +42,16 @@ pub(crate) fn crash_requirements() -> crate::StoreRequirements {
 }
 
 /// The crash-matrix child wait bound shared by every subprocess lane.
-#[cfg_attr(not(feature = "json"), allow(dead_code))]
+/// The crash-matrix child timeout; crash-matrix lanes are test-only and
+/// never compile into fuzz builds.
+#[cfg(test)]
 pub(crate) const CRASH_CHILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Spawns the current test binary as one crash-matrix child (single
 /// source for the JSON adapter and resource register lanes): exact test
 /// filter, environment-selected crash directory and point, no stdio.
 /// Panics unless the child terminates abnormally within the timeout.
-#[cfg_attr(not(feature = "json"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn run_crash_child(
   test_name: &str, dir_env: &str, point_env: &str, dir: &std::path::Path, point: u8, label: &str,
   extra_env: &[(&'static str, String)],

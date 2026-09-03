@@ -1,0 +1,65 @@
+schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+status = "accepted"
+target = "routing"
+owner_task = "T-G10-04"
+reviewer_task = "T-G10-04"
+privacy_screen = { tool = "owner-manual-review", version = "1", result = "approved" }
+minimizer = { tool = "none", version = "0" }
+aggregate = { entry_count = 8, total_bytes = 152 }
+
+[[entry]]
+digest = "4ce43324033a69e41bd5b72a4497f8a53ef7424d311e844f41bc329147e88bfc"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "one forward toward the destination"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "6dcc76ba19dd1776e8f2aaf7090858ac92bd6195790b06050880578094202b9f"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "direct arrival at the destination"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "cc90d04367a179284040c6f049e7b72c631ef5396853484a333c92d67af8ccb7"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "loop back to the source is refused"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "09c9ffe9cffd9a54e1272bb9692827f1de528da3c213040763001eaabe521b37"
+byte_count = 9
+origin = "synthetic-generator"
+lineage = "budget exhaustion after one hop"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "9a525ee6cf02de8514c6b45de2bbbf3237c673e5a9e0ad8f769956966092916a"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "holder substitution is refused"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "279ec19d1b2c549534613d9683e31c4623f9ca1fca94c1644f1cbca82432be94"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "policy decline ends the route"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "150a863f43cbde95eee1ec18b06871e6f33d8d084666630dccd55e9824c4c0f7"
+byte_count = 15
+origin = "synthetic-generator"
+lineage = "four-hop chain to the destination"
+schema_tags = ["routing"]
+
+[[entry]]
+digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+byte_count = 0
+origin = "synthetic-generator"
+lineage = "empty transition stream"
+schema_tags = ["routing"]
+

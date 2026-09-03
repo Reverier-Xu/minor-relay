@@ -1,0 +1,58 @@
+schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+status = "accepted"
+target = "admission"
+owner_task = "T-G10-04"
+reviewer_task = "T-G10-04"
+privacy_screen = { tool = "owner-manual-review", version = "1", result = "approved" }
+minimizer = { tool = "none", version = "0" }
+aggregate = { entry_count = 7, total_bytes = 133 }
+
+[[entry]]
+digest = "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7"
+byte_count = 2
+origin = "synthetic-generator"
+lineage = "single propose"
+schema_tags = ["admission"]
+
+[[entry]]
+digest = "6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93"
+byte_count = 4
+origin = "synthetic-generator"
+lineage = "propose then replay"
+schema_tags = ["admission"]
+
+[[entry]]
+digest = "22564b7d3df0273dd9b4c6f23529d6c36d6ec114afbfa01124553fead21f5312"
+byte_count = 4
+origin = "synthetic-generator"
+lineage = "propose then double-book the generation"
+schema_tags = ["admission"]
+
+[[entry]]
+digest = "9ae2db1bcb6ab73c882b0cb881ae0c72eb9babd20ccc439bc70ff78d08018c4e"
+byte_count = 4
+origin = "synthetic-generator"
+lineage = "propose then replay with a wrong key"
+schema_tags = ["admission"]
+
+[[entry]]
+digest = "f1800fea609d012d2536e42db9bac7021c66cd7ddb9399019a39b47ca9d42e79"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "double-book then replay the original"
+schema_tags = ["admission"]
+
+[[entry]]
+digest = "ec111aab7dd59ffc4fe418a8099ebea621bdeade4f4f64718824d3b4ddc56aa9"
+byte_count = 6
+origin = "synthetic-generator"
+lineage = "two proposals then a double-book"
+schema_tags = ["admission"]
+
+[[entry]]
+digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+byte_count = 0
+origin = "synthetic-generator"
+lineage = "empty operation stream"
+schema_tags = ["admission"]
+

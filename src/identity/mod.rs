@@ -13,7 +13,8 @@ pub(crate) mod lifecycle;
 pub(crate) mod records;
 pub(crate) mod revocation;
 pub(crate) mod signature;
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
+#[cfg_attr(fuzzing, allow(dead_code))]
 pub(crate) mod testing;
 pub(crate) mod trust;
 mod value;
