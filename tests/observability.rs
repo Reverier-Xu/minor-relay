@@ -199,22 +199,30 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
     }
     Err(error) => assert_eq!(error.kind(), ErrorKind::Unsupported),
   }
-  let after = issuer.handle.query(GetObservability::new()).await.unwrap();
-  assert_eq!(
-    counter(
+  // No queue residue after the typed interruption: the anti-entropy
+  // driver may enqueue its own frame concurrently, so the baseline is
+  // observed through the same bounded drain window as above.
+  let residue = std::time::Instant::now() + Duration::from_secs(30);
+  loop {
+    let after = issuer.handle.query(GetObservability::new()).await.unwrap();
+    if counter(
       &after,
-      radiata::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES
-    ),
-    0
-  );
-  assert_eq!(
-    counter(&after, radiata::ObservabilitySnapshot::QUEUED_SESSION_BYTES),
-    0
-  );
-  assert_eq!(
-    counter(&after, radiata::ObservabilitySnapshot::SESSIONS),
-    counter(&unknown, radiata::ObservabilitySnapshot::SESSIONS)
-  );
+      radiata::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
+    ) == 0
+      && counter(&after, radiata::ObservabilitySnapshot::QUEUED_SESSION_BYTES) == 0
+    {
+      assert_eq!(
+        counter(&after, radiata::ObservabilitySnapshot::SESSIONS),
+        counter(&unknown, radiata::ObservabilitySnapshot::SESSIONS)
+      );
+      break;
+    }
+    assert!(
+      std::time::Instant::now() < residue,
+      "queue residue never drained"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+  }
 
   issuer.handle.command(Shutdown::new()).await.unwrap();
   member.handle.command(Shutdown::new()).await.unwrap();

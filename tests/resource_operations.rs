@@ -379,7 +379,7 @@ async fn g9_maintenance_preserves_labels_and_emits_nothing() {
 /// SC-G09-P0-09/12 restart lanes: a committed candidate survives a clean
 /// restart byte-exact on the real backends, and the restart emits no
 /// replayed event.
-#[cfg(feature = "json")]
+#[cfg(all(feature = "json", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g9_json_restart_preserves_labels_without_event_replay() {
   let directory = tempfile::tempdir().unwrap();
