@@ -16,11 +16,14 @@ use std::{
 use radiata::{
   BoxFuture, CreateCluster, Endpoint, Error, ErrorKind, EventOptions, EventReceive,
   IdentityReplaced, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
-  LeaveCluster, Listen, NodeBuilder, NodeHandle, PageMembers, PageSpec, PageTrust, PublicKey,
-  PutResource, ReplaceIdentityAndDeleteOldCoreMetadata, ResourceLabels, ResourceName, ResourceUri,
-  ResourceWrite, Result, SelectResources, Selector, Shutdown, ShutdownReason, Signature,
-  WaitForShutdown,
-  extension::{KeyProvider, StorageFactory},
+  LeaveCluster, Listen, NodeBuilder, NodeHandle, PublicKey, PutResource,
+  ReplaceIdentityAndDeleteOldCoreMetadata, ResourceLabels, ResourceName, ResourceUri,
+  ResourceWrite, Result, Shutdown, ShutdownReason, Signature, WaitForShutdown,
+  extension::KeyProvider,
+};
+#[cfg(any(feature = "json", feature = "redb"))]
+use radiata::{
+  PageMembers, PageSpec, PageTrust, SelectResources, Selector, extension::StorageFactory,
 };
 
 mod common;
@@ -65,6 +68,7 @@ impl LeaveKeys {
     KeyCreateState::Present(created)
   }
 
+  #[cfg(any(feature = "json", feature = "redb"))]
   fn deleted_count(&self) -> usize {
     self.deleted.lock().unwrap().len()
   }

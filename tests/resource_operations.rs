@@ -8,11 +8,12 @@
 
 use std::{sync::Arc, time::Duration};
 
+#[cfg(any(feature = "json", feature = "redb"))]
+use radiata::extension::StorageFactory;
 use radiata::{
   CreateCluster, Endpoint, EventOptions, EventReceive, NodeBuilder, NodeConfig, NodeHandle,
   PageSpec, PutResource, ResourceChanged, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
-  SelectResources, Selector, Shutdown, ShutdownReason,
-  extension::{KeyProvider, StorageFactory},
+  SelectResources, Selector, Shutdown, ShutdownReason, extension::KeyProvider,
 };
 
 mod common;

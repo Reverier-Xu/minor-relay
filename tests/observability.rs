@@ -8,16 +8,19 @@
 //! material and proves no credential, key, body, path, address, selector,
 //! or hostile string enters the emitted log stream.
 
-use std::{
-  sync::{Arc, Mutex},
-  time::Duration,
-};
+#[cfg(feature = "json")]
+use std::sync::Mutex;
+use std::{sync::Arc, time::Duration};
 
 use radiata::{
-  CreateCluster, DisconnectPeer, Endpoint, ErrorKind, GetObservability, Listen, NodeBuilder,
-  NodeConfig, PacketMetadata, PacketPolicy, PacketTarget, PageResources, PageSessions, PageSpec,
-  ProtocolTag, QualifiedTag, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
-  RotateJoinCredential, Shutdown, extension::KeyProvider,
+  CreateCluster, Endpoint, ErrorKind, GetObservability, Listen, NodeBuilder, NodeConfig,
+  PacketMetadata, PacketPolicy, PacketTarget, PageSessions, PageSpec, ProtocolTag, QualifiedTag,
+  Shutdown, extension::KeyProvider,
+};
+#[cfg(feature = "json")]
+use radiata::{
+  DisconnectPeer, PageResources, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
+  RotateJoinCredential,
 };
 
 mod common;
@@ -25,11 +28,13 @@ mod common;
 use common::{MemoryStorageFactory, ScriptedKeys};
 
 /// Captures every emitted log line for the redaction scan.
+#[cfg(feature = "json")]
 #[derive(Clone, Default)]
 struct LogCapture {
   buffer: Arc<Mutex<Vec<u8>>>,
 }
 
+#[cfg(feature = "json")]
 impl std::io::Write for LogCapture {
   fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
     self.buffer.lock().unwrap().extend_from_slice(bytes);
@@ -41,6 +46,7 @@ impl std::io::Write for LogCapture {
   }
 }
 
+#[cfg(feature = "json")]
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
   type Writer = LogCapture;
 
@@ -231,6 +237,10 @@ impl std::fmt::Debug for EmptyBody {
 /// SC-G10-P0-16: injected credential, key, packet-body, path, address,
 /// selector, and hostile-string markers never enter the emitted log
 /// stream of a full node workflow.
+///
+/// The path marker rides the JSON adapter (the only backend that mounts
+/// a real filesystem path), so the lane requires the `json` feature.
+#[cfg(all(test, feature = "json"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn redaction_lane_rejects_every_forbidden_class() {
   let capture = LogCapture::default();
@@ -396,16 +406,19 @@ async fn redaction_lane_rejects_every_forbidden_class() {
   );
 }
 
+#[cfg(feature = "json")]
 struct MarkerBody {
   marker: Arc<[u8]>,
 }
 
+#[cfg(feature = "json")]
 impl radiata::PacketBody for MarkerBody {
   fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(Some(self.marker.clone())) })
   }
 }
 
+#[cfg(feature = "json")]
 impl std::fmt::Debug for MarkerBody {
   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     formatter.write_str("MarkerBody")

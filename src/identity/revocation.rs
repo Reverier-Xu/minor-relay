@@ -315,7 +315,7 @@ mod tests {
 /// exactly the old (trusted, not revoked) or the new (trusted and revoked
 /// under the exact key) state — never a partial revocation or a damaged
 /// binding — and that the child's transaction reconciles consistently.
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, any(feature = "json", feature = "redb")))]
 mod crash {
   use std::{sync::Arc, time::Duration};
 
@@ -335,7 +335,9 @@ mod crash {
   const CRASH_POINT_ENV: &str = "RADIATA_REVOKE_CRASH_POINT";
   const CRASH_BACKEND_ENV: &str = "RADIATA_REVOKE_CRASH_BACKEND";
   const CHILD_ENTROPY_SEED: u8 = 11;
+  #[cfg(feature = "json")]
   const JSON_LAST_POINT: u8 = 13;
+  #[cfg(feature = "redb")]
   const REDB_LAST_POINT: u8 = 6;
 
   /// The crash backends compiled into this test binary, with each commit
@@ -370,7 +372,8 @@ mod crash {
       "redb" => Arc::new(crate::storage::redb::RedbStoreFactory::new(
         directory.join("store.redb"),
       )),
-      other => panic!("backend {other} not compiled into this test binary"),
+      #[allow(unreachable_patterns)]
+      _ => panic!("backend {backend} not compiled into this test binary"),
     }
   }
 
@@ -381,7 +384,8 @@ mod crash {
       "json" => crate::storage::json::select_crash_point(point),
       #[cfg(feature = "redb")]
       "redb" => crate::storage::redb::select_crash_point(point),
-      other => panic!("backend {other} not compiled into this test binary"),
+      #[allow(unreachable_patterns)]
+      _ => panic!("backend {backend} not compiled into this test binary"),
     }
   }
 

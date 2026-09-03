@@ -4,7 +4,7 @@ WORKDIR /workspace
 
 RUN rustup component add clippy
 
-COPY Cargo.toml Cargo.lock build.rs ./
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY test-support ./test-support
 COPY tests ./tests
