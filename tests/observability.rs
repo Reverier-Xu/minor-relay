@@ -13,7 +13,7 @@ use std::{
   time::Duration,
 };
 
-use minor_relay::{
+use radiata::{
   CreateCluster, DisconnectPeer, Endpoint, ErrorKind, GetObservability, Listen, NodeBuilder,
   NodeConfig, PacketMetadata, PacketPolicy, PacketTarget, PageResources, PageSessions, PageSpec,
   ProtocolTag, QualifiedTag, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
@@ -50,14 +50,14 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
 }
 
 struct Node {
-  handle: minor_relay::NodeHandle,
+  handle: radiata::NodeHandle,
   endpoint: Endpoint,
-  id: Option<minor_relay::NodeId>,
+  id: Option<radiata::NodeId>,
 }
 
 async fn start_node(seed: u64) -> Node {
   let keys: Arc<dyn KeyProvider> = Arc::new(ScriptedKeys::full_at(3_700_000 + seed * 1_000));
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> =
+  let factory: Arc<dyn radiata::extension::StorageFactory> =
     Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
   let config = NodeConfig::new()
     .with_anti_entropy_interval(Duration::from_millis(50))
@@ -96,7 +96,7 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
   member.id = Some(
     member
       .handle
-      .query(minor_relay::GetLocalNode::new())
+      .query(radiata::GetLocalNode::new())
       .await
       .unwrap()
       .node_id()
@@ -121,7 +121,7 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
     tokio::time::sleep(Duration::from_millis(100)).await;
   }
 
-  let counter = |snapshot: &minor_relay::ObservabilitySnapshot, tag: &str| {
+  let counter = |snapshot: &radiata::ObservabilitySnapshot, tag: &str| {
     snapshot
       .counter(&QualifiedTag::parse(tag).unwrap())
       .unwrap()
@@ -129,34 +129,29 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
   for (node, listeners) in [(&issuer, 1_u64), (&member, 0)] {
     let status = node.handle.query(GetObservability::new()).await.unwrap();
     assert_eq!(
-      counter(&status, minor_relay::ObservabilitySnapshot::SESSIONS),
+      counter(&status, radiata::ObservabilitySnapshot::SESSIONS),
       1
     );
     assert_eq!(
-      counter(&status, minor_relay::ObservabilitySnapshot::LISTENERS),
+      counter(&status, radiata::ObservabilitySnapshot::LISTENERS),
       listeners
     );
-    assert!(
-      counter(
-        &status,
-        minor_relay::ObservabilitySnapshot::BACKGROUND_TASKS
-      ) >= 1
-    );
+    assert!(counter(&status, radiata::ObservabilitySnapshot::BACKGROUND_TASKS) >= 1);
     assert_eq!(
-      counter(&status, minor_relay::ObservabilitySnapshot::TRACE_RECORDS),
+      counter(&status, radiata::ObservabilitySnapshot::TRACE_RECORDS),
       0
     );
     assert_eq!(
       counter(
         &status,
-        minor_relay::ObservabilitySnapshot::PENDING_TRANSACTIONS
+        radiata::ObservabilitySnapshot::PENDING_TRANSACTIONS
       ),
       0
     );
     assert_eq!(
       counter(
         &status,
-        minor_relay::ObservabilitySnapshot::METADATA_STORE_AVAILABLE
+        radiata::ObservabilitySnapshot::METADATA_STORE_AVAILABLE
       ),
       1
     );
@@ -172,12 +167,9 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
     let drained = [issuer_status, member_status].iter().all(|status| {
       counter(
         status,
-        minor_relay::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
+        radiata::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
       ) == 0
-        && counter(
-          status,
-          minor_relay::ObservabilitySnapshot::QUEUED_SESSION_BYTES,
-        ) == 0
+        && counter(status, radiata::ObservabilitySnapshot::QUEUED_SESSION_BYTES) == 0
     });
     if drained {
       break;
@@ -190,8 +182,8 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
   let unknown = issuer.handle.query(GetObservability::new()).await.unwrap();
   let result = issuer.handle.create_packet(
     PacketTarget::Exact(member.id.clone().unwrap()),
-    ProtocolTag::parse("relay.woooo.tech/protocols/unregistered").unwrap(),
-    PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 8).unwrap(),
+    ProtocolTag::parse("radiata.woooo.tech/protocols/unregistered").unwrap(),
+    PacketPolicy::new(radiata::RoutingPolicy::Direct, 8).unwrap(),
     PacketMetadata::new(),
   );
   match result {
@@ -205,20 +197,17 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
   assert_eq!(
     counter(
       &after,
-      minor_relay::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES
+      radiata::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES
     ),
     0
   );
   assert_eq!(
-    counter(
-      &after,
-      minor_relay::ObservabilitySnapshot::QUEUED_SESSION_BYTES
-    ),
+    counter(&after, radiata::ObservabilitySnapshot::QUEUED_SESSION_BYTES),
     0
   );
   assert_eq!(
-    counter(&after, minor_relay::ObservabilitySnapshot::SESSIONS),
-    counter(&unknown, minor_relay::ObservabilitySnapshot::SESSIONS)
+    counter(&after, radiata::ObservabilitySnapshot::SESSIONS),
+    counter(&unknown, radiata::ObservabilitySnapshot::SESSIONS)
   );
 
   issuer.handle.command(Shutdown::new()).await.unwrap();
@@ -227,10 +216,8 @@ async fn observability_snapshot_covers_bounded_responsibilities() {
 
 struct EmptyBody;
 
-impl minor_relay::PacketBody for EmptyBody {
-  fn next_chunk<'a>(
-    &'a mut self,
-  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+impl radiata::PacketBody for EmptyBody {
+  fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(None) })
   }
 }
@@ -248,7 +235,7 @@ impl std::fmt::Debug for EmptyBody {
 async fn redaction_lane_rejects_every_forbidden_class() {
   let capture = LogCapture::default();
   tracing_subscriber::fmt()
-    .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=trace"))
+    .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=trace"))
     .with_writer(capture.clone())
     .try_init()
     .unwrap();
@@ -260,7 +247,7 @@ async fn redaction_lane_rejects_every_forbidden_class() {
   let path_marker = storage_marker.to_string_lossy().to_string();
 
   let keys: Arc<dyn KeyProvider> = Arc::new(ScriptedKeys::full_at(3_710_000));
-  let factory = minor_relay::adapters::json_store(storage_marker.clone());
+  let factory = radiata::adapters::json_store(storage_marker.clone());
   let mut issuer = {
     let config = NodeConfig::new()
       .with_anti_entropy_interval(Duration::from_millis(50))
@@ -292,13 +279,13 @@ async fn redaction_lane_rejects_every_forbidden_class() {
   let credential_marker = issued.credential().expose_secret().to_owned();
   let body_marker: Arc<[u8]> = Arc::from(b"PACKET-BODY-MARKER-9w4e".as_slice());
   let label_marker = "hostile\nlabel\x00value-MARKER";
-  let selector_marker = "relay.woooo.tech/labels/marker-selector-x1q9";
+  let selector_marker = "radiata.woooo.tech/labels/marker-selector-x1q9";
 
   common::join_with_retry(&member.handle, &issuer.handle, issuer.endpoint.clone()).await;
   member.id = Some(
     member
       .handle
-      .query(minor_relay::GetLocalNode::new())
+      .query(radiata::GetLocalNode::new())
       .await
       .unwrap()
       .node_id()
@@ -325,8 +312,8 @@ async fn redaction_lane_rejects_every_forbidden_class() {
   // Packet bodies stay inside the stream; never loggable.
   let packet = member.handle.create_packet(
     PacketTarget::Exact(issuer.id.clone().unwrap()),
-    ProtocolTag::parse("relay.woooo.tech/protocols/unregistered-marker").unwrap(),
-    PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 8).unwrap(),
+    ProtocolTag::parse("radiata.woooo.tech/protocols/unregistered-marker").unwrap(),
+    PacketPolicy::new(radiata::RoutingPolicy::Direct, 8).unwrap(),
     PacketMetadata::new(),
   );
   match packet {
@@ -342,20 +329,20 @@ async fn redaction_lane_rejects_every_forbidden_class() {
 
   // A resource write with a hostile label value and a selector probe.
   let write = ResourceWrite::new(
-    ResourceName::parse("relay.woooo.tech/resources/redaction-lane").unwrap(),
+    ResourceName::parse("radiata.woooo.tech/resources/redaction-lane").unwrap(),
     ResourceLabels::new(
-      minor_relay::LabelValue::parse("marker").unwrap(),
+      radiata::LabelValue::parse("marker").unwrap(),
       ResourceUri::parse("file:///tmp/redaction-lane").unwrap(),
     )
     .custom(
-      minor_relay::LabelKey::parse("example.org/labels/owner").unwrap(),
-      minor_relay::LabelValue::parse(label_marker).unwrap(),
+      radiata::LabelKey::parse("example.org/labels/owner").unwrap(),
+      radiata::LabelValue::parse(label_marker).unwrap(),
     )
     .unwrap(),
   );
   let _ = member
     .handle
-    .command(minor_relay::PutResource::new(write).unwrap())
+    .command(radiata::PutResource::new(write).unwrap())
     .await;
   let _ = member
     .handle
@@ -363,8 +350,8 @@ async fn redaction_lane_rejects_every_forbidden_class() {
     .await;
   let _ = member
     .handle
-    .query(minor_relay::SelectResources::new(
-      minor_relay::Selector::parse(selector_marker).unwrap(),
+    .query(radiata::SelectResources::new(
+      radiata::Selector::parse(selector_marker).unwrap(),
       PageSpec::first(8).unwrap(),
     ))
     .await;
@@ -413,10 +400,8 @@ struct MarkerBody {
   marker: Arc<[u8]>,
 }
 
-impl minor_relay::PacketBody for MarkerBody {
-  fn next_chunk<'a>(
-    &'a mut self,
-  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+impl radiata::PacketBody for MarkerBody {
+  fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(Some(self.marker.clone())) })
   }
 }

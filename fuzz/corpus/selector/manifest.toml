@@ -1,4 +1,4 @@
-schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+schema = "radiata.woooo.tech/schemas/fuzz-corpus-v1"
 status = "accepted"
 target = "selector"
 owner_task = "T-G10-03"
@@ -8,56 +8,56 @@ minimizer = { tool = "none", version = "0" }
 aggregate = { entry_count = 13, total_bytes = 2477 }
 
 [[entry]]
-digest = "0f60d7fda356207c5faf9d6cae9059785621c3248f7376f1950260c2b48bdbbf"
+digest = "16a87a91aa6c156b396b42a6b926bedc975c72df787a3435a7a5cb2916e77b10"
 byte_count = 33
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "1c0c36169bd47f86a017e663696500cf4fce25a4b9e202e31e4a1c7669a41e96"
+digest = "e3fc35b042bf4d63d27b7267349ea5b151e86f3f442330507b70f8a32b5142b5"
 byte_count = 31
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "d586f0729b02d4c7f9025e4c5cbc4c061efc8a16766a8218e45d713a6dc35a6e"
+digest = "aa3303c387e2d699b7941d63ad618273724847792ad2084268d8e661e8832531"
 byte_count = 39
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "5046bc7915e3148d35c67da45060cf5105942b4a6596881777119cecaece64d8"
+digest = "fafd680e9eb3548dc0aae86282c7ea7a7d41387306810d45d287523762493568"
 byte_count = 34
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "e3d0fd8f8c43c666f08a59c95cae75a89cc0cda67e83e03d779770ba40db5e0a"
+digest = "cc634dd1792bab397c530e7623fa7eb608511e28182b359c4e806f2754c633e7"
 byte_count = 28
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "95a2825e2ff2e6dbf39eb1c5a2a95299ee17fff7fa022a24b919fc1f4c4a269b"
+digest = "b49a89caf3252ab4604981323f5fda52bee1091aa2cf1acfeeaf8df4075413b2"
 byte_count = 55
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "27e6f9551254eef28bda15093fa3b5627da20e5587dc45ae3e57e60589ef4f40"
+digest = "ece79b9b791d7c3a6ad1509dfa3c15933fc5829a543df763e1d69037cd788a23"
 byte_count = 37
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "db6acc757331ca14e4095d6c0a7f45c6a8936fce8994658b781ff79b17f2600d"
+digest = "13f00b3181a8228e9621fae9c87b6b4b0e0bfd3dc779860c263b70fcfbcd8b51"
 byte_count = 35
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
@@ -71,28 +71,28 @@ lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, se
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "39c899c7bdb0f51632c2a1b54304c2e8473a3c45d5b5ce691fc3d970d121084d"
+digest = "3a33ba05747bbe930a7c1b9425b4d3b09b200157bb735a0092381da43e06d274"
 byte_count = 66
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "eca6cb048417256ff1a830b5618bf8a751c61fa31465cd7d9457dcf7c512312c"
+digest = "0bc1a9d9e6ca5a42ffc7e4958a766e6f1e520321d8fa209eb42f7a0a725337a1"
 byte_count = 46
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "42dc8d76af2df2240833a0ae5d1e248e2f6650d2f2d767fb025314b2718eba78"
+digest = "52f1687ad6f000c100d1fa5d5fb90c4aae5601457054935ae0d39a4a27e7b110"
 byte_count = 1050
 origin = "synthetic-generator"
 lineage = "selector grammar seeds: valid, escaped, unicode, empty, duplicate, set, oversized"
 schema_tags = ["selector"]
 
 [[entry]]
-digest = "25b8691b88cb6ee5a31e64478eaf853cbd5fe2db4a9e57efe4e4bb66bf082bba"
+digest = "e6991990a71c27ec343638c40de45a1d7884ce1f3b19183e5a5435daad592289"
 byte_count = 1023
 origin = "synthetic-generator"
 lineage = "regression: canonical selector form exceeded the input bound (selector fuzz target finding, minimized, T-G10-03)"

@@ -1,6 +1,6 @@
 #!/usr/bin/bash -p
 set -euo pipefail
-unset BASH_ENV ENV CDPATH GLOBIGNORE MINOR_RELAY_SIM_SEED
+unset BASH_ENV ENV CDPATH GLOBIGNORE RADIATA_SIM_SEED
 export PATH="/usr/bin:/bin:${HOME}/.cargo/bin"
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -19,8 +19,8 @@ cargo test \
   -- \
   --exact
 cargo \
-  --config 'env.MINOR_RELAY_SIM_SEED.value="4242"' \
-  --config 'env.MINOR_RELAY_SIM_SEED.force=true' \
+  --config 'env.RADIATA_SIM_SEED.value="4242"' \
+  --config 'env.RADIATA_SIM_SEED.force=true' \
   test \
   --locked \
   --lib \

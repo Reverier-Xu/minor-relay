@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use minor_relay::{
+use radiata::{
   BoxFuture, ErrorKind, GetNodeStatus, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle,
   KeyOperationId, NodeBuilder, NodeHandle, NodeStatus, PublicKey, Result, Shutdown, Signature,
   extension::{KeyProvider, StorageFactory},
@@ -60,7 +60,7 @@ impl KeyProvider for DeterministicKeys {
       .lock()
       .unwrap()
       .push(operation.as_str().to_owned());
-    let created = minor_relay::CreatedKey::new(
+    let created = radiata::CreatedKey::new(
       self.handle(),
       PublicKey::from_bytes(self.signing().verifying_key().to_bytes()),
     );
@@ -70,7 +70,7 @@ impl KeyProvider for DeterministicKeys {
   fn reconcile_create<'a>(
     &'a self, _operation: &'a KeyOperationId,
   ) -> BoxFuture<'a, Result<KeyCreateState>> {
-    let created = minor_relay::CreatedKey::new(
+    let created = radiata::CreatedKey::new(
       self.handle(),
       PublicKey::from_bytes(self.signing().verifying_key().to_bytes()),
     );
@@ -84,9 +84,9 @@ impl KeyProvider for DeterministicKeys {
         self.signing().verifying_key().to_bytes(),
       ))
     } else {
-      Err(minor_relay::Error::provider(
-        minor_relay::ProviderErrorKind::Internal,
-        minor_relay::ProviderErrorContext::KeyPublicKey,
+      Err(radiata::Error::provider(
+        radiata::ProviderErrorKind::Internal,
+        radiata::ProviderErrorContext::KeyPublicKey,
       ))
     };
     Box::pin(async move { result })
@@ -104,13 +104,13 @@ impl KeyProvider for DeterministicKeys {
   fn delete<'a>(
     &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
   ) -> BoxFuture<'a, Result<KeyDeleteState>> {
-    Box::pin(async { Ok(minor_relay::KeyDeleteState::Present) })
+    Box::pin(async { Ok(radiata::KeyDeleteState::Present) })
   }
 
   fn reconcile_delete<'a>(
     &'a self, _operation: &'a KeyOperationId, _handle: &'a KeyHandle,
   ) -> BoxFuture<'a, Result<KeyDeleteState>> {
-    Box::pin(async { Ok(minor_relay::KeyDeleteState::Present) })
+    Box::pin(async { Ok(radiata::KeyDeleteState::Present) })
   }
 }
 
@@ -126,7 +126,7 @@ async fn redb_runtime_node_start_restart_preserves_identity_without_new_key() {
   let calls = Arc::new(Calls::default());
 
   let first = start(
-    minor_relay::adapters::redb_store(dir.path().join("store.redb")),
+    radiata::adapters::redb_store(dir.path().join("store.redb")),
     Arc::new(DeterministicKeys::new(11, Arc::clone(&calls))),
   )
   .await
@@ -139,7 +139,7 @@ async fn redb_runtime_node_start_restart_preserves_identity_without_new_key() {
   assert_eq!(calls.create.lock().unwrap().len(), 1);
 
   let second = start(
-    minor_relay::adapters::redb_store(dir.path().join("store.redb")),
+    radiata::adapters::redb_store(dir.path().join("store.redb")),
     Arc::new(DeterministicKeys::new(11, Arc::clone(&calls))),
   )
   .await
@@ -156,7 +156,7 @@ async fn redb_runtime_node_start_restart_preserves_identity_without_new_key() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redb_runtime_concurrent_open_is_typed_locked_and_error_is_redacted() {
   let dir = tempfile::tempdir().unwrap();
-  let storage = minor_relay::adapters::redb_store(dir.path().join("store.redb"));
+  let storage = radiata::adapters::redb_store(dir.path().join("store.redb"));
   let keys = Arc::new(DeterministicKeys::new(12, Arc::new(Calls::default())));
 
   let first = start(Arc::clone(&storage), Arc::clone(&keys))

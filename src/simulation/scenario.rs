@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-  use minor_relay_test_support::{
+  use radiata_test_support::{
     ApprovedCorpusDigest, CargoTestId, ExecutableId, FuzzTarget, ReplayError, ReplaySpec,
   };
 
@@ -20,9 +20,9 @@ mod tests {
       replay.materialize().args(),
       [
         "--config",
-        "env.MINOR_RELAY_SIM_SEED.value=\"42\"",
+        "env.RADIATA_SIM_SEED.value=\"42\"",
         "--config",
-        "env.MINOR_RELAY_SIM_SEED.force=true",
+        "env.RADIATA_SIM_SEED.force=true",
         "test",
         "--locked",
         "--lib",

@@ -38,7 +38,7 @@ async fn json_adapter_generation_file_is_deterministic_and_header_complete() {
   let receipt = committed(&*storage, put_transaction(1, revision, &[("a", b"v")])).await;
 
   let (bytes, document) = read_generation(dir.path(), 0);
-  let lock = LockHeader::decode(&fs::read(dir.path().join("minor-relay.lock")).unwrap()).unwrap();
+  let lock = LockHeader::decode(&fs::read(dir.path().join("radiata.lock")).unwrap()).unwrap();
   assert_eq!(document.schema, GENERATION_SCHEMA);
   assert_eq!(document.store_schema, STORE_SCHEMA);
   assert_eq!(document.store_uuid, lock.store_uuid);
@@ -267,11 +267,11 @@ async fn json_adapter_second_open_is_storage_locked_and_drop_releases() {
 
   drop(storage);
   let reopened = open(&factory).await;
-  let lock_bytes = fs::read(dir.path().join("minor-relay.lock")).unwrap();
+  let lock_bytes = fs::read(dir.path().join("radiata.lock")).unwrap();
   drop(reopened);
   let third = open(&factory).await;
   assert_eq!(
-    fs::read(dir.path().join("minor-relay.lock")).unwrap(),
+    fs::read(dir.path().join("radiata.lock")).unwrap(),
     lock_bytes
   );
   drop(third);
@@ -581,7 +581,7 @@ async fn json_adapter_reopen_uses_newest_snapshot_without_deleted_keys() {
 #[tokio::test]
 async fn json_adapter_failed_lock_open_does_not_poison_future_opens() {
   let dir = tempdir();
-  fs::create_dir(dir.path().join("minor-relay.lock")).unwrap();
+  fs::create_dir(dir.path().join("radiata.lock")).unwrap();
   let factory = factory(&dir);
   for attempt in 0..2 {
     let error = factory

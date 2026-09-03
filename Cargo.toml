@@ -3,11 +3,12 @@ members  = [".", "test-support"]
 resolver = "3"
 
 [package]
+description  = "Deterministic relay node runtime with identity, membership, storage, and TLS transport primitives."
 edition      = "2024"
-name         = "minor-relay"
-publish      = false
+license      = "GPL-2.0-only"
+name         = "radiata"
 rust-version = "1.98.0"
-version      = "0.1.0"
+version      = "0.0.2"
 
 [features]
 default = ["json"]
@@ -68,12 +69,9 @@ zeroize = "1.9"
 [target."cfg(unix)".dependencies]
 rustix = { version = "1.1", features = ["fs", "process"], optional = true }
 
-[build-dependencies]
-sha2 = "0.11"
-
 [dev-dependencies]
-minor-relay-test-support = { path = "test-support" }
 proptest = "1.11"
+radiata-test-support = { path = "test-support" }
 tempfile = "3.27"
 tokio = { version = "1.53", features = [
   "macros",

@@ -3,7 +3,7 @@ id: ADR-0002
 title: Negotiate feature labels and provide bounded durable delivery
 status: accepted
 date: 2026-08-02
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Negotiate Feature Labels and Provide Bounded Durable Delivery
@@ -15,7 +15,7 @@ deciders: minor-relay maintainers
 
 ## Context
 
-`minor-relay` needs one bounded wire envelope for authentication, direct requests, trust sync,
+`radiata` needs one bounded wire envelope for authentication, direct requests, trust sync,
 routing, and state replication. Mixed binary releases must interoperate by selecting the smallest
 common behavior set that both peers actually implement. Product or wire version numbers must not be
 used as an ordering, preference, or compatibility oracle.
@@ -113,27 +113,27 @@ start with `[a-z]` and continue with `[a-z0-9-]`; each is at most 63 characters.
 whitespace, empty path elements, repeated slashes, leading/trailing hyphens, and normalization are
 rejected.
 
-The built-in public namespace is `relay.woooo.tech`. Reserved built-in categories include:
+The built-in public namespace is `radiata.woooo.tech`. Reserved built-in categories include:
 
-- `relay.woooo.tech/features/<name>` for negotiated behavior labels;
-- `relay.woooo.tech/protocols/<name>` for handler/protocol tags;
-- `relay.woooo.tech/limits/<name>` for negotiated numeric limits;
-- `relay.woooo.tech/resources/<name>` for resource fields and derived views;
-- `relay.woooo.tech/events/<name>` for event kinds; and
-- `relay.woooo.tech/schemas/<name>` for named persisted or payload schemas.
+- `radiata.woooo.tech/features/<name>` for negotiated behavior labels;
+- `radiata.woooo.tech/protocols/<name>` for handler/protocol tags;
+- `radiata.woooo.tech/limits/<name>` for negotiated numeric limits;
+- `radiata.woooo.tech/resources/<name>` for resource fields and derived views;
+- `radiata.woooo.tech/events/<name>` for event kinds; and
+- `radiata.woooo.tech/schemas/<name>` for named persisted or payload schemas.
 
 For example, the initial authentication feature is
-`relay.woooo.tech/features/auth-ed25519-session`. The direct request handler tag is
-`relay.woooo.tech/protocols/direct-request`, and the data body limit is
-`relay.woooo.tech/limits/data-body-bytes`.
+`radiata.woooo.tech/features/auth-ed25519-session`. The direct request handler tag is
+`radiata.woooo.tech/protocols/direct-request`, and the data body limit is
+`radiata.woooo.tech/limits/data-body-bytes`.
 
 Extensions must use a DNS domain controlled by their owner and must not register under
-`relay.woooo.tech`. The library validates syntax and duplicate ownership but does not prove DNS
+`radiata.woooo.tech`. The library validates syntax and duplicate ownership but does not prove DNS
 control at runtime; domain ownership is a governance and review requirement. A tag's full bytes are
 the identity. Moving behavior to another domain creates a different tag.
 
 Cryptographic domain-separation strings use the related private namespace
-`relay.woooo.tech/crypto/<purpose>`. They are immutable protocol constants, not registry tags.
+`radiata.woooo.tech/crypto/<purpose>`. They are immutable protocol constants, not registry tags.
 
 ### Feature Label Registry
 
@@ -160,14 +160,14 @@ Initial built-in definitions are:
 
 | Feature label | Dependencies | Owned negotiated limits |
 | --- | --- | --- |
-| `relay.woooo.tech/features/auth-ed25519-session` | None | None |
-| `relay.woooo.tech/features/session-core` | `auth-ed25519-session` | None |
-| `relay.woooo.tech/features/data-messages` | `session-core` | `data-body-bytes` |
-| `relay.woooo.tech/features/direct-request` | `data-messages` | `in-flight-requests` |
-| `relay.woooo.tech/features/routed-delivery` | `data-messages` | None |
+| `radiata.woooo.tech/features/auth-ed25519-session` | None | None |
+| `radiata.woooo.tech/features/session-core` | `auth-ed25519-session` | None |
+| `radiata.woooo.tech/features/data-messages` | `session-core` | `data-body-bytes` |
+| `radiata.woooo.tech/features/direct-request` | `data-messages` | `in-flight-requests` |
+| `radiata.woooo.tech/features/routed-delivery` | `data-messages` | None |
 
-The abbreviated dependency and limit names in this table resolve within `relay.woooo.tech/features/`
-and `relay.woooo.tech/limits/`. Initial definitions have no conflicts. Their full canonical records
+The abbreviated dependency and limit names in this table resolve within `radiata.woooo.tech/features/`
+and `radiata.woooo.tech/limits/`. Initial definitions have no conflicts. Their full canonical records
 and fingerprints are frozen by the first registry golden fixture.
 
 ### Authenticated Feature Selection
@@ -241,10 +241,10 @@ Initial negotiated limit definitions are:
 
 | Limit tag | Width/unit | Default | Legal range | Owning feature | Mandatory |
 | --- | --- | ---: | ---: | --- | --- |
-| `relay.woooo.tech/limits/data-body-bytes` | `u32` bytes | 1 MiB | 64 KiB-8 MiB | `data-messages` | Yes |
-| `relay.woooo.tech/limits/in-flight-requests` | `u16` count | 256 | 1-1,024 | `direct-request` | Yes |
+| `radiata.woooo.tech/limits/data-body-bytes` | `u32` bytes | 1 MiB | 64 KiB-8 MiB | `data-messages` | Yes |
+| `radiata.woooo.tech/limits/in-flight-requests` | `u16` count | 256 | 1-1,024 | `direct-request` | Yes |
 
-The abbreviated owner names resolve within `relay.woooo.tech/features/`. Configuration may lower local
+The abbreviated owner names resolve within `radiata.woooo.tech/features/`. Configuration may lower local
 defaults. Data-body and in-flight offers may be raised only within their legal ranges. Queue defaults
 may be raised locally only below their absolute ceilings. Queue admission is bounded by count and
 bytes. Exceeding a guard or effective limit returns a typed local overload/protocol error and never
@@ -273,14 +273,14 @@ contains at least:
 - base schema ID and routed-request kind ID;
 - cluster ID and `TraceId`;
 - source and destination `NodeId` values;
-- domain-qualified `<owner-domain>/protocols/<name>` handler tag, with `relay.woooo.tech` reserved
+- domain-qualified `<owner-domain>/protocols/<name>` handler tag, with `radiata.woooo.tech` reserved
   for built-in handlers;
 - separate required transit-feature and destination-feature label sets;
 - opaque payload bytes; and
 - fields later declared mandatory by the immutable routed-request schema.
 
 `request_digest = SHA-256(canonical_request_bytes)`. The source signs
-`"relay.woooo.tech/crypto/routed-request-v1" || request_digest` with its ADR-0001 identity key. Every hop verifies
+`"radiata.woooo.tech/crypto/routed-request-v1" || request_digest` with its ADR-0001 identity key. Every hop verifies
 the signature against the persisted source binding. The same `(source NodeId, TraceId)` with another
 digest, destination, tag, feature requirement, or payload is a collision/attack and is never
 forwarded, dispatched, or ACKed.
@@ -290,7 +290,7 @@ forwarded, dispatched, or ACKed.
 Only the source creates attempt ordinals. For each ordinal it creates canonical authorization content
 with schema/kind IDs, cluster ID, source/destination IDs, `TraceId`, request digest, ordinal `0..=3`,
 and initial DATA hop limit 15. It signs
-`"relay.woooo.tech/crypto/routed-attempt-v1" || SHA-256(canonical_attempt_bytes)` with its identity
+`"radiata.woooo.tech/crypto/routed-attempt-v1" || SHA-256(canonical_attempt_bytes)` with its identity
 key. Every hop verifies this signature and all bound fields before journal lookup or route work.
 
 A DATA forwarding envelope carries the immutable request, source request signature, immutable attempt
@@ -331,7 +331,7 @@ owning feature plus every request-required feature to be present in the current 
 session's selected set.
 
 Routed dispatch has no end-to-end session selection. Every forwarding hop requires
-`relay.woooo.tech/features/routed-delivery` and all source-signed transit requirements in its local
+`radiata.woooo.tech/features/routed-delivery` and all source-signed transit requirements in its local
 pair-session selection. The destination independently requires the protocol tag to be registered and
 enabled, its immutable owning feature to be implemented and enabled locally, and every source-signed
 destination requirement to be implemented and enabled locally. Informational resource labels never
@@ -369,7 +369,7 @@ The destination ACK canonical content contains:
 - initial ACK hop limit 15; and
 - the exact status `Accepted`.
 
-It signs `"relay.woooo.tech/crypto/delivery-ack-v1" || SHA-256(canonical_ack_bytes)` with the
+It signs `"radiata.woooo.tech/crypto/delivery-ack-v1" || SHA-256(canonical_ack_bytes)` with the
 destination identity key. The source verifies the signature against the persisted destination binding,
 never the immediate session peer. Wrong-key, wrong-cluster, wrong-source/destination, wrong-schema,
 unknown-status, ordinal mismatch, or mutated-digest ACKs do not complete delivery. Forwarders cannot
@@ -378,7 +378,7 @@ be re-ACKed for that authenticated ordinal.
 
 A signed delivery rejection uses the same context fields, triggering ordinal, and hop limit, with a
 closed reason such as `UnsupportedFeature` or `UnknownHandler`, under the domain
-`relay.woooo.tech/crypto/delivery-reject-v1`.
+`radiata.woooo.tech/crypto/delivery-reject-v1`.
 
 ### ACK and Rejection Forwarding
 
@@ -477,7 +477,7 @@ T-G00-02 is documentation-only. Later gates own executable evidence:
   unsupported schema, excessive depth/collection, and allocation above the prechecked limit.
 - G3: registry tests reject duplicate labels, dependency cycles, missing dependencies, asymmetric or
   self conflicts, duplicate limit ownership, definition-digest mismatch, and semantic mutation of a
-  published `relay.woooo.tech` or extension-domain fixture.
+  published `radiata.woooo.tech` or extension-domain fixture.
 - G3: negotiation properties cover offer ordering permutations, unknown optional/required labels,
   dependency fixed points, conflicts, limit boundaries, exact selection bytes, and no retry fallback.
 - G3/G4: mixed binaries in both initiator roles prove optional-feature intersection, required-feature

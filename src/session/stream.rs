@@ -1995,7 +1995,7 @@ mod pending_admission_tests {
       target: PacketTarget::Exact(node(2)),
       load_balancer: None,
       max_hops: 1,
-      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test").unwrap(),
+      protocol: ProtocolTag::parse("radiata.woooo.tech/protocols/test").unwrap(),
       metadata: PacketMetadata::new(),
       body: Box::new(StaticBody::new(Arc::from(&b"x"[..]))),
       internal: true,
@@ -2039,13 +2039,13 @@ mod admission_tests {
   }
 
   fn protocol(name: &str) -> ProtocolTag {
-    ProtocolTag::parse(&format!("relay.woooo.tech/protocols/{name}")).unwrap()
+    ProtocolTag::parse(&format!("radiata.woooo.tech/protocols/{name}")).unwrap()
   }
 
   fn metadata(entries: &[(&str, &[u8])]) -> PacketMetadata {
     let mut md = PacketMetadata::new();
     for (name, value) in entries {
-      let key: QualifiedTag = format!("relay.woooo.tech/labels/{name}").parse().unwrap();
+      let key: QualifiedTag = format!("radiata.woooo.tech/labels/{name}").parse().unwrap();
       md = md.insert(key, Arc::from(*value)).unwrap();
     }
     md
@@ -2114,23 +2114,23 @@ mod admission_tests {
   fn metadata_ordering_is_canonical_in_the_digest() {
     let a = PacketMetadata::new()
       .insert(
-        "relay.woooo.tech/labels/alpha".parse().unwrap(),
+        "radiata.woooo.tech/labels/alpha".parse().unwrap(),
         Arc::from(&b"1"[..]),
       )
       .unwrap()
       .insert(
-        "relay.woooo.tech/labels/zeta".parse().unwrap(),
+        "radiata.woooo.tech/labels/zeta".parse().unwrap(),
         Arc::from(&b"2"[..]),
       )
       .unwrap();
     let b = PacketMetadata::new()
       .insert(
-        "relay.woooo.tech/labels/zeta".parse().unwrap(),
+        "radiata.woooo.tech/labels/zeta".parse().unwrap(),
         Arc::from(&b"2"[..]),
       )
       .unwrap()
       .insert(
-        "relay.woooo.tech/labels/alpha".parse().unwrap(),
+        "radiata.woooo.tech/labels/alpha".parse().unwrap(),
         Arc::from(&b"1"[..]),
       )
       .unwrap();

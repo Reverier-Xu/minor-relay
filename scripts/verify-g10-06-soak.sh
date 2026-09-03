@@ -21,17 +21,17 @@ trap 'rm -rf "$TMP"' EXIT
 # the weekly 8h and release 24h budgets) and the returned baseline and
 # the attempt ledger record the evidence.
 COMMIT=$(git rev-parse HEAD)
-export MINOR_RELAY_SOAK_DURATION_SECS=90
-export MINOR_RELAY_SOAK_LEDGER="$TMP/soak-ledger.ndjson"
-export MINOR_RELAY_SOAK_COMMIT="$COMMIT"
+export RADIATA_SOAK_DURATION_SECS=90
+export RADIATA_SOAK_LEDGER="$TMP/soak-ledger.ndjson"
+export RADIATA_SOAK_COMMIT="$COMMIT"
 cargo test --locked --all-features --test soak -- --ignored --exact soak_churn_then_baseline_return
 
 # The ledger line carries the frozen schema, the tested commit, the
 # workload counters, and every baseline proof.
-LINES=$(wc -l < "$MINOR_RELAY_SOAK_LEDGER")
+LINES=$(wc -l < "$RADIATA_SOAK_LEDGER")
 [[ $LINES -ge 1 ]] || { printf 'soak produced no ledger record\n' >&2; exit 1; }
 jq -e '
-  .schema == "relay.woooo.tech/schemas/soak-attempt-v1"
+  .schema == "radiata.woooo.tech/schemas/soak-attempt-v1"
   and (.commit | length) > 0
   and (.duration_secs | . >= 90)
   and (.packets_sent | . >= 100)
@@ -40,8 +40,8 @@ jq -e '
   and (.baseline_return.pending_transactions == 0)
   and (.baseline_return.open_files_end <= (.baseline_return.open_files_start + 8))
   and (.result == "pass")
-' < "$MINOR_RELAY_SOAK_LEDGER" > /dev/null || { printf 'soak ledger failed validation\n' >&2; exit 1; }
-[[ $(jq -r '.commit' < "$MINOR_RELAY_SOAK_LEDGER") == "$COMMIT" ]] || {
+' < "$RADIATA_SOAK_LEDGER" > /dev/null || { printf 'soak ledger failed validation\n' >&2; exit 1; }
+[[ $(jq -r '.commit' < "$RADIATA_SOAK_LEDGER") == "$COMMIT" ]] || {
   printf 'soak ledger commit does not match the tested commit\n' >&2
   exit 1
 }

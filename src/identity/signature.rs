@@ -2,8 +2,8 @@ use sha2::{Digest as ShaDigest, Sha256};
 
 use crate::{Digest, Error, PublicKey, Result, Signature};
 
-pub(crate) const CLUSTER_GENESIS_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/cluster-genesis-v1";
-pub(crate) const ADMISSION_GRANT_V1_DOMAIN: &[u8] = b"relay.woooo.tech/crypto/admission-grant-v1";
+pub(crate) const CLUSTER_GENESIS_V1_DOMAIN: &[u8] = b"radiata.woooo.tech/crypto/cluster-genesis-v1";
+pub(crate) const ADMISSION_GRANT_V1_DOMAIN: &[u8] = b"radiata.woooo.tech/crypto/admission-grant-v1";
 
 pub(crate) fn body_digest(canonical_body: &[u8]) -> Digest {
   Digest::from_bytes(Sha256::digest(canonical_body).into())
@@ -56,11 +56,11 @@ mod tests {
   fn identity_records_signature_domains_are_exact_ascii_labels() {
     assert_eq!(
       CLUSTER_GENESIS_V1_DOMAIN,
-      b"relay.woooo.tech/crypto/cluster-genesis-v1"
+      b"radiata.woooo.tech/crypto/cluster-genesis-v1"
     );
     assert_eq!(
       ADMISSION_GRANT_V1_DOMAIN,
-      b"relay.woooo.tech/crypto/admission-grant-v1"
+      b"radiata.woooo.tech/crypto/admission-grant-v1"
     );
     assert!(CLUSTER_GENESIS_V1_DOMAIN.is_ascii());
     assert!(ADMISSION_GRANT_V1_DOMAIN.is_ascii());

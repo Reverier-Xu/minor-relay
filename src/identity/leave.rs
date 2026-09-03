@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// The durable schema of the leave-intent record.
-const LEAVE_INTENT_SCHEMA: &str = "relay.woooo.tech/schemas/leave-intent-v1";
+const LEAVE_INTENT_SCHEMA: &str = "radiata.woooo.tech/schemas/leave-intent-v1";
 pub(crate) use crate::storage::families::LEAVE_NAMESPACE;
 
 /// Canonical-decoder bounds for the flat intent record.
@@ -725,10 +725,10 @@ mod crash {
     storage::{MetadataStore, test_util},
   };
 
-  const CRASH_DIR_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_DIR";
-  const CRASH_POINT_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_POINT";
-  const CRASH_PHASE_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_PHASE";
-  const CRASH_BACKEND_ENV: &str = "MINOR_RELAY_LEAVE_CRASH_BACKEND";
+  const CRASH_DIR_ENV: &str = "RADIATA_LEAVE_CRASH_DIR";
+  const CRASH_POINT_ENV: &str = "RADIATA_LEAVE_CRASH_POINT";
+  const CRASH_PHASE_ENV: &str = "RADIATA_LEAVE_CRASH_PHASE";
+  const CRASH_BACKEND_ENV: &str = "RADIATA_LEAVE_CRASH_BACKEND";
   const JSON_LAST_POINT: u8 = 13;
   const REDB_LAST_POINT: u8 = 6;
 

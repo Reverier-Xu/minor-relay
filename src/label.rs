@@ -160,18 +160,18 @@ mod tests {
   use crate::{ErrorKind, protocol::tag::MAX_TAG_LEN as LABEL_KEY_MAX_LEN};
 
   fn key(name: &str) -> LabelKey {
-    LabelKey::parse(&format!("relay.woooo.tech/labels/{name}")).unwrap()
+    LabelKey::parse(&format!("radiata.woooo.tech/labels/{name}")).unwrap()
   }
 
   /// Labels accept only the closed `labels` category, and values are
   /// bounded without truncation.
   #[test]
   fn label_keys_reject_other_categories_and_values_reject_overlimit() {
-    assert!(LabelKey::parse("relay.woooo.tech/features/alpha").is_err());
-    assert!(LabelKey::parse("relay.woooo.tech/protocols/alpha").is_err());
+    assert!(LabelKey::parse("radiata.woooo.tech/features/alpha").is_err());
+    assert!(LabelKey::parse("radiata.woooo.tech/protocols/alpha").is_err());
     assert!(
       LabelKey::parse(&format!(
-        "relay.woooo.tech/labels/{}",
+        "radiata.woooo.tech/labels/{}",
         "x".repeat(LABEL_KEY_MAX_LEN + 1)
       ))
       .is_err()
@@ -204,8 +204,8 @@ mod tests {
     assert_eq!(
       names,
       [
-        "relay.woooo.tech/labels/alpha",
-        "relay.woooo.tech/labels/zeta"
+        "radiata.woooo.tech/labels/alpha",
+        "radiata.woooo.tech/labels/zeta"
       ]
     );
     assert_eq!(

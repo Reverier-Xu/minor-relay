@@ -1,4 +1,4 @@
-schema = "relay.woooo.tech/schemas/planning-scenarios-v1"
+schema = "radiata.woooo.tech/schemas/planning-scenarios-v1"
 status = "accepted"
 
 # IDs are SC-G<two-digit gate>-<priority>-<two-digit first plus case index>.

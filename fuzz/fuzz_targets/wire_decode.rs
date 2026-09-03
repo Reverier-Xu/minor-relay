@@ -10,5 +10,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
-  let _ = minor_relay::fuzz_adapters::wire_decode(input);
+  let _ = radiata::fuzz_adapters::wire_decode(input);
 });

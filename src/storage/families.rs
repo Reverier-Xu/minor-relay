@@ -8,46 +8,47 @@
 //! namespace appears here (T-G08-01).
 
 /// Local identity singleton record.
-pub(crate) const LOCAL_IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
+pub(crate) const LOCAL_IDENTITY_NAMESPACE: &str = "radiata.woooo.tech/metadata/local-identity-v1";
 /// One immutable node-to-key identity binding per node.
-pub(crate) const IDENTITY_BINDING_NAMESPACE: &str = "relay.woooo.tech/metadata/identity-binding-v1";
+pub(crate) const IDENTITY_BINDING_NAMESPACE: &str =
+  "radiata.woooo.tech/metadata/identity-binding-v1";
 /// Cluster genesis admission record.
-pub(crate) const CLUSTER_GENESIS_NAMESPACE: &str = "relay.woooo.tech/metadata/cluster-genesis-v1";
+pub(crate) const CLUSTER_GENESIS_NAMESPACE: &str = "radiata.woooo.tech/metadata/cluster-genesis-v1";
 /// Local cluster membership pointer.
 pub(crate) const LOCAL_CLUSTER_POINTER_NAMESPACE: &str =
-  "relay.woooo.tech/metadata/local-cluster-pointer-v1";
+  "radiata.woooo.tech/metadata/local-cluster-pointer-v1";
 /// Single-use credential use evidence per issuer generation.
-pub(crate) const CREDENTIAL_USE_NAMESPACE: &str = "relay.woooo.tech/metadata/credential-use-v1";
+pub(crate) const CREDENTIAL_USE_NAMESPACE: &str = "radiata.woooo.tech/metadata/credential-use-v1";
 /// Committed admission grant per credential.
-pub(crate) const ADMISSION_GRANT_NAMESPACE: &str = "relay.woooo.tech/metadata/admission-grant-v1";
+pub(crate) const ADMISSION_GRANT_NAMESPACE: &str = "radiata.woooo.tech/metadata/admission-grant-v1";
 /// Pending Ed25519 key creation intent per operation.
 pub(crate) const KEY_CREATION_INTENT_NAMESPACE: &str =
-  "relay.woooo.tech/metadata/key-creation-intent-v1";
+  "radiata.woooo.tech/metadata/key-creation-intent-v1";
 /// Pending key deletion intent per provider handle.
 pub(crate) const KEY_DELETION_INTENT_NAMESPACE: &str =
-  "relay.woooo.tech/metadata/key-deletion-intent-v1";
+  "radiata.woooo.tech/metadata/key-deletion-intent-v1";
 /// Committed key deletion outcome per provider handle.
-pub(crate) const KEY_DELETED_NAMESPACE: &str = "relay.woooo.tech/metadata/key-deleted-v1";
+pub(crate) const KEY_DELETED_NAMESPACE: &str = "radiata.woooo.tech/metadata/key-deleted-v1";
 /// One issuer trust snapshot per issuer and revision.
-pub(crate) const TRUST_SNAPSHOT_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-snapshot-v1";
+pub(crate) const TRUST_SNAPSHOT_NAMESPACE: &str = "radiata.woooo.tech/metadata/trust-snapshot-v1";
 /// Trust snapshot binding observation per issuer and subject.
-pub(crate) const TRUST_BINDING_NAMESPACE: &str = "relay.woooo.tech/metadata/trust-binding-v1";
+pub(crate) const TRUST_BINDING_NAMESPACE: &str = "radiata.woooo.tech/metadata/trust-binding-v1";
 /// Local authorization revocation per exact subject binding (G9-04).
-pub(crate) const REVOCATION_NAMESPACE: &str = "relay.woooo.tech/metadata/revocation-v1";
+pub(crate) const REVOCATION_NAMESPACE: &str = "radiata.woooo.tech/metadata/revocation-v1";
 /// In-progress active-leave intent (G9-06).
-pub(crate) const LEAVE_NAMESPACE: &str = "relay.woooo.tech/metadata/leave-v1";
+pub(crate) const LEAVE_NAMESPACE: &str = "radiata.woooo.tech/metadata/leave-v1";
 /// Owner-revision-marked node descriptor per node.
-pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "relay.woooo.tech/metadata/node-descriptor-v1";
+pub(crate) const NODE_DESCRIPTOR_NAMESPACE: &str = "radiata.woooo.tech/metadata/node-descriptor-v1";
 /// One multiwriter generic resource register per resource name.
-pub(crate) const RESOURCE_RECORD_NAMESPACE: &str = "relay.woooo.tech/metadata/resource-record-v1";
+pub(crate) const RESOURCE_RECORD_NAMESPACE: &str = "radiata.woooo.tech/metadata/resource-record-v1";
 /// Bounded route-trace metadata per trace.
-pub(crate) const TRACE_NAMESPACE: &str = "relay.woooo.tech/metadata/route-trace-v1";
+pub(crate) const TRACE_NAMESPACE: &str = "radiata.woooo.tech/metadata/route-trace-v1";
 /// Durable pending-transaction journal record per transaction.
-pub(crate) const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
+pub(crate) const PENDING_NAMESPACE: &str = "radiata.woooo.tech/metadata/pending-transaction-v1";
 /// Storage-internal receipt markers and reference anchors.
-pub(crate) const INTERNAL_NAMESPACE: &str = "relay.woooo.tech/metadata/receipt-internal-v1";
+pub(crate) const INTERNAL_NAMESPACE: &str = "radiata.woooo.tech/metadata/receipt-internal-v1";
 /// The store's current logical schema version record.
-pub(crate) const SCHEMA_NAMESPACE: &str = "relay.woooo.tech/metadata/store-schema-v1";
+pub(crate) const SCHEMA_NAMESPACE: &str = "radiata.woooo.tech/metadata/store-schema-v1";
 
 #[cfg(test)]
 #[cfg_attr(

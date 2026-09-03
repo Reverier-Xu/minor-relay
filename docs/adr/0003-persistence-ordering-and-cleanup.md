@@ -3,7 +3,7 @@ id: ADR-0003
 title: Reconcile durable transactions and order replicated state with HLC
 status: accepted
 date: 2026-08-02
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Reconcile Durable Transactions and Order Replicated State with HLC
@@ -120,7 +120,7 @@ documented durability barrier. It never upgrades an unknown outcome to committed
 
 ### Capability and Error Contract
 
-Capabilities are explicit domain-qualified values under `relay.woooo.tech/storage-capabilities/<name>`.
+Capabilities are explicit domain-qualified values under `radiata.woooo.tech/storage-capabilities/<name>`.
 The contract distinguishes `ProcessCrashAtomic` from `OsCrashDurable`. Every backend must report the
 exact level it proves; a consumer requiring the stronger level rejects a weaker backend.
 
@@ -255,7 +255,7 @@ public key equals the persisted binding before signing.
 ### Persisted Schema and Migration Graph
 
 Every record begins with an immutable domain-qualified schema tag such as
-`relay.woooo.tech/schemas/state-record`. Schema tags are opaque identities with no numeric ordering.
+`radiata.woooo.tech/schemas/state-record`. Schema tags are opaque identities with no numeric ordering.
 Published tags and decoders are never redefined or reused.
 
 A migration registry contains one immutable implementation for each exact
@@ -314,7 +314,7 @@ watermark)` through the rules above; wall-clock rollback never reduces HLC.
 
 ### Signed State Record
 
-The state-record schema is `relay.woooo.tech/schemas/state-record`. Its deterministic-CBOR signed body
+The state-record schema is `radiata.woooo.tech/schemas/state-record`. Its deterministic-CBOR signed body
 contains:
 
 - record schema tag and cluster ID;
@@ -325,7 +325,7 @@ contains:
 - immutable fields later added only under a new state-record schema tag.
 
 The writer signs
-`"relay.woooo.tech/crypto/state-record-v1" || SHA-256(canonical_signed_body)` with its ADR-0001
+`"radiata.woooo.tech/crypto/state-record-v1" || SHA-256(canonical_signed_body)` with its ADR-0001
 identity key. Bounded canonical decoding, trusted writer-key lookup, `writer == signer`, and strict
 signature verification happen before quarantine, HLC merge, winner comparison, digest calculation, or
 persistence. Mutation or omission of any signed field fails closed.

@@ -331,9 +331,9 @@ mod crash {
     transport::testing::SeedEntropy,
   };
 
-  const CRASH_DIR_ENV: &str = "MINOR_RELAY_REVOKE_CRASH_DIR";
-  const CRASH_POINT_ENV: &str = "MINOR_RELAY_REVOKE_CRASH_POINT";
-  const CRASH_BACKEND_ENV: &str = "MINOR_RELAY_REVOKE_CRASH_BACKEND";
+  const CRASH_DIR_ENV: &str = "RADIATA_REVOKE_CRASH_DIR";
+  const CRASH_POINT_ENV: &str = "RADIATA_REVOKE_CRASH_POINT";
+  const CRASH_BACKEND_ENV: &str = "RADIATA_REVOKE_CRASH_BACKEND";
   const CHILD_ENTROPY_SEED: u8 = 11;
   const JSON_LAST_POINT: u8 = 13;
   const REDB_LAST_POINT: u8 = 6;

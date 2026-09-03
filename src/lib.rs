@@ -5,25 +5,25 @@
 //! modules remain private.
 //!
 //! ```compile_fail,E0603
-//! use minor_relay::provider;
+//! use radiata::provider;
 //! ```
 //!
 //! ```compile_fail,E0603
-//! use minor_relay::runtime;
+//! use radiata::runtime;
 //! ```
 //!
 //! Superseded limits and public clock injection are absent.
 //!
 //! ```compile_fail,E0432
-//! use minor_relay::{AdmissionLimits, Clock, MonotonicTime, ProtocolLimits, TraceLimits};
+//! use radiata::{AdmissionLimits, Clock, MonotonicTime, ProtocolLimits, TraceLimits};
 //! ```
 //!
 //! ```compile_fail,E0432
-//! use minor_relay::extension::Clock;
+//! use radiata::extension::Clock;
 //! ```
 //!
 //! ```compile_fail,E0599
-//! let _ = minor_relay::NodeConfig::new().with_member_limit(1_024);
+//! let _ = radiata::NodeConfig::new().with_member_limit(1_024);
 //! ```
 
 mod api;

@@ -1,11 +1,11 @@
 ---
-title: minor-relay Functional 0.1 Public API Manifest
+title: radiata Functional 0.1 Public API Manifest
 status: accepted
 owner: T-G00-06
 source: ADR-0007
 ---
 
-# minor-relay Functional 0.1 Public API Manifest
+# radiata Functional 0.1 Public API Manifest
 
 ## Contract
 
@@ -197,7 +197,7 @@ impl Endpoint {
 ```
 
 Every tag and label type has `parse`, `as_str`, and canonical value traits. Reserved resource labels are
-`relay.woooo.tech/resources/type` and `relay.woooo.tech/resources/uri`; caller values remain opaque to core.
+`radiata.woooo.tech/resources/type` and `radiata.woooo.tech/resources/uri`; caller values remain opaque to core.
 Core never dereferences a `ResourceUri`.
 
 ```rust

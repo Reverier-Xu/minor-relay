@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use minor_relay::{
+use radiata::{
   DurabilityLevel, ErrorKind, GetNodeStatus, NodeBuilder, NodeStatus, ProviderErrorKind, Shutdown,
   StoreCapabilities,
   extension::{KeyProvider, StorageFactory},

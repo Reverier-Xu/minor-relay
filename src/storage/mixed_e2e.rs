@@ -76,7 +76,7 @@ fn resource_record(
 ) -> ResourceRecordV1 {
   ResourceRecordV1::sign(
     ClusterId::parse("cluster_000000000000000000001").unwrap(),
-    ResourceName::parse(&format!("relay.woooo.tech/resources/mixed-{seed_index}")).unwrap(),
+    ResourceName::parse(&format!("radiata.woooo.tech/resources/mixed-{seed_index}")).unwrap(),
     LabelValue::parse("document").unwrap(),
     crate::ResourceUri::parse(uri).unwrap(),
     LabelSet::new()
@@ -344,8 +344,8 @@ fn assert_view_old_or_new(
 mod killed_restart_json {
   use super::*;
 
-  const CRASH_DIR_ENV: &str = "MINOR_RELAY_MIXED_JSON_CRASH_DIR";
-  const CRASH_POINT_ENV: &str = "MINOR_RELAY_MIXED_JSON_CRASH_POINT";
+  const CRASH_DIR_ENV: &str = "RADIATA_MIXED_JSON_CRASH_DIR";
+  const CRASH_POINT_ENV: &str = "RADIATA_MIXED_JSON_CRASH_POINT";
   const FIRST_COMMITTED_POINT: u8 = 8;
   const LAST_POINT: u8 = 13;
 
@@ -403,8 +403,8 @@ mod killed_restart_json {
 mod killed_restart_redb {
   use super::*;
 
-  const CRASH_DIR_ENV: &str = "MINOR_RELAY_MIXED_REDB_CRASH_DIR";
-  const CRASH_POINT_ENV: &str = "MINOR_RELAY_MIXED_REDB_CRASH_POINT";
+  const CRASH_DIR_ENV: &str = "RADIATA_MIXED_REDB_CRASH_DIR";
+  const CRASH_POINT_ENV: &str = "RADIATA_MIXED_REDB_CRASH_POINT";
   const FIRST_COMMITTED_POINT: u8 = 6;
   const LAST_POINT: u8 = 6;
 

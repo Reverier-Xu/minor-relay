@@ -330,8 +330,8 @@ mod tests {
 
   fn definition(name: &str) -> ProtocolDefinition {
     ProtocolDefinition::new(
-      ProtocolTag::parse(&format!("relay.woooo.tech/protocols/{name}")).unwrap(),
-      FeatureTag::parse("relay.woooo.tech/features/data-messages").unwrap(),
+      ProtocolTag::parse(&format!("radiata.woooo.tech/protocols/{name}")).unwrap(),
+      FeatureTag::parse("radiata.woooo.tech/features/data-messages").unwrap(),
     )
   }
 
@@ -342,7 +342,7 @@ mod tests {
       .register_protocol(definition("alpha"), Arc::new(NoopConsumer))
       .unwrap();
     assert!(
-      registry.has_protocol(&ProtocolTag::parse("relay.woooo.tech/protocols/alpha").unwrap())
+      registry.has_protocol(&ProtocolTag::parse("radiata.woooo.tech/protocols/alpha").unwrap())
     );
 
     let error = registry
@@ -354,9 +354,11 @@ mod tests {
     registry
       .register_protocol(definition("beta"), Arc::new(NoopConsumer))
       .unwrap();
-    assert!(registry.has_protocol(&ProtocolTag::parse("relay.woooo.tech/protocols/beta").unwrap()));
     assert!(
-      !registry.has_protocol(&ProtocolTag::parse("relay.woooo.tech/protocols/gamma").unwrap())
+      registry.has_protocol(&ProtocolTag::parse("radiata.woooo.tech/protocols/beta").unwrap())
+    );
+    assert!(
+      !registry.has_protocol(&ProtocolTag::parse("radiata.woooo.tech/protocols/gamma").unwrap())
     );
   }
 }

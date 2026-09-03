@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// The durable schema and namespace of one trust snapshot record.
-pub(crate) const TRUST_SNAPSHOT_SCHEMA: &str = "relay.woooo.tech/schemas/trust-snapshot-v1";
+pub(crate) const TRUST_SNAPSHOT_SCHEMA: &str = "radiata.woooo.tech/schemas/trust-snapshot-v1";
 pub(crate) use crate::storage::families::TRUST_SNAPSHOT_NAMESPACE;
 
 /// One ordered `(node, key)` binding inside a snapshot.

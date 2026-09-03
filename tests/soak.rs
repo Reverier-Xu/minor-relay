@@ -15,7 +15,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use minor_relay::{
+use radiata::{
   ConnectMember, CreateCluster, DisconnectPeer, Endpoint, GetObservability, GetResource, Listen,
   NodeBuilder, NodeConfig, NodeHandle, NodeId, PacketMetadata, PacketPolicy, PacketTarget,
   ProtocolTag, PutResource, QualifiedTag, RemoveResource, ResourceLabels, ResourceName,
@@ -51,9 +51,9 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
   }
 }
 
-const ISSUER_RESOURCE_PREFIX: &str = "relay.woooo.tech/resources/soak";
-const SOAK_PROTOCOL: &str = "relay.woooo.tech/protocols/soak-echo";
-const SOAK_OWNING_FEATURE: &str = "relay.woooo.tech/features/data-messages";
+const ISSUER_RESOURCE_PREFIX: &str = "radiata.woooo.tech/resources/soak";
+const SOAK_PROTOCOL: &str = "radiata.woooo.tech/protocols/soak-echo";
+const SOAK_OWNING_FEATURE: &str = "radiata.woooo.tech/features/data-messages";
 const WORKLOAD_TICK: Duration = Duration::from_millis(25);
 const BASELINE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -69,9 +69,9 @@ struct Collector {
   packets: std::sync::Mutex<usize>,
 }
 
-impl minor_relay::PacketConsumer for Collector {
+impl radiata::PacketConsumer for Collector {
   fn accept<'a>(
-    &'a self, mut packet: minor_relay::IncomingPacket,
+    &'a self, mut packet: radiata::IncomingPacket,
   ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
       while packet.body().next_chunk().await?.is_some() {}
@@ -91,27 +91,25 @@ impl std::fmt::Debug for SoakBody {
   }
 }
 
-impl minor_relay::PacketBody for SoakBody {
-  fn next_chunk<'a>(
-    &'a mut self,
-  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+impl radiata::PacketBody for SoakBody {
+  fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(self.chunk.take()) })
   }
 }
 
 async fn start_node(seed: u64) -> Node {
   let keys: Arc<dyn KeyProvider> = Arc::new(ScriptedKeys::full_at(4_300_000 + seed * 1_000));
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> =
+  let factory: Arc<dyn radiata::extension::StorageFactory> =
     Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
   let collector = Arc::new(Collector::default());
-  let mut extensions = minor_relay::ExtensionRegistry::new();
+  let mut extensions = radiata::ExtensionRegistry::new();
   extensions
     .register_protocol(
-      minor_relay::ProtocolDefinition::new(
+      radiata::ProtocolDefinition::new(
         ProtocolTag::parse(SOAK_PROTOCOL).unwrap(),
         FeatureTag::parse(SOAK_OWNING_FEATURE).unwrap(),
       ),
-      Arc::clone(&collector) as Arc<dyn minor_relay::PacketConsumer>,
+      Arc::clone(&collector) as Arc<dyn radiata::PacketConsumer>,
     )
     .unwrap();
   let config = NodeConfig::new()
@@ -131,7 +129,7 @@ async fn start_node(seed: u64) -> Node {
   }
 }
 
-use minor_relay::FeatureTag;
+use radiata::FeatureTag;
 
 impl Node {
   async fn listen(&mut self) {
@@ -169,13 +167,13 @@ struct WorkloadStats {
   failures: Vec<WorkloadFailure>,
 }
 
-fn counter(snapshot: &minor_relay::ObservabilitySnapshot, tag: &str) -> u64 {
+fn counter(snapshot: &radiata::ObservabilitySnapshot, tag: &str) -> u64 {
   snapshot
     .counter(&QualifiedTag::parse(tag).unwrap())
     .unwrap()
 }
 
-async fn snapshot_of(handle: &NodeHandle) -> minor_relay::ObservabilitySnapshot {
+async fn snapshot_of(handle: &NodeHandle) -> radiata::ObservabilitySnapshot {
   handle.query(GetObservability::new()).await.unwrap()
 }
 
@@ -187,7 +185,7 @@ async fn wait_sessions(nodes: &[&Node], expected: usize) {
     let mut complete = true;
     for node in nodes {
       let snapshot = snapshot_of(&node.handle).await;
-      if counter(&snapshot, minor_relay::ObservabilitySnapshot::SESSIONS) as usize != expected {
+      if counter(&snapshot, radiata::ObservabilitySnapshot::SESSIONS) as usize != expected {
         complete = false;
       }
     }
@@ -239,7 +237,7 @@ fn append_ledger(
     .join(",");
   let record = format!(
     concat!(
-      "{{\"schema\":\"relay.woooo.tech/schemas/soak-attempt-v1\",",
+      "{{\"schema\":\"radiata.woooo.tech/schemas/soak-attempt-v1\",",
       "\"commit\":\"{}\",\"duration_secs\":{},\"packets_sent\":{},",
       "\"packets_received\":{},\"resources_written\":{},\"reconnects\":{},",
       "\"credential_rotations\":{},\"failures\":[{}],\"baseline_return\":{{{}}},",
@@ -272,18 +270,18 @@ fn append_ledger(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "soak; run via scripts/verify-g10-06-soak.sh or the CI schedule"]
 async fn soak_churn_then_baseline_return() {
-  let duration_secs: u64 = std::env::var("MINOR_RELAY_SOAK_DURATION_SECS")
+  let duration_secs: u64 = std::env::var("RADIATA_SOAK_DURATION_SECS")
     .ok()
     .and_then(|value| value.parse().ok())
     .unwrap_or(60);
   let duration = Duration::from_secs(duration_secs);
-  let ledger = std::env::var("MINOR_RELAY_SOAK_LEDGER")
-    .unwrap_or_else(|_| "target/soak-ledger.ndjson".to_owned());
-  let commit = std::env::var("MINOR_RELAY_SOAK_COMMIT").unwrap_or_else(|_| "unknown".to_owned());
+  let ledger =
+    std::env::var("RADIATA_SOAK_LEDGER").unwrap_or_else(|_| "target/soak-ledger.ndjson".to_owned());
+  let commit = std::env::var("RADIATA_SOAK_COMMIT").unwrap_or_else(|_| "unknown".to_owned());
 
   let capture = LogCapture::default();
   let _ = tracing_subscriber::fmt()
-    .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=warn"))
+    .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=warn"))
     .with_writer(capture.clone())
     .try_init();
 
@@ -308,7 +306,7 @@ async fn soak_churn_then_baseline_return() {
     member.id = Some(
       member
         .handle
-        .query(minor_relay::GetLocalNode::new())
+        .query(radiata::GetLocalNode::new())
         .await
         .unwrap()
         .node_id()
@@ -321,10 +319,10 @@ async fn soak_churn_then_baseline_return() {
 
   let mut stats = WorkloadStats::default();
   let protocol = ProtocolTag::parse(SOAK_PROTOCOL).unwrap();
-  let policy = PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 8).unwrap();
+  let policy = PacketPolicy::new(radiata::RoutingPolicy::Direct, 8).unwrap();
   let started = Instant::now();
   let mut tick = 0_u64;
-  let mut last_resource: Option<(ResourceName, minor_relay::ResourceVersion)> = None;
+  let mut last_resource: Option<(ResourceName, radiata::ResourceVersion)> = None;
 
   while started.elapsed() < duration {
     let member = &members[(tick as usize) % members.len()];
@@ -361,7 +359,7 @@ async fn soak_churn_then_baseline_return() {
     let write = ResourceWrite::new(
       name.clone(),
       ResourceLabels::new(
-        minor_relay::LabelValue::parse("soak").unwrap(),
+        radiata::LabelValue::parse("soak").unwrap(),
         ResourceUri::parse("file:///soak/placeholder").unwrap(),
       ),
     );
@@ -396,9 +394,9 @@ async fn soak_churn_then_baseline_return() {
     }
 
     // Session churn: every sixteen ticks, disconnect and reconnect one
-    // member (disable with MINOR_RELAY_SOAK_NO_CHURN for isolation);
+    // member (disable with RADIATA_SOAK_NO_CHURN for isolation);
     // every sixty-four ticks, rotate the admission credential.
-    if tick.is_multiple_of(16) && std::env::var("MINOR_RELAY_SOAK_NO_CHURN").is_err() {
+    if tick.is_multiple_of(16) && std::env::var("RADIATA_SOAK_NO_CHURN").is_err() {
       let churned = &members[(tick as usize / 16) % members.len()];
       match issuer
         .handle
@@ -491,7 +489,7 @@ async fn soak_churn_then_baseline_return() {
     {
       let messages = counter(
         snapshot,
-        minor_relay::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
+        radiata::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
       );
       queued_max = queued_max.max(messages);
     }
@@ -520,21 +518,18 @@ async fn soak_churn_then_baseline_return() {
   let issuer_queued = (
     counter(
       &issuer_snapshot,
-      minor_relay::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
+      radiata::ObservabilitySnapshot::QUEUED_SESSION_MESSAGES,
     ),
     counter(
       &issuer_snapshot,
-      minor_relay::ObservabilitySnapshot::QUEUED_SESSION_BYTES,
+      radiata::ObservabilitySnapshot::QUEUED_SESSION_BYTES,
     ),
   );
 
   // Queues, streams, routes, and transactions return to their baselines.
   baseline.push((
     "sessions",
-    counter(
-      &issuer_snapshot,
-      minor_relay::ObservabilitySnapshot::SESSIONS,
-    ),
+    counter(&issuer_snapshot, radiata::ObservabilitySnapshot::SESSIONS),
   ));
   baseline.push(("queued_session_frames", issuer_queued.0));
   baseline.push(("queued_session_bytes", issuer_queued.1));
@@ -544,7 +539,7 @@ async fn soak_churn_then_baseline_return() {
     .map(|snapshot| {
       counter(
         snapshot,
-        minor_relay::ObservabilitySnapshot::PENDING_TRANSACTIONS,
+        radiata::ObservabilitySnapshot::PENDING_TRANSACTIONS,
       )
     })
     .sum();
@@ -553,7 +548,7 @@ async fn soak_churn_then_baseline_return() {
     "trace_records",
     counter(
       &issuer_snapshot,
-      minor_relay::ObservabilitySnapshot::TRACE_RECORDS,
+      radiata::ObservabilitySnapshot::TRACE_RECORDS,
     ),
   ));
   let files_at_end = open_files();

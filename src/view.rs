@@ -230,23 +230,23 @@ pub struct ObservabilitySnapshot {
 
 impl ObservabilitySnapshot {
   /// Well-known counter tag: live authenticated sessions.
-  pub const SESSIONS: &str = "relay.woooo.tech/status/sessions";
+  pub const SESSIONS: &str = "radiata.woooo.tech/status/sessions";
   /// Well-known counter tag: live listeners.
-  pub const LISTENERS: &str = "relay.woooo.tech/status/listeners";
+  pub const LISTENERS: &str = "radiata.woooo.tech/status/listeners";
   /// Well-known counter tag: live background tasks.
-  pub const BACKGROUND_TASKS: &str = "relay.woooo.tech/status/background-tasks";
+  pub const BACKGROUND_TASKS: &str = "radiata.woooo.tech/status/background-tasks";
   /// Well-known counter tag: total queued outbound session frames.
-  pub const QUEUED_SESSION_MESSAGES: &str = "relay.woooo.tech/status/queued-session-messages";
+  pub const QUEUED_SESSION_MESSAGES: &str = "radiata.woooo.tech/status/queued-session-messages";
   /// Well-known counter tag: total queued outbound session bytes.
-  pub const QUEUED_SESSION_BYTES: &str = "relay.woooo.tech/status/queued-session-bytes";
+  pub const QUEUED_SESSION_BYTES: &str = "radiata.woooo.tech/status/queued-session-bytes";
   /// Well-known counter tag: open outbound routes.
-  pub const OPEN_ROUTES: &str = "relay.woooo.tech/status/open-routes";
+  pub const OPEN_ROUTES: &str = "radiata.woooo.tech/status/open-routes";
   /// Well-known counter tag: retained trace metadata records.
-  pub const TRACE_RECORDS: &str = "relay.woooo.tech/status/trace-records";
+  pub const TRACE_RECORDS: &str = "radiata.woooo.tech/status/trace-records";
   /// Well-known counter tag: pending metadata transactions.
-  pub const PENDING_TRANSACTIONS: &str = "relay.woooo.tech/status/pending-transactions";
+  pub const PENDING_TRANSACTIONS: &str = "radiata.woooo.tech/status/pending-transactions";
   /// Well-known counter tag: metadata store availability (1 = available).
-  pub const METADATA_STORE_AVAILABLE: &str = "relay.woooo.tech/status/metadata-store-available";
+  pub const METADATA_STORE_AVAILABLE: &str = "radiata.woooo.tech/status/metadata-store-available";
 
   /// The value of one well-known counter, if the snapshot carries it.
   pub fn counter(&self, tag: &QualifiedTag) -> Option<u64> {

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use minor_relay::{
+use radiata::{
   CreateCluster, Endpoint, ErrorKind, GetLocalNode, JoinCluster, JoinCredential, Listen,
   NodeBuilder, NodeHandle, RotateJoinCredential, Shutdown, extension::StorageFactory,
 };
@@ -40,9 +40,7 @@ fn keys_at(seed: u64) -> Arc<ScriptedKeys> {
   Arc::new(ScriptedKeys::full_at(seed))
 }
 
-async fn clustered(
-  factory: Arc<dyn StorageFactory>, seed: u64,
-) -> (Node, minor_relay::ClusterView) {
+async fn clustered(factory: Arc<dyn StorageFactory>, seed: u64) -> (Node, radiata::ClusterView) {
   let node = start(factory, keys_at(seed)).await;
   let cluster = node.handle.command(CreateCluster::new()).await.unwrap();
   (node, cluster)
@@ -50,7 +48,7 @@ async fn clustered(
 
 async fn join(
   node: &Node, endpoint: &Endpoint, credential: JoinCredential,
-) -> minor_relay::Result<minor_relay::AdmissionView> {
+) -> radiata::Result<radiata::AdmissionView> {
   node
     .handle
     .command(JoinCluster::new(endpoint.clone(), credential))
@@ -60,7 +58,7 @@ async fn join(
 /// Issues one join credential with bounded retries: admission-sensitive
 /// operations refuse while a concurrent metadata commit or reconciliation
 /// holds the store, so a rotation is retried instead of failing the lane.
-async fn rotate_with_retry(issuer: &Node) -> minor_relay::IssuedJoinCredential {
+async fn rotate_with_retry(issuer: &Node) -> radiata::IssuedJoinCredential {
   let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
   loop {
     match issuer.handle.command(RotateJoinCredential::new()).await {

@@ -875,7 +875,7 @@ fn matrix_policy(
 }
 
 fn forced_replay_seed() -> SimResult<u64> {
-  let value = std::env::var("MINOR_RELAY_SIM_SEED").map_err(|_| SimulationError::InvalidLimit)?;
+  let value = std::env::var("RADIATA_SIM_SEED").map_err(|_| SimulationError::InvalidLimit)?;
   let bytes = value.as_bytes();
   if bytes.is_empty()
     || bytes.len() > 20

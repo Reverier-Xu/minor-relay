@@ -1,4 +1,4 @@
-# minor-relay Threat Model
+# radiata Threat Model
 
 ## Authority
 

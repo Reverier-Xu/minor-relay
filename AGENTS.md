@@ -2,7 +2,7 @@
 
 ## Project Scope
 
-`minor-relay` is a Rust 2024 library crate. Keep changes minimal, maintain the public API deliberately, and do not add application, deployment, or platform-specific structure without a concrete requirement.
+`radiata` is a Rust 2024 library crate. Keep changes minimal, maintain the public API deliberately, and do not add application, deployment, or platform-specific structure without a concrete requirement.
 
 ## Repository Structure
 

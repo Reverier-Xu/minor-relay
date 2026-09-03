@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use minor_relay::{
+use radiata::{
   CreateCluster, Endpoint, EventOptions, EventReceive, NodeBuilder, NodeConfig, NodeHandle,
   PageSpec, PutResource, ResourceChanged, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
   SelectResources, Selector, Shutdown, ShutdownReason,
@@ -45,24 +45,24 @@ async fn start_node(seed: u64, storage: Arc<MemoryStorageFactory>) -> Node {
 async fn listen(node: &Node) -> Endpoint {
   let listener = node
     .handle
-    .command(minor_relay::Listen::new(node.endpoint.clone()))
+    .command(radiata::Listen::new(node.endpoint.clone()))
     .await
     .unwrap();
   listener.endpoint().clone()
 }
 
 fn resource_name(seed: u8) -> ResourceName {
-  ResourceName::parse(&format!("relay.woooo.tech/resources/g9-ops-{seed:03}")).unwrap()
+  ResourceName::parse(&format!("radiata.woooo.tech/resources/g9-ops-{seed:03}")).unwrap()
 }
 
 fn resource_labels(kind: &str, seed: u8) -> ResourceLabels {
   ResourceLabels::new(
-    minor_relay::LabelValue::parse(kind).unwrap(),
+    radiata::LabelValue::parse(kind).unwrap(),
     ResourceUri::parse(&format!("file:///g9/{seed:03}")).unwrap(),
   )
   .custom(
-    minor_relay::LabelKey::parse("example.org/labels/lane").unwrap(),
-    minor_relay::LabelValue::parse(&format!("lane-{seed}")).unwrap(),
+    radiata::LabelKey::parse("example.org/labels/lane").unwrap(),
+    radiata::LabelValue::parse(&format!("lane-{seed}")).unwrap(),
   )
   .unwrap()
 }
@@ -115,7 +115,7 @@ async fn g9_put_resource_commits_atomically_and_emits_one_event() {
 
   // The committed candidate is selectable through its reserved and
   // custom labels.
-  let by_type = select_names(&node.handle, "relay.woooo.tech/resources/type=document").await;
+  let by_type = select_names(&node.handle, "radiata.woooo.tech/resources/type=document").await;
   assert_eq!(by_type, [resource_name(1).as_str().to_owned()]);
   let by_custom = select_names(&node.handle, "example.org/labels/lane=lane-1").await;
   assert_eq!(by_custom, [resource_name(1).as_str().to_owned()]);
@@ -186,13 +186,13 @@ async fn g9_put_resource_without_cluster_aborts_without_event() {
     )
     .await
     .unwrap_err();
-  assert_eq!(error.kind(), minor_relay::ErrorKind::NotReady);
+  assert_eq!(error.kind(), radiata::ErrorKind::NotReady);
   assert!(matches!(
     events.try_recv().unwrap(),
     EventReceive::Empty | EventReceive::Closed
   ));
   assert!(
-    select_names(&node.handle, "relay.woooo.tech/resources/type")
+    select_names(&node.handle, "radiata.woooo.tech/resources/type")
       .await
       .is_empty()
   );
@@ -255,7 +255,7 @@ async fn g9_concurrent_resource_writes_converge_to_one_winner() {
     let view_a = issuer
       .handle
       .query(SelectResources::new(
-        Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+        Selector::parse("radiata.woooo.tech/resources/type").unwrap(),
         PageSpec::first(64).unwrap(),
       ))
       .await
@@ -263,7 +263,7 @@ async fn g9_concurrent_resource_writes_converge_to_one_winner() {
     let view_b = member
       .handle
       .query(SelectResources::new(
-        Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+        Selector::parse("radiata.woooo.tech/resources/type").unwrap(),
         PageSpec::first(64).unwrap(),
       ))
       .await
@@ -277,12 +277,12 @@ async fn g9_concurrent_resource_writes_converge_to_one_winner() {
     if deadline.elapsed() >= Duration::from_secs(30) {
       let members_a = issuer
         .handle
-        .query(minor_relay::PageMembers::new(PageSpec::first(8).unwrap()))
+        .query(radiata::PageMembers::new(PageSpec::first(8).unwrap()))
         .await
         .unwrap();
       let members_b = member
         .handle
-        .query(minor_relay::PageMembers::new(PageSpec::first(8).unwrap()))
+        .query(radiata::PageMembers::new(PageSpec::first(8).unwrap()))
         .await
         .unwrap();
       panic!(
@@ -348,7 +348,7 @@ async fn g9_maintenance_preserves_labels_and_emits_nothing() {
   // The resource converges to the member through ordinary sync...
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   loop {
-    if select_names(&member.handle, "relay.woooo.tech/resources/type=document").await
+    if select_names(&member.handle, "radiata.woooo.tech/resources/type=document").await
       == [resource_name(4).as_str().to_owned()]
     {
       break;
@@ -385,7 +385,7 @@ async fn g9_maintenance_preserves_labels_and_emits_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g9_json_restart_preserves_labels_without_event_replay() {
   let directory = tempfile::tempdir().unwrap();
-  restart_preserves_labels_without_event_replay(minor_relay::adapters::json_store(
+  restart_preserves_labels_without_event_replay(radiata::adapters::json_store(
     directory.path().to_path_buf(),
   ))
   .await;
@@ -395,7 +395,7 @@ async fn g9_json_restart_preserves_labels_without_event_replay() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g9_redb_restart_preserves_labels_without_event_replay() {
   let directory = tempfile::tempdir().unwrap();
-  restart_preserves_labels_without_event_replay(minor_relay::adapters::redb_store(
+  restart_preserves_labels_without_event_replay(radiata::adapters::redb_store(
     directory.path().join("store.redb"),
   ))
   .await;
@@ -490,7 +490,7 @@ async fn g9_remove_resource_requires_the_exact_version() {
   let stale = node
     .handle
     .query(SelectResources::new(
-      Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+      Selector::parse("radiata.woooo.tech/resources/type").unwrap(),
       PageSpec::first(8).unwrap(),
     ))
     .await
@@ -515,12 +515,12 @@ async fn g9_remove_resource_requires_the_exact_version() {
     .await
     .unwrap();
 
-  let current = select_names(&node.handle, "relay.woooo.tech/resources/type").await;
+  let current = select_names(&node.handle, "radiata.woooo.tech/resources/type").await;
   assert_eq!(current, [name.as_str().to_owned()]);
   let page = node
     .handle
     .query(SelectResources::new(
-      Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+      Selector::parse("radiata.woooo.tech/resources/type").unwrap(),
       PageSpec::first(8).unwrap(),
     ))
     .await
@@ -532,11 +532,11 @@ async fn g9_remove_resource_requires_the_exact_version() {
   assert_eq!(
     node
       .handle
-      .command(minor_relay::RemoveResource::new(name.clone(), stale))
+      .command(radiata::RemoveResource::new(name.clone(), stale))
       .await
       .unwrap_err()
       .kind(),
-    minor_relay::ErrorKind::Conflict,
+    radiata::ErrorKind::Conflict,
     "a stale removal request never wins"
   );
   assert!(matches!(
@@ -547,24 +547,21 @@ async fn g9_remove_resource_requires_the_exact_version() {
   assert_eq!(
     node
       .handle
-      .command(minor_relay::RemoveResource::new(
+      .command(radiata::RemoveResource::new(
         resource_name(21),
         winner.clone()
       ))
       .await
       .unwrap_err()
       .kind(),
-    minor_relay::ErrorKind::NotFound,
+    radiata::ErrorKind::NotFound,
   );
 
   // The exact version removes the resource: the removal wins the tuple
   // and the resource leaves selection.
   let outcome = node
     .handle
-    .command(minor_relay::RemoveResource::new(
-      name.clone(),
-      winner.clone(),
-    ))
+    .command(radiata::RemoveResource::new(name.clone(), winner.clone()))
     .await
     .unwrap();
   assert!(outcome.is_current_winner());
@@ -578,7 +575,7 @@ async fn g9_remove_resource_requires_the_exact_version() {
     _ => panic!("expected the removal event"),
   }
   assert!(
-    select_names(&node.handle, "relay.woooo.tech/resources/type")
+    select_names(&node.handle, "radiata.woooo.tech/resources/type")
       .await
       .is_empty(),
     "the removed winner leaves the selection"
@@ -589,11 +586,11 @@ async fn g9_remove_resource_requires_the_exact_version() {
   assert_eq!(
     node
       .handle
-      .command(minor_relay::RemoveResource::new(name.clone(), winner))
+      .command(radiata::RemoveResource::new(name.clone(), winner))
       .await
       .unwrap_err()
       .kind(),
-    minor_relay::ErrorKind::Conflict
+    radiata::ErrorKind::Conflict
   );
   assert!(matches!(
     events.try_recv().unwrap(),
@@ -604,7 +601,7 @@ async fn g9_remove_resource_requires_the_exact_version() {
   let removal_version = outcome.accepted().version().clone();
   let again = node
     .handle
-    .command(minor_relay::RemoveResource::new(name, removal_version))
+    .command(radiata::RemoveResource::new(name, removal_version))
     .await
     .unwrap();
   assert!(again.is_current_winner());
@@ -645,7 +642,7 @@ async fn g9_remove_preserves_unrelated_metadata() {
   let page = node
     .handle
     .query(SelectResources::new(
-      Selector::parse("relay.woooo.tech/resources/type=document").unwrap(),
+      Selector::parse("radiata.woooo.tech/resources/type=document").unwrap(),
       PageSpec::first(8).unwrap(),
     ))
     .await
@@ -659,7 +656,7 @@ async fn g9_remove_preserves_unrelated_metadata() {
 
   node
     .handle
-    .command(minor_relay::RemoveResource::new(resource_name(30), version))
+    .command(radiata::RemoveResource::new(resource_name(30), version))
     .await
     .unwrap();
 
@@ -667,7 +664,7 @@ async fn g9_remove_preserves_unrelated_metadata() {
   let remaining = node
     .handle
     .query(SelectResources::new(
-      Selector::parse("relay.woooo.tech/resources/type=document").unwrap(),
+      Selector::parse("radiata.woooo.tech/resources/type=document").unwrap(),
       PageSpec::first(8).unwrap(),
     ))
     .await

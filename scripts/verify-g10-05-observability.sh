@@ -40,7 +40,7 @@ if ! grep -Eq ': test$' "$TMP/redact.list"; then
 fi
 cargo test --locked --all-features --lib -- redact
 
-# Artifact redaction/provenance lane: the simulation failure-artifact
+# Artifact redaction lane: the simulation failure-artifact
 # suite pins bounded allowlisted artifacts with no secrets, bodies, paths,
 # or addresses.
 cargo test --locked --all-features --lib -- artifact::tests --list > "$TMP/artifact.list"

@@ -56,7 +56,7 @@ use crate::{
   provider::{Storage, StorageFactory, StoreScan, StoreSnapshot},
 };
 
-const LOCK_FILE: &str = "minor-relay.lock";
+const LOCK_FILE: &str = "radiata.lock";
 const GENERATION_PREFIX: &str = "gen-";
 const TEMP_PREFIX: &str = "tmp-";
 const GENERATION_SUFFIX: &str = ".json";

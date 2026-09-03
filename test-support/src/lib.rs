@@ -7,8 +7,8 @@ use sha2::{Digest as ShaDigest, Sha256};
 
 pub const MAX_ARTIFACT_BYTES: usize = 1_048_576;
 pub const MAX_RETAINED_EVENTS: usize = 10_000;
-const EVENT_DIGEST_DOMAIN: &[u8] = b"relay.woooo.tech/failure-replay/event-stream/v2";
-const FAILURE_SCHEMA: &str = "relay.woooo.tech/schemas/failure-replay";
+const EVENT_DIGEST_DOMAIN: &[u8] = b"radiata.woooo.tech/failure-replay/event-stream/v2";
+const FAILURE_SCHEMA: &str = "radiata.woooo.tech/schemas/failure-replay";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForbiddenFieldClass {
@@ -412,57 +412,9 @@ impl FailureClass {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CommitDigest {
-  Sha1([u8; 20]),
-  Sha256([u8; 32]),
-}
-
-impl CommitDigest {
-  pub fn parse_hex(value: &str) -> Result<Self, MetadataError> {
-    match value.len() {
-      40 => {
-        let mut bytes = [0_u8; 20];
-        decode_lower_hex(value, &mut bytes)?;
-        Ok(Self::Sha1(bytes))
-      }
-      64 => {
-        let mut bytes = [0_u8; 32];
-        decode_lower_hex(value, &mut bytes)?;
-        Ok(Self::Sha256(bytes))
-      }
-      _ => Err(MetadataError::InvalidCommitDigest),
-    }
-  }
-
-  pub fn as_hex(self) -> String {
-    match self {
-      Self::Sha1(bytes) => encode_hex(&bytes),
-      Self::Sha256(bytes) => encode_hex(&bytes),
-    }
-  }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LockfileDigest([u8; 32]);
-
-impl LockfileDigest {
-  pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-    Self(bytes)
-  }
-
-  pub fn sha256(lockfile: &[u8]) -> Self {
-    Self(Sha256::digest(lockfile).into())
-  }
-
-  pub fn as_hex(self) -> String {
-    encode_hex(&self.0)
-  }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MetadataError {
   InvalidEvidenceId,
-  InvalidCommitDigest,
+  InvalidHex,
   ReplayProducerMismatch,
   ReplaySeedMismatch,
 }
@@ -639,9 +591,9 @@ impl ReplaySpec {
       ],
       ReplayKind::SimulationNetworkFaultMatrix { seed } => vec![
         "--config".to_owned(),
-        format!("env.MINOR_RELAY_SIM_SEED.value=\"{seed}\""),
+        format!("env.RADIATA_SIM_SEED.value=\"{seed}\""),
         "--config".to_owned(),
-        "env.MINOR_RELAY_SIM_SEED.force=true".to_owned(),
+        "env.RADIATA_SIM_SEED.force=true".to_owned(),
         "test".to_owned(),
         "--locked".to_owned(),
         "--lib".to_owned(),
@@ -746,17 +698,13 @@ pub struct EvidenceManifest {
   seed: Option<u64>,
   failure_class: FailureClass,
   invariant_id: EvidenceId,
-  commit_digest: CommitDigest,
-  lockfile_digest: LockfileDigest,
   replay: ReplaySpec,
 }
 
 impl EvidenceManifest {
-  #[allow(clippy::too_many_arguments)]
   pub fn new(
     producer: ProducerKind, scenario_id: EvidenceId, test_id: EvidenceId, seed: Option<u64>,
-    failure_class: FailureClass, invariant_id: EvidenceId, commit_digest: CommitDigest,
-    lockfile_digest: LockfileDigest, replay: ReplaySpec,
+    failure_class: FailureClass, invariant_id: EvidenceId, replay: ReplaySpec,
   ) -> Result<Self, MetadataError> {
     let replay_matches_producer = match producer {
       ProducerKind::Simulation => replay.executable_id() == ExecutableId::Simulation,
@@ -778,8 +726,6 @@ impl EvidenceManifest {
       seed,
       failure_class,
       invariant_id,
-      commit_digest,
-      lockfile_digest,
       replay,
     })
   }
@@ -1144,10 +1090,6 @@ fn render_artifact(
   writer.quoted(manifest.failure_class.as_str())?;
   writer.raw(b",\"invariant_id\":")?;
   writer.quoted(manifest.invariant_id.as_str())?;
-  writer.raw(b",\"commit_digest\":")?;
-  writer.quoted(&manifest.commit_digest.as_hex())?;
-  writer.raw(b",\"lockfile_digest\":")?;
-  writer.quoted(&manifest.lockfile_digest.as_hex())?;
   writer.raw(b",\"bounds\":{\"artifact_bytes\":1048576,\"retained_events\":10000}")?;
   writer.raw(b",\"truncation\":{\"truncated\":")?;
   writer.boolean(truncation.truncated())?;
@@ -1397,7 +1339,7 @@ fn decode_lower_hex(value: &str, output: &mut [u8]) -> Result<(), MetadataError>
       .bytes()
       .any(|byte| !matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
   {
-    return Err(MetadataError::InvalidCommitDigest);
+    return Err(MetadataError::InvalidHex);
   }
   for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
     output[index] = (decode_nibble(pair[0]) << 4) | decode_nibble(pair[1]);
@@ -1523,8 +1465,6 @@ mod tests {
       Some(7),
       FailureClass::Invariant,
       EvidenceId::new("producer-neutral-schema").unwrap(),
-      CommitDigest::parse_hex("1111111111111111111111111111111111111111").unwrap(),
-      LockfileDigest::from_bytes([0x22; 32]),
       if producer == ProducerKind::Simulation {
         ReplaySpec::simulation_network_fault_matrix(7)
       } else if producer == ProducerKind::Fuzz {
@@ -1563,7 +1503,7 @@ mod tests {
       assert!(
         artifact
           .as_bytes()
-          .starts_with(b"{\"schema\":\"relay.woooo.tech/schemas/failure-replay\"")
+          .starts_with(b"{\"schema\":\"radiata.woooo.tech/schemas/failure-replay\"")
       );
       assert_eq!(artifact.producer(), producer);
       assert_eq!(source.event_reads.get(), 1);
@@ -1646,8 +1586,6 @@ mod tests {
 
   #[test]
   fn simulation_failure_artifact_security_metadata_and_replay_are_validated() {
-    assert!(CommitDigest::parse_hex("00").is_err());
-    assert!(CommitDigest::parse_hex(&"g".repeat(40)).is_err());
     assert!(EvidenceId::new("../../host-path").is_err());
     assert!(EvidenceId::new("hostile\ntext").is_err());
     assert!(ReplaySpec::parse("simulation", &["--scenario", "x", "--seed", "1"]).is_err());
@@ -1660,8 +1598,6 @@ mod tests {
         None,
         FailureClass::Invariant,
         EvidenceId::new("producer-replay-binding").unwrap(),
-        CommitDigest::parse_hex("1111111111111111111111111111111111111111").unwrap(),
-        LockfileDigest::from_bytes([0x22; 32]),
         ReplaySpec::cargo_test(CargoTestId::FailureArtifactSecurity),
       ),
       Err(MetadataError::ReplayProducerMismatch),

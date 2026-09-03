@@ -11,7 +11,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use minor_relay::{
+use radiata::{
   ConnectMember, CreateCluster, DisconnectPeer, Endpoint, ErrorKind, FeatureDefinition, FeatureTag,
   GetMember, GetResource, JoinCluster, Listen, LoadBalancingPolicy, NodeBuilder, NodeConfig,
   NodeHandle, PacketMetadata, PacketPolicy, PacketTarget, PageMembers, PageSessions, PageSpec,
@@ -26,14 +26,14 @@ use common::{MemoryStorageFactory, ScriptedKeys};
 const SYNC_INTERVAL: Duration = Duration::from_millis(50);
 const CURRENT_FEATURE: &str = "testing.example/features/mixed-current";
 const PRIOR_FEATURE: &str = "testing.example/features/mixed-prior";
-const ECHO_PROTOCOL: &str = "relay.woooo.tech/protocols/mixed-echo";
-const ECHO_OWNING_FEATURE: &str = "relay.woooo.tech/features/data-messages";
+const ECHO_PROTOCOL: &str = "radiata.woooo.tech/protocols/mixed-echo";
+const ECHO_OWNING_FEATURE: &str = "radiata.woooo.tech/features/data-messages";
 const LOAD_BALANCER: &str = "example.org/balancers/first-match";
 
 struct Node {
   handle: NodeHandle,
   endpoint: Option<Endpoint>,
-  id: Option<minor_relay::NodeId>,
+  id: Option<radiata::NodeId>,
   collector: Arc<Collector>,
 }
 
@@ -43,9 +43,9 @@ struct Collector {
   packets: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
 }
 
-impl minor_relay::PacketConsumer for Collector {
+impl radiata::PacketConsumer for Collector {
   fn accept<'a>(
-    &'a self, mut packet: minor_relay::IncomingPacket,
+    &'a self, mut packet: radiata::IncomingPacket,
   ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
       let mut body = Vec::new();
@@ -68,9 +68,8 @@ struct FirstMatch;
 
 impl LoadBalancingPolicy for FirstMatch {
   fn select<'a>(
-    &'a self, _selector: &'a minor_relay::Selector,
-    candidates: &'a dyn minor_relay::CandidateNodeReader,
-  ) -> minor_relay::BoxFuture<'a, Result<minor_relay::NodeId>> {
+    &'a self, _selector: &'a radiata::Selector, candidates: &'a dyn radiata::CandidateNodeReader,
+  ) -> radiata::BoxFuture<'a, Result<radiata::NodeId>> {
     Box::pin(async move {
       let page = candidates.next_matching_nodes(_selector, None, 1).await?;
       page
@@ -78,9 +77,9 @@ impl LoadBalancingPolicy for FirstMatch {
         .first()
         .map(|member| member.node_id().clone())
         .ok_or_else(|| {
-          minor_relay::Error::provider(
-            minor_relay::ProviderErrorKind::Unsupported,
-            minor_relay::ProviderErrorContext::LoadBalancingPolicy,
+          radiata::Error::provider(
+            radiata::ProviderErrorKind::Unsupported,
+            radiata::ProviderErrorContext::LoadBalancingPolicy,
           )
         })
     })
@@ -93,10 +92,8 @@ struct EchoBody {
   chunks: Vec<Arc<[u8]>>,
 }
 
-impl minor_relay::PacketBody for EchoBody {
-  fn next_chunk<'a>(
-    &'a mut self,
-  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+impl radiata::PacketBody for EchoBody {
+  fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move {
       Ok(if self.chunks.is_empty() {
         None
@@ -112,16 +109,16 @@ impl minor_relay::PacketBody for EchoBody {
 /// mixed pair can exchange packets.
 async fn start_node(seed: u64, current: bool) -> Node {
   let keys: Arc<dyn KeyProvider> = Arc::new(ScriptedKeys::full_at(2_400_000 + seed * 1_000));
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> =
+  let factory: Arc<dyn radiata::extension::StorageFactory> =
     Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
   let collector = Arc::new(Collector::default());
-  let mut extensions = minor_relay::ExtensionRegistry::new();
+  let mut extensions = radiata::ExtensionRegistry::new();
   if current {
     extensions
       .register_feature(
         FeatureDefinition::new(
           FeatureTag::parse(CURRENT_FEATURE).unwrap(),
-          minor_relay::Digest::from_bytes([0xC1; 32]),
+          radiata::Digest::from_bytes([0xC1; 32]),
         )
         .unwrap(),
       )
@@ -133,7 +130,7 @@ async fn start_node(seed: u64, current: bool) -> Node {
         ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
         FeatureTag::parse(ECHO_OWNING_FEATURE).unwrap(),
       ),
-      Arc::clone(&collector) as Arc<dyn minor_relay::PacketConsumer>,
+      Arc::clone(&collector) as Arc<dyn radiata::PacketConsumer>,
     )
     .unwrap();
   extensions
@@ -163,15 +160,15 @@ async fn start_node(seed: u64, current: bool) -> Node {
 /// requirement, so a peer without the feature must refuse the session.
 async fn start_node_requiring(seed: u64, feature: &str, register: bool) -> Node {
   let keys: Arc<dyn KeyProvider> = Arc::new(ScriptedKeys::full_at(2_400_000 + seed * 1_000));
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> =
+  let factory: Arc<dyn radiata::extension::StorageFactory> =
     Arc::new(MemoryStorageFactory::new(common::required_capabilities()));
-  let mut extensions = minor_relay::ExtensionRegistry::new();
+  let mut extensions = radiata::ExtensionRegistry::new();
   if register {
     extensions
       .register_feature(
         FeatureDefinition::new(
           FeatureTag::parse(feature).unwrap(),
-          minor_relay::Digest::from_bytes([0xC2; 32]),
+          radiata::Digest::from_bytes([0xC2; 32]),
         )
         .unwrap(),
       )
@@ -208,7 +205,7 @@ impl Node {
     self.endpoint.as_ref().unwrap()
   }
 
-  fn id(&self) -> &minor_relay::NodeId {
+  fn id(&self) -> &radiata::NodeId {
     self.id.as_ref().unwrap()
   }
 }
@@ -216,7 +213,7 @@ impl Node {
 /// Establishes the mixed pair: `issuer` runs the listener and the
 /// credential issuer; `member` joins as the initiator. Returns the
 /// member's node id.
-async fn join_mixed_pair(issuer: &mut Node, member: &mut Node) -> minor_relay::NodeId {
+async fn join_mixed_pair(issuer: &mut Node, member: &mut Node) -> radiata::NodeId {
   let cluster = issuer.handle.command(CreateCluster::new()).await.unwrap();
   issuer.id = Some(cluster.creator().clone());
   issuer.listen().await;
@@ -234,7 +231,7 @@ async fn join_mixed_pair(issuer: &mut Node, member: &mut Node) -> minor_relay::N
       .handle
       .command(JoinCluster::new(
         issuer.endpoint().clone(),
-        minor_relay::JoinCredential::parse(&secret).unwrap(),
+        radiata::JoinCredential::parse(&secret).unwrap(),
       ))
       .await
     {
@@ -348,7 +345,7 @@ async fn assert_metadata_interop(issuer: &Node, member: &Node) {
 /// Ordered packet delivery in both directions across the mixed pair.
 async fn assert_packet_interop(issuer: &Node, member: &Node) {
   let protocol = ProtocolTag::parse(ECHO_PROTOCOL).unwrap();
-  let policy = PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 8).unwrap();
+  let policy = PacketPolicy::new(radiata::RoutingPolicy::Direct, 8).unwrap();
 
   // Prior initiator direction: member sends, issuer consumes.
   let packet = member
@@ -437,14 +434,14 @@ async fn e2e09_prior_initiator_interops_with_current_responder() {
 
   // Core-metadata interop: a resource written through the prior node's
   // facade converges to the current node by ordinary repair.
-  let name = ResourceName::parse("relay.woooo.tech/resources/mixed-e2e").unwrap();
+  let name = ResourceName::parse("radiata.woooo.tech/resources/mixed-e2e").unwrap();
   member
     .handle
     .command(
-      minor_relay::PutResource::new(ResourceWrite::new(
+      radiata::PutResource::new(ResourceWrite::new(
         name.clone(),
         ResourceLabels::new(
-          minor_relay::LabelValue::parse("document").unwrap(),
+          radiata::LabelValue::parse("document").unwrap(),
           ResourceUri::parse("file:///tmp/mixed-e2e").unwrap(),
         ),
       ))
@@ -545,7 +542,7 @@ async fn e2e09_prior_initiator_interops_with_current_responder() {
     tokio::time::sleep(POLL).await;
   }
   let protocol = ProtocolTag::parse(ECHO_PROTOCOL).unwrap();
-  let policy = PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 8).unwrap();
+  let policy = PacketPolicy::new(radiata::RoutingPolicy::Direct, 8).unwrap();
   let packet = issuer
     .handle
     .create_packet(
@@ -580,12 +577,12 @@ async fn e2e09_prior_initiator_interops_with_current_responder() {
 
   member
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
   issuer
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
 }
@@ -616,12 +613,12 @@ async fn e2e09_current_initiator_interops_with_prior_responder() {
 
   member
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
   issuer
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
 }
@@ -647,7 +644,7 @@ async fn e2e09_incompatible_required_features_are_refused_in_both_roles() {
     .handle
     .command(JoinCluster::new(
       issuer.endpoint().clone(),
-      minor_relay::JoinCredential::parse(issued.credential().expose_secret()).unwrap(),
+      radiata::JoinCredential::parse(issued.credential().expose_secret()).unwrap(),
     ))
     .await
     .unwrap_err();
@@ -672,7 +669,7 @@ async fn e2e09_incompatible_required_features_are_refused_in_both_roles() {
   }
   issuer
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
 
@@ -696,7 +693,7 @@ async fn e2e09_incompatible_required_features_are_refused_in_both_roles() {
     .handle
     .command(JoinCluster::new(
       prior_issuer.endpoint().clone(),
-      minor_relay::JoinCredential::parse(issued.credential().expose_secret()).unwrap(),
+      radiata::JoinCredential::parse(issued.credential().expose_secret()).unwrap(),
     ))
     .await
     .unwrap_err();
@@ -721,12 +718,12 @@ async fn e2e09_incompatible_required_features_are_refused_in_both_roles() {
   }
   prior_joiner
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
   prior_issuer
     .handle
-    .command(minor_relay::Shutdown::new())
+    .command(radiata::Shutdown::new())
     .await
     .unwrap();
 }

@@ -13,7 +13,7 @@ use std::{
   time::Duration,
 };
 
-use minor_relay::{
+use radiata::{
   BoxFuture, CreateCluster, Endpoint, Error, ErrorKind, EventOptions, EventReceive,
   IdentityReplaced, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId,
   LeaveCluster, Listen, NodeBuilder, NodeHandle, PageMembers, PageSpec, PageTrust, PublicKey,
@@ -46,7 +46,7 @@ impl LeaveKeys {
     if let Some(handle) = operations.get(operation.as_str().as_bytes()) {
       let records = self.records.lock().unwrap();
       let signing = &records[handle];
-      return KeyCreateState::Present(minor_relay::CreatedKey::new(
+      return KeyCreateState::Present(radiata::CreatedKey::new(
         KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
         PublicKey::from_bytes(signing.verifying_key().to_bytes()),
       ));
@@ -56,7 +56,7 @@ impl LeaveKeys {
     *next += 1;
     let signing = Self::seed_for(index + 1);
     let handle = format!("leave-handle-{index}").into_bytes();
-    let created = minor_relay::CreatedKey::new(
+    let created = radiata::CreatedKey::new(
       KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
       PublicKey::from_bytes(signing.verifying_key().to_bytes()),
     );
@@ -96,7 +96,7 @@ impl KeyProvider for LeaveKeys {
       let Some(signing) = records.get(handle) else {
         return Ok(KeyCreateState::Absent);
       };
-      Ok(KeyCreateState::Present(minor_relay::CreatedKey::new(
+      Ok(KeyCreateState::Present(radiata::CreatedKey::new(
         KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
         PublicKey::from_bytes(signing.verifying_key().to_bytes()),
       )))
@@ -112,8 +112,8 @@ impl KeyProvider for LeaveKeys {
       .map(|signing| PublicKey::from_bytes(signing.verifying_key().to_bytes()))
       .ok_or_else(|| {
         Error::provider(
-          minor_relay::ProviderErrorKind::Internal,
-          minor_relay::ProviderErrorContext::KeyPublicKey,
+          radiata::ProviderErrorKind::Internal,
+          radiata::ProviderErrorContext::KeyPublicKey,
         )
       });
     Box::pin(async move { result })
@@ -131,8 +131,8 @@ impl KeyProvider for LeaveKeys {
       .map(|signing| Signature::from_bytes(signing.sign(message).to_bytes()))
       .ok_or_else(|| {
         Error::provider(
-          minor_relay::ProviderErrorKind::Internal,
-          minor_relay::ProviderErrorContext::KeySign,
+          radiata::ProviderErrorKind::Internal,
+          radiata::ProviderErrorContext::KeySign,
         )
       });
     Box::pin(async move { result })
@@ -176,9 +176,12 @@ impl KeyProvider for LeaveKeys {
 
 fn write(name_seed: u8) -> PutResource {
   PutResource::new(ResourceWrite::new(
-    ResourceName::parse(&format!("relay.woooo.tech/resources/leave-{name_seed:03}")).unwrap(),
+    ResourceName::parse(&format!(
+      "radiata.woooo.tech/resources/leave-{name_seed:03}"
+    ))
+    .unwrap(),
     ResourceLabels::new(
-      minor_relay::LabelValue::parse("document").unwrap(),
+      radiata::LabelValue::parse("document").unwrap(),
       ResourceUri::parse(&format!("file:///leave/{name_seed:03}")).unwrap(),
     ),
   ))
@@ -222,7 +225,7 @@ async fn g9_leave_replaces_identity_and_shuts_down_with_active_leave() {
     .unwrap();
   put_with_retry(&handle, 1).await;
   let former = handle
-    .query(minor_relay::GetLocalNode::new())
+    .query(radiata::GetLocalNode::new())
     .await
     .unwrap()
     .node_id()
@@ -264,11 +267,8 @@ async fn g9_leave_replaces_identity_and_shuts_down_with_active_leave() {
   let reason = handle.query(WaitForShutdown::new()).await.unwrap();
   assert_eq!(reason, ShutdownReason::ActiveLeave);
   assert_eq!(
-    handle
-      .query(minor_relay::GetNodeStatus::new())
-      .await
-      .unwrap(),
-    minor_relay::NodeStatus::Stopped
+    handle.query(radiata::GetNodeStatus::new()).await.unwrap(),
+    radiata::NodeStatus::Stopped
   );
 }
 
@@ -279,7 +279,7 @@ async fn g9_leave_replaces_identity_and_shuts_down_with_active_leave() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g9_json_leave_restart_shows_only_the_replacement() {
   let directory = tempfile::tempdir().unwrap();
-  leave_restart_shows_only_the_replacement(minor_relay::adapters::json_store(
+  leave_restart_shows_only_the_replacement(radiata::adapters::json_store(
     directory.path().to_path_buf(),
   ))
   .await;
@@ -289,7 +289,7 @@ async fn g9_json_leave_restart_shows_only_the_replacement() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g9_redb_leave_restart_shows_only_the_replacement() {
   let directory = tempfile::tempdir().unwrap();
-  leave_restart_shows_only_the_replacement(minor_relay::adapters::redb_store(
+  leave_restart_shows_only_the_replacement(radiata::adapters::redb_store(
     directory.path().join("store.redb"),
   ))
   .await;
@@ -313,7 +313,7 @@ async fn leave_restart_shows_only_the_replacement(storage: Arc<dyn StorageFactor
       .unwrap();
     put_with_retry(&handle, 2).await;
     let former = handle
-      .query(minor_relay::GetLocalNode::new())
+      .query(radiata::GetLocalNode::new())
       .await
       .unwrap()
       .node_id()
@@ -338,7 +338,7 @@ async fn leave_restart_shows_only_the_replacement(storage: Arc<dyn StorageFactor
   let handle = NodeBuilder::new(storage, provider).start().await.unwrap();
   assert_eq!(
     handle
-      .query(minor_relay::GetLocalNode::new())
+      .query(radiata::GetLocalNode::new())
       .await
       .unwrap_err()
       .kind(),
@@ -348,7 +348,7 @@ async fn leave_restart_shows_only_the_replacement(storage: Arc<dyn StorageFactor
   assert!(
     handle
       .query(SelectResources::new(
-        Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+        Selector::parse("radiata.woooo.tech/resources/type").unwrap(),
         PageSpec::first(8).unwrap(),
       ))
       .await
@@ -382,10 +382,7 @@ async fn leave_restart_shows_only_the_replacement(storage: Arc<dyn StorageFactor
   // A fresh cluster over the restarted store binds the replacement
   // identity — the old identity never returns.
   handle.command(CreateCluster::new()).await.unwrap();
-  let local = handle
-    .query(minor_relay::GetLocalNode::new())
-    .await
-    .unwrap();
+  let local = handle.query(radiata::GetLocalNode::new()).await.unwrap();
   assert_eq!(local.node_id(), &replacement);
   assert_ne!(local.node_id(), &former_handle_bytes);
 

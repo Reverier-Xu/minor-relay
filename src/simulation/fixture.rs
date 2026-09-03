@@ -1,4 +1,4 @@
-use minor_relay_test_support::{
+use radiata_test_support::{
   Alias, AliasKind, AliasTable, NormalizedDropReason, NormalizedEvent, NormalizedEventSource,
   SourceError,
 };
@@ -286,7 +286,7 @@ const fn normalize_drop_reason(reason: DropReason) -> NormalizedDropReason {
 
 #[cfg(test)]
 mod tests {
-  use minor_relay_test_support::{
+  use radiata_test_support::{
     AliasKind, NormalizedDropReason, NormalizedEvent, NormalizedEventSource, SourceError,
   };
 

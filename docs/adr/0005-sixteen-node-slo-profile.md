@@ -4,7 +4,7 @@ title: Measure the sixteen-node connectivity and metadata profile
 status: accepted
 date: 2026-08-02
 amended: 2026-08-04
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Measure the Sixteen-Node Connectivity and Metadata Profile
@@ -16,7 +16,7 @@ ADR-0007. The profile is release evidence, not a universal deployment promise, p
 or substitute for correctness and scale tests.
 
 The superseded profile measured application state, HLC readiness, and tombstones. Those operations are no
-longer part of `minor-relay`. This ADR replaces that workload completely while retaining the controlled
+longer part of `radiata`. This ADR replaces that workload completely while retaining the controlled
 OCI method, exact per-sample pass rule, five-run lineage, and 125-sample total.
 
 ## Decision Drivers

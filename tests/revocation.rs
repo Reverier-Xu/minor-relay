@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use minor_relay::{
+use radiata::{
   CreateCluster, Endpoint, ErrorKind, EventOptions, EventReceive, JoinCluster, JoinCredential,
   Listen, NodeBuilder, NodeConfig, NodeHandle, NodeId, NodeRevoked, PageSpec, PageTrust,
   PutResource, ResourceLabels, ResourceName, ResourceUri, ResourceWrite, RevokeNode,
@@ -56,7 +56,7 @@ async fn listen(node: &Node) -> Endpoint {
 
 async fn local_id(node: &NodeHandle) -> NodeId {
   node
-    .query(minor_relay::GetLocalNode::new())
+    .query(radiata::GetLocalNode::new())
     .await
     .unwrap()
     .node_id()
@@ -66,7 +66,7 @@ async fn local_id(node: &NodeHandle) -> NodeId {
 /// The member's trusted public key as the issuer observes it. Trust
 /// bindings arrive through the admission commit and ordinary sync, so the
 /// observation is polled with a bound.
-async fn trusted_key(issuer: &NodeHandle, member: &NodeId) -> minor_relay::PublicKey {
+async fn trusted_key(issuer: &NodeHandle, member: &NodeId) -> radiata::PublicKey {
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   loop {
     let page = issuer
@@ -98,9 +98,12 @@ async fn trust_status(issuer: &NodeHandle, member: &NodeId) -> Option<TrustStatu
 
 fn write(name_seed: u8) -> PutResource {
   PutResource::new(ResourceWrite::new(
-    ResourceName::parse(&format!("relay.woooo.tech/resources/revoke-{name_seed:03}")).unwrap(),
+    ResourceName::parse(&format!(
+      "radiata.woooo.tech/resources/revoke-{name_seed:03}"
+    ))
+    .unwrap(),
     ResourceLabels::new(
-      minor_relay::LabelValue::parse("document").unwrap(),
+      radiata::LabelValue::parse("document").unwrap(),
       ResourceUri::parse(&format!("file:///revoke/{name_seed:03}")).unwrap(),
     ),
   ))
@@ -110,7 +113,7 @@ fn write(name_seed: u8) -> PutResource {
 async fn selected_names(node: &NodeHandle) -> Vec<String> {
   let page = node
     .query(SelectResources::new(
-      Selector::parse("relay.woooo.tech/resources/type").unwrap(),
+      Selector::parse("radiata.woooo.tech/resources/type").unwrap(),
       PageSpec::first(64).unwrap(),
     ))
     .await
@@ -140,7 +143,7 @@ async fn g9_revoke_closes_sessions_denies_reconnect_and_preserves_metadata() {
   // The member commits a resource the issuer converges on before the
   // revoke (delayed content must stay eligible afterwards).
   member.handle.command(write(1)).await.unwrap();
-  let member_resource = "relay.woooo.tech/resources/revoke-001".to_owned();
+  let member_resource = "radiata.woooo.tech/resources/revoke-001".to_owned();
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   while !selected_names(&issuer.handle)
     .await
@@ -195,7 +198,7 @@ async fn g9_revoke_closes_sessions_denies_reconnect_and_preserves_metadata() {
   // New dials to the revoked identity fail with the typed revocation.
   let error = issuer
     .handle
-    .command(minor_relay::ConnectMember::new(
+    .command(radiata::ConnectMember::new(
       member.endpoint.clone(),
       member.id.clone(),
     ))
@@ -248,7 +251,7 @@ async fn g9_revoke_closes_sessions_denies_reconnect_and_preserves_metadata() {
   tokio::time::sleep(SYNC_INTERVAL * 6).await;
   let members = issuer
     .handle
-    .query(minor_relay::PageMembers::new(PageSpec::first(8).unwrap()))
+    .query(radiata::PageMembers::new(PageSpec::first(8).unwrap()))
     .await
     .unwrap();
   let member_view = members
@@ -258,7 +261,7 @@ async fn g9_revoke_closes_sessions_denies_reconnect_and_preserves_metadata() {
     .expect("the descriptor stays stored");
   assert_eq!(
     member_view.connectivity(),
-    minor_relay::ConnectivityStatus::Reachable,
+    radiata::ConnectivityStatus::Reachable,
     "the revoked member keeps its stored descriptor without a session"
   );
 
@@ -299,7 +302,7 @@ async fn g9_revoke_is_exact_and_idempotent() {
     ErrorKind::NotFound
   );
   // Substituted key: the exact-binding condition fails closed.
-  let wrong_key = minor_relay::PublicKey::from_bytes([0xEE; 32]);
+  let wrong_key = radiata::PublicKey::from_bytes([0xEE; 32]);
   assert_eq!(
     issuer
       .handle
@@ -369,7 +372,7 @@ async fn g9_delayed_content_converges_after_revoke() {
   let member_id = local_id(&member.handle).await;
 
   member.handle.command(write(2)).await.unwrap();
-  let member_resource = "relay.woooo.tech/resources/revoke-002".to_owned();
+  let member_resource = "radiata.woooo.tech/resources/revoke-002".to_owned();
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   while !selected_names(&issuer.handle)
     .await
@@ -433,7 +436,7 @@ async fn g9_delayed_content_converges_after_revoke() {
   })
   .await
   .unwrap();
-  assert_eq!(member_key_on_third, minor_relay::TrustStatus::Trusted);
+  assert_eq!(member_key_on_third, radiata::TrustStatus::Trusted);
 
   for node in [issuer, member, third] {
     node.handle.command(Shutdown::new()).await.unwrap();

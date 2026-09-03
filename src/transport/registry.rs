@@ -175,7 +175,7 @@ impl fmt::Debug for WssTransport {
 
 /// The built-in WebSocket transport tag: the only dial/listen transport
 /// until the G4-06 candidate wiring consumes more registry entries.
-pub(crate) const BUILTIN_TRANSPORT_WSS: &str = "relay.woooo.tech/transports/wss";
+pub(crate) const BUILTIN_TRANSPORT_WSS: &str = "radiata.woooo.tech/transports/wss";
 
 impl WssTransport {
   pub(crate) fn new() -> Self {
@@ -325,11 +325,11 @@ mod tests {
   };
 
   fn transport_tag(value: &str) -> TransportTag {
-    TransportTag::parse(&format!("relay.woooo.tech/transports/{value}")).unwrap()
+    TransportTag::parse(&format!("radiata.woooo.tech/transports/{value}")).unwrap()
   }
 
   fn discovery_tag(value: &str) -> DiscoveryTag {
-    DiscoveryTag::parse(&format!("relay.woooo.tech/discovery/{value}")).unwrap()
+    DiscoveryTag::parse(&format!("radiata.woooo.tech/discovery/{value}")).unwrap()
   }
 
   fn candidate(host: &str) -> EndpointCandidate {
@@ -359,9 +359,9 @@ mod tests {
   fn transport_registry_rejects_malformed_and_reserved_tags() {
     // Malformed tag: no qualified domain/category/name shape.
     assert!(TransportTag::parse("plain").is_err());
-    // Reserved relay.woooo.tech/crypto domain is rejected by tag parsing
+    // Reserved radiata.woooo.tech/crypto domain is rejected by tag parsing
     // before registration.
-    assert!(TransportTag::parse("relay.woooo.tech/crypto/ed25519").is_err());
+    assert!(TransportTag::parse("radiata.woooo.tech/crypto/ed25519").is_err());
   }
 
   // ---- SC-G04-P0-02: discovery registration without central switching ----

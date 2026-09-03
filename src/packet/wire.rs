@@ -392,12 +392,12 @@ mod tests {
     let (trace_id, source, destination) = ids();
     let metadata = PacketMetadata::new()
       .insert(
-        "relay.woooo.tech/labels/alpha".parse().unwrap(),
+        "radiata.woooo.tech/labels/alpha".parse().unwrap(),
         Arc::from(&b"one"[..]),
       )
       .unwrap()
       .insert(
-        "relay.woooo.tech/labels/beta".parse().unwrap(),
+        "radiata.woooo.tech/labels/beta".parse().unwrap(),
         Arc::from(&b"two"[..]),
       )
       .unwrap();
@@ -405,7 +405,7 @@ mod tests {
       trace_id,
       source,
       destination,
-      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test-packets").unwrap(),
+      protocol: ProtocolTag::parse("radiata.woooo.tech/protocols/test-packets").unwrap(),
       metadata,
       route: None,
     }
@@ -431,14 +431,14 @@ mod tests {
       trace_id: trace_id.to_string(),
       source: source.to_string(),
       destination: destination.to_string(),
-      protocol: "relay.woooo.tech/protocols/test-packets".to_owned(),
+      protocol: "radiata.woooo.tech/protocols/test-packets".to_owned(),
       metadata: vec![
         (
-          "relay.woooo.tech/labels/zeta".to_owned(),
+          "radiata.woooo.tech/labels/zeta".to_owned(),
           ByteVec::from(b"1".to_vec()),
         ),
         (
-          "relay.woooo.tech/labels/alpha".to_owned(),
+          "radiata.woooo.tech/labels/alpha".to_owned(),
           ByteVec::from(b"2".to_vec()),
         ),
       ],
@@ -544,7 +544,7 @@ mod tests {
       trace_id: "trace_000000000000000000001".to_owned(),
       source: "node_000000000000000000001".to_owned(),
       destination: "node_000000000000000000002".to_owned(),
-      protocol: "relay.woooo.tech/features/not-a-protocol".to_owned(),
+      protocol: "radiata.woooo.tech/features/not-a-protocol".to_owned(),
       metadata: Vec::new(),
       route: None,
     };
@@ -598,7 +598,7 @@ mod route_tests {
       trace_id,
       source: source.clone(),
       destination: destination.clone(),
-      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test-packets").unwrap(),
+      protocol: ProtocolTag::parse("radiata.woooo.tech/protocols/test-packets").unwrap(),
       metadata: PacketMetadata::new(),
       route: Some(HopState {
         current: holder.clone(),
@@ -629,7 +629,7 @@ mod route_tests {
       trace_id: trace_id.to_string(),
       source: source.to_string(),
       destination: destination.to_string(),
-      protocol: "relay.woooo.tech/protocols/test-packets".to_owned(),
+      protocol: "radiata.woooo.tech/protocols/test-packets".to_owned(),
       metadata: Vec::new(),
     };
     let body = encode_canonical(&wire, CONTROL_CBOR_LIMITS).unwrap();
@@ -648,7 +648,7 @@ mod route_tests {
       trace_id: trace_id.to_string(),
       source: source.to_string(),
       destination: destination.to_string(),
-      protocol: "relay.woooo.tech/protocols/test-packets".to_owned(),
+      protocol: "radiata.woooo.tech/protocols/test-packets".to_owned(),
       metadata: Vec::new(),
       route: Some(RouteWire {
         current: "node_000000000000000000009".to_owned(),
@@ -667,10 +667,10 @@ mod route_tests {
       trace_id,
       source,
       destination,
-      protocol: ProtocolTag::parse("relay.woooo.tech/protocols/test-packets").unwrap(),
+      protocol: ProtocolTag::parse("radiata.woooo.tech/protocols/test-packets").unwrap(),
       metadata: PacketMetadata::new()
         .insert(
-          "relay.woooo.tech/labels/alpha".parse().unwrap(),
+          "radiata.woooo.tech/labels/alpha".parse().unwrap(),
           Arc::from(&b"v"[..]),
         )
         .unwrap(),

@@ -14,7 +14,7 @@
 use super::ResourceRecordV1;
 use crate::{Error, Result};
 
-pub(crate) const RESOURCE_PAGE_SCHEMA: &str = "relay.woooo.tech/schemas/resource-page-v1";
+pub(crate) const RESOURCE_PAGE_SCHEMA: &str = "radiata.woooo.tech/schemas/resource-page-v1";
 
 /// The default records-per-page emission limit.
 pub(crate) const DEFAULT_RESOURCE_PAGE_LIMIT: usize = 16;
@@ -192,7 +192,7 @@ mod tests {
   }
 
   fn name(seed: u8) -> ResourceName {
-    ResourceName::parse(&format!("relay.woooo.tech/resources/sync-{seed}")).unwrap()
+    ResourceName::parse(&format!("radiata.woooo.tech/resources/sync-{seed}")).unwrap()
   }
 
   fn labels() -> LabelSet {

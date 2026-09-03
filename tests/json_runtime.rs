@@ -10,14 +10,14 @@ use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::{fs, path::Path};
 
-use minor_relay::{
+use radiata::{
   BoxFuture, Error, ErrorKind, KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle,
   KeyOperationId, NodeBuilder, ProviderErrorContext, ProviderErrorKind, PublicKey, Result,
   Signature,
   extension::{KeyProvider, StorageFactory},
 };
 #[cfg(unix)]
-use minor_relay::{GetNodeStatus, NodeStatus, Shutdown};
+use radiata::{GetNodeStatus, NodeStatus, Shutdown};
 
 #[derive(Debug, Default)]
 struct Calls {
@@ -65,7 +65,7 @@ impl KeyProvider for DeterministicKeys {
       .lock()
       .unwrap()
       .push(operation.as_str().to_owned());
-    let created = minor_relay::CreatedKey::new(
+    let created = radiata::CreatedKey::new(
       self.handle(),
       PublicKey::from_bytes(self.signing().verifying_key().to_bytes()),
     );
@@ -75,7 +75,7 @@ impl KeyProvider for DeterministicKeys {
   fn reconcile_create<'a>(
     &'a self, _operation: &'a KeyOperationId,
   ) -> BoxFuture<'a, Result<KeyCreateState>> {
-    let created = minor_relay::CreatedKey::new(
+    let created = radiata::CreatedKey::new(
       self.handle(),
       PublicKey::from_bytes(self.signing().verifying_key().to_bytes()),
     );
@@ -159,7 +159,7 @@ fn temp_files(dir: &Path) -> Vec<String> {
 
 async fn start(
   factory: Arc<dyn StorageFactory>, keys: Arc<DeterministicKeys>,
-) -> minor_relay::Result<minor_relay::NodeHandle> {
+) -> radiata::Result<radiata::NodeHandle> {
   NodeBuilder::new(factory, keys).start().await
 }
 
@@ -170,7 +170,7 @@ async fn json_runtime_node_start_restart_preserves_identity_and_generations() {
   let calls = Arc::new(Calls::default());
 
   let first = start(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     Arc::new(DeterministicKeys::new(7, Arc::clone(&calls))),
   )
   .await
@@ -185,10 +185,10 @@ async fn json_runtime_node_start_restart_preserves_identity_and_generations() {
   let files_after_first = generation_files(dir.path());
   assert_eq!(files_after_first.len(), 3);
   assert!(temp_files(dir.path()).is_empty());
-  assert!(dir.path().join("minor-relay.lock").exists());
+  assert!(dir.path().join("radiata.lock").exists());
 
   let second = start(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     Arc::new(DeterministicKeys::new(7, Arc::clone(&calls))),
   )
   .await
@@ -209,14 +209,14 @@ async fn json_runtime_node_start_restart_preserves_identity_and_generations() {
 async fn json_runtime_second_node_open_is_storage_locked_until_drop() {
   let dir = tempfile::tempdir().unwrap();
   let first = start(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     Arc::new(DeterministicKeys::new(9, Arc::new(Calls::default()))),
   )
   .await
   .unwrap();
 
   let Err(error) = start(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     Arc::new(DeterministicKeys::new(10, Arc::new(Calls::default()))),
   )
   .await
@@ -227,7 +227,7 @@ async fn json_runtime_second_node_open_is_storage_locked_until_drop() {
 
   first.command(Shutdown::new()).await.unwrap();
   let second = start(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     Arc::new(DeterministicKeys::new(9, Arc::new(Calls::default()))),
   )
   .await
@@ -243,7 +243,7 @@ async fn json_runtime_repeated_restarts_keep_every_final_generation() {
   let mut expected_files = Vec::new();
   for _ in 0..3 {
     let handle = start(
-      minor_relay::adapters::json_store(dir.path().to_path_buf()),
+      radiata::adapters::json_store(dir.path().to_path_buf()),
       Arc::new(DeterministicKeys::new(11, Arc::clone(&calls))),
     )
     .await
@@ -265,7 +265,7 @@ async fn json_runtime_repeated_restarts_keep_every_final_generation() {
 async fn json_runtime_os_crash_requirement_is_refused_with_typed_error() {
   let dir = tempfile::tempdir().unwrap();
   let Err(error) = start(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     Arc::new(DeterministicKeys::new(13, Arc::new(Calls::default()))),
   )
   .await
@@ -278,7 +278,7 @@ async fn json_runtime_os_crash_requirement_is_refused_with_typed_error() {
 #[test]
 fn json_runtime_public_constructor_is_feature_gated_and_explicit() {
   let dir = tempfile::tempdir().unwrap();
-  let factory = minor_relay::adapters::json_store(dir.path().to_path_buf());
+  let factory = radiata::adapters::json_store(dir.path().to_path_buf());
   let debug = format!("{factory:?}");
   assert!(!debug.contains(dir.path().to_str().unwrap()));
 }

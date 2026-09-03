@@ -55,7 +55,7 @@ impl EphemeralCertificate {
     let mut params = CertificateParams::default();
     params
       .distinguished_name
-      .push(DnType::CommonName, "minor-relay ephemeral listener");
+      .push(DnType::CommonName, "radiata ephemeral listener");
     let cert = params
       .self_signed(&key_pair)
       .map_err(|_| Error::internal("ephemeral certificate"))?;

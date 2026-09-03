@@ -3,7 +3,7 @@ id: ADR-0001
 title: Bind node identity and admission to a TLS 1.3 channel
 status: accepted
 date: 2026-08-02
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Bind Node Identity and Admission to a TLS 1.3 Channel
@@ -100,7 +100,7 @@ Cluster creation is allowed only when authoritative storage reads show no cluste
 record, or unresolved cluster transaction. It atomically commits a versioned `ClusterGenesis`, the
 creator's immutable trusted identity binding, and the local cluster pointer. `ClusterGenesis` contains
 the cluster ID, creator `NodeId` and public key, format version, and a creator signature under the
-`relay.woooo.tech/crypto/cluster-genesis-v1` domain. It is the initial trust record, not a network observation.
+`radiata.woooo.tech/crypto/cluster-genesis-v1` domain. It is the initial trust record, not a network observation.
 
 A definite abort leaves the identity standalone. An indeterminate result blocks create/join and is
 reconciled by reopening storage: the exact genesis transition either exists in full or is absent.
@@ -196,8 +196,8 @@ For join mode only, derive credential proof keys as follows:
 
 ```text
 prk = HKDF-Extract-SHA256(salt = cb, IKM = credential_bytes)
-responder_key = HKDF-Expand-SHA256(prk, "relay.woooo.tech/crypto/bootstrap-v1-responder", 32)
-initiator_key = HKDF-Expand-SHA256(prk, "relay.woooo.tech/crypto/bootstrap-v1-initiator", 32)
+responder_key = HKDF-Expand-SHA256(prk, "radiata.woooo.tech/crypto/bootstrap-v1-responder", 32)
+initiator_key = HKDF-Expand-SHA256(prk, "radiata.woooo.tech/crypto/bootstrap-v1-initiator", 32)
 proof = HMAC-SHA256(role_key, transcript_digest)
 ```
 
@@ -209,8 +209,8 @@ verifiers, which is acceptable only because credentials have 256 bits of generat
 Both modes require strict Ed25519 verification over role-separated inputs:
 
 ```text
-"relay.woooo.tech/crypto/session-v1-responder" || transcript_digest
-"relay.woooo.tech/crypto/session-v1-initiator" || transcript_digest
+"radiata.woooo.tech/crypto/session-v1-responder" || transcript_digest
+"radiata.woooo.tech/crypto/session-v1-initiator" || transcript_digest
 ```
 
 Join mode enrolls the presented key only after the credential proof and signature both pass. Member
@@ -220,7 +220,7 @@ from failed member authentication to credential admission on the same connection
 
 A TLS-terminating relay creates a different exporter on each leg and cannot translate the proofs or
 signatures. A transparent byte tunnel remains possible but cannot read or modify authenticated
-traffic. Core `minor-relay` does not terminate relay TLS connections.
+traffic. Core `radiata` does not terminate relay TLS connections.
 
 ### Admission Commit and Grant
 
@@ -232,7 +232,7 @@ traffic.
 `CredentialUse` has the durable unique key `(issuer NodeId, credential generation ID)`. Its value is
 the exact admission ID and subject `(NodeId, public key)` binding. `AdmissionGrant` contains the same
 cluster ID, admission ID, subject binding, issuer `NodeId`, credential generation ID, record version,
-and issuer signature. The signature uses `relay.woooo.tech/crypto/admission-grant-v1` and covers every field. No
+and issuer signature. The signature uses `radiata.woooo.tech/crypto/admission-grant-v1` and covers every field. No
 record contains a credential, proof, exporter, private material, or full handshake transcript.
 
 Any currently trusted, non-revoked member may issue a grant. Acceptance by one member is cluster-wide
@@ -269,7 +269,7 @@ not a special merge trigger.
 For clusters with existing peers, the issuer provides the new node a bounded, versioned
 `SignedTrustSnapshot` over the authenticated issuer session. It covers the cluster ID, issuer identity,
 snapshot revision, exact ordered member bindings, record version, and issuer signature under
-`relay.woooo.tech/crypto/trust-snapshot-v1`. The new node accepts it only from the
+`radiata.woooo.tech/crypto/trust-snapshot-v1`. The new node accepts it only from the
 credential-authenticated issuer and persists every non-conflicting binding before treating alternate peers as trusted. The snapshot
 contains no liveness claim and later normal sync supersedes stale membership coverage.
 

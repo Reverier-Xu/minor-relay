@@ -1,12 +1,12 @@
 ---
 id: ADR-0007
-title: Bound minor-relay to cluster connectivity and metadata
+title: Bound radiata to cluster connectivity and metadata
 status: accepted
 date: 2026-08-04
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
-# Bound minor-relay to Cluster Connectivity and Metadata
+# Bound radiata to Cluster Connectivity and Metadata
 
 ## Context
 
@@ -35,7 +35,7 @@ runtime facade remain in scope unless this ADR says otherwise.
 
 ### Product Boundary
 
-`minor-relay` maintains authenticated cluster connectivity and core metadata. A caller may also use it
+`radiata` maintains authenticated cluster connectivity and core metadata. A caller may also use it
 only as an opaque data portal. The crate does not model an application, deploy an application, store
 business objects, provide persistent volumes, coordinate business clocks, or implement a general
 replicated application-state database.
@@ -57,7 +57,7 @@ Core retains the complete admission policy accepted in ADR-0001 and ADR-0006: 32
 credentials, ten-minute credential lifetime, one committed subject per generation, fixed pending and
 rate ranges, bounded source buckets, and the authentication deadline. Every admitted non-revoked member
 has the same authority to issue and accept credentials; no pluggable role or approval framework is part
-of `minor-relay`.
+of `radiata`.
 
 A valid credential does not guarantee completion under overload, provider refusal, cancellation, or an
 indeterminate commit. Without a member ceiling, a malicious full member can create unbounded Sybil
@@ -273,7 +273,7 @@ scenario, threat, gate, and task documents must be migrated before G1 or G2 prod
 
 ### Retain application state, HLC, and durable payload delivery
 
-Rejected because it makes `minor-relay` an application database and message broker rather than a
+Rejected because it makes `radiata` an application database and message broker rather than a
 connectivity and metadata framework.
 
 ### Make all behavior provider-defined

@@ -768,7 +768,7 @@ mod tests {
   }
 
   fn key(name: &str) -> LabelKey {
-    LabelKey::parse(&format!("relay.woooo.tech/labels/{name}")).unwrap()
+    LabelKey::parse(&format!("radiata.woooo.tech/labels/{name}")).unwrap()
   }
 
   fn labels(entries: &[(&str, &str)]) -> LabelSet {
@@ -862,16 +862,16 @@ mod tests {
   #[test]
   fn selectors_parse_canonicalize_and_match() {
     let selector =
-      Selector::parse("relay.woooo.tech/labels/zone=edge relay.woooo.tech/labels/gpu").unwrap();
+      Selector::parse("radiata.woooo.tech/labels/zone=edge radiata.woooo.tech/labels/gpu").unwrap();
     // Canonical order sorts keys; the same predicates in another order or
     // with extra whitespace converge to one selector.
     let reordered =
-      Selector::parse("  relay.woooo.tech/labels/gpu   relay.woooo.tech/labels/zone=edge ")
+      Selector::parse("  radiata.woooo.tech/labels/gpu   radiata.woooo.tech/labels/zone=edge ")
         .unwrap();
     assert_eq!(selector, reordered);
     assert_eq!(
       selector.as_str(),
-      "relay.woooo.tech/labels/gpu relay.woooo.tech/labels/zone=edge"
+      "radiata.woooo.tech/labels/gpu radiata.woooo.tech/labels/zone=edge"
     );
 
     let matching = labels(&[("gpu", "yes"), ("zone", "edge")]);
@@ -894,7 +894,7 @@ mod tests {
       ErrorKind::InvalidInput
     );
     assert_eq!(
-      Selector::parse("relay.woooo.tech/features/not-a-label")
+      Selector::parse("radiata.woooo.tech/features/not-a-label")
         .unwrap_err()
         .kind(),
       ErrorKind::InvalidInput
@@ -957,7 +957,7 @@ mod tests {
   #[tokio::test]
   async fn matching_candidates_stream_in_bounded_pages() {
     let reader = candidate_reader().await;
-    let selector = Selector::parse("relay.woooo.tech/labels/zone=edge").unwrap();
+    let selector = Selector::parse("radiata.woooo.tech/labels/zone=edge").unwrap();
 
     // Nodes 2 and 4 carry zone=edge; page limit one forces two pages, and
     // the trailing non-matching member ends the stream on a third call.
@@ -984,7 +984,7 @@ mod tests {
     assert!(page.next().is_none());
 
     // A nonmatching selector yields an empty stream, not an error.
-    let none = Selector::parse("relay.woooo.tech/labels/gpu=nope").unwrap();
+    let none = Selector::parse("radiata.woooo.tech/labels/gpu=nope").unwrap();
     let page = reader.next_matching_nodes(&none, None, 8).await.unwrap();
     assert!(page.items().is_empty());
     assert!(page.next().is_none());
@@ -1014,7 +1014,7 @@ mod tests {
   #[tokio::test]
   async fn load_balancer_registration_and_selection() -> Result<()> {
     let mut registry = crate::ExtensionRegistry::new();
-    let tag = crate::QualifiedTag::parse("relay.woooo.tech/policies/first")?;
+    let tag = crate::QualifiedTag::parse("radiata.woooo.tech/policies/first")?;
     registry.register_load_balancer(tag.clone(), Arc::new(FirstCandidate))?;
     assert!(registry.has_load_balancer(&tag));
     // A duplicate tag registration conflicts.
@@ -1027,10 +1027,10 @@ mod tests {
     );
 
     let reader = candidate_reader().await;
-    let selector = Selector::parse("relay.woooo.tech/labels/gpu=yes").unwrap();
+    let selector = Selector::parse("radiata.woooo.tech/labels/gpu=yes").unwrap();
     let policy = registry
       .load_balancer(&crate::QualifiedTag::parse(
-        "relay.woooo.tech/policies/first",
+        "radiata.woooo.tech/policies/first",
       )?)
       .unwrap();
     let selected = policy.select(&selector, &reader).await?;
@@ -1184,65 +1184,65 @@ mod tests {
     let set = labels(&[("zone", "edge"), ("gpu", "yes")]);
     // Equality and existence.
     assert!(
-      Selector::parse("relay.woooo.tech/labels/zone=edge")
+      Selector::parse("radiata.woooo.tech/labels/zone=edge")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      !Selector::parse("relay.woooo.tech/labels/zone=core")
+      !Selector::parse("radiata.woooo.tech/labels/zone=core")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      Selector::parse("relay.woooo.tech/labels/gpu")
+      Selector::parse("radiata.woooo.tech/labels/gpu")
         .unwrap()
         .matches(&set)
     );
     // Inequality matches a different value and an absent key alike.
     assert!(
-      Selector::parse("relay.woooo.tech/labels/zone!=core")
+      Selector::parse("radiata.woooo.tech/labels/zone!=core")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      Selector::parse("relay.woooo.tech/labels/ssd!=yes")
+      Selector::parse("radiata.woooo.tech/labels/ssd!=yes")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      !Selector::parse("relay.woooo.tech/labels/zone!=edge")
+      !Selector::parse("radiata.woooo.tech/labels/zone!=edge")
         .unwrap()
         .matches(&set)
     );
     // Set membership requires presence; non-membership matches absence.
     assert!(
-      Selector::parse("relay.woooo.tech/labels/zone in (core,edge)")
+      Selector::parse("radiata.woooo.tech/labels/zone in (core,edge)")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      !Selector::parse("relay.woooo.tech/labels/ssd in (yes)")
+      !Selector::parse("radiata.woooo.tech/labels/ssd in (yes)")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      Selector::parse("relay.woooo.tech/labels/ssd notin (yes)")
+      Selector::parse("radiata.woooo.tech/labels/ssd notin (yes)")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      !Selector::parse("relay.woooo.tech/labels/zone notin (core,edge)")
+      !Selector::parse("radiata.woooo.tech/labels/zone notin (core,edge)")
         .unwrap()
         .matches(&set)
     );
     // Non-existence.
     assert!(
-      Selector::parse("!relay.woooo.tech/labels/ssd")
+      Selector::parse("!radiata.woooo.tech/labels/ssd")
         .unwrap()
         .matches(&set)
     );
     assert!(
-      !Selector::parse("!relay.woooo.tech/labels/gpu")
+      !Selector::parse("!radiata.woooo.tech/labels/gpu")
         .unwrap()
         .matches(&set)
     );
@@ -1254,32 +1254,32 @@ mod tests {
   #[test]
   fn canonicalization_normalizes_and_round_trips() {
     let spaced =
-      Selector::parse("  relay.woooo.tech/labels/zone = edge   relay.woooo.tech/labels/gpu  ")
+      Selector::parse("  radiata.woooo.tech/labels/zone = edge   radiata.woooo.tech/labels/gpu  ")
         .unwrap();
     let compact =
-      Selector::parse("relay.woooo.tech/labels/gpu relay.woooo.tech/labels/zone=edge").unwrap();
+      Selector::parse("radiata.woooo.tech/labels/gpu radiata.woooo.tech/labels/zone=edge").unwrap();
     assert_eq!(spaced, compact);
     assert_eq!(
       spaced.as_str(),
-      "relay.woooo.tech/labels/gpu relay.woooo.tech/labels/zone=edge"
+      "radiata.woooo.tech/labels/gpu radiata.woooo.tech/labels/zone=edge"
     );
     // Set member order and duplicates collapse into one canonical list.
-    let set_a = Selector::parse("relay.woooo.tech/labels/zone in ( edge, core ,edge )").unwrap();
-    let set_b = Selector::parse("relay.woooo.tech/labels/zone in (core,edge)").unwrap();
+    let set_a = Selector::parse("radiata.woooo.tech/labels/zone in ( edge, core ,edge )").unwrap();
+    let set_b = Selector::parse("radiata.woooo.tech/labels/zone in (core,edge)").unwrap();
     assert_eq!(set_a, set_b);
     assert_eq!(
       set_a.as_str(),
-      "relay.woooo.tech/labels/zone in (core,edge)"
+      "radiata.woooo.tech/labels/zone in (core,edge)"
     );
     // Exact duplicate predicates deduplicate.
     let duplicated =
-      Selector::parse("relay.woooo.tech/labels/gpu relay.woooo.tech/labels/gpu").unwrap();
-    assert_eq!(duplicated.as_str(), "relay.woooo.tech/labels/gpu");
+      Selector::parse("radiata.woooo.tech/labels/gpu radiata.woooo.tech/labels/gpu").unwrap();
+    assert_eq!(duplicated.as_str(), "radiata.woooo.tech/labels/gpu");
 
     // Distinct operators stay distinct.
-    let equality = Selector::parse("relay.woooo.tech/labels/zone=edge").unwrap();
-    let inequality = Selector::parse("relay.woooo.tech/labels/zone!=edge").unwrap();
-    let membership = Selector::parse("relay.woooo.tech/labels/zone in (edge)").unwrap();
+    let equality = Selector::parse("radiata.woooo.tech/labels/zone=edge").unwrap();
+    let inequality = Selector::parse("radiata.woooo.tech/labels/zone!=edge").unwrap();
+    let membership = Selector::parse("radiata.woooo.tech/labels/zone in (edge)").unwrap();
     assert_ne!(equality, inequality);
     assert_ne!(equality, membership);
     assert_ne!(inequality, membership);
@@ -1314,7 +1314,7 @@ mod tests {
   fn grammar_bounds_reject_overlimit_and_malformed_input() {
     // Input byte limit.
     let oversized = format!(
-      "relay.woooo.tech/labels/a in ({})",
+      "radiata.woooo.tech/labels/a in ({})",
       (0..300)
         .map(|index| format!("v{index}"))
         .collect::<Vec<_>>()
@@ -1332,7 +1332,7 @@ mod tests {
     // bound. Such an input fails closed instead of shipping a selector
     // whose own canonical text cannot reparse. Eight notin pairs sit one
     // byte under the raw bound and one over the canonical bound.
-    let key = |index: usize| format!("relay.woooo.tech/labels/{}{index:0>2}", "a".repeat(32));
+    let key = |index: usize| format!("radiata.woooo.tech/labels/{}{index:0>2}", "a".repeat(30));
     let expands = (0..8)
       .map(|index| format!("{} notin (ed){}", key(index), key(index + 16)))
       .collect::<Vec<_>>()
@@ -1357,7 +1357,7 @@ mod tests {
     );
     // Predicate count limit.
     let many = (0..super::SELECTOR_MAX_PREDICATES + 1)
-      .map(|index| format!("relay.woooo.tech/labels/p{index:02}"))
+      .map(|index| format!("radiata.woooo.tech/labels/p{index:02}"))
       .collect::<Vec<_>>()
       .join(" ");
     assert_eq!(
@@ -1385,22 +1385,22 @@ mod tests {
     );
     // Malformed shapes fail closed.
     for malformed in [
-      "relay.woooo.tech/labels/a=(",
-      "relay.woooo.tech/labels/a in (",
-      "relay.woooo.tech/labels/a in (1,",
-      "relay.woooo.tech/labels/a in ()",
-      "relay.woooo.tech/labels/a in (1 2)",
-      "relay.woooo.tech/labels/a in (,1)",
-      "relay.woooo.tech/labels/a in (1,)",
-      "relay.woooo.tech/labels/a in ((1))",
-      "relay.woooo.tech/labels/a=",
-      "relay.woooo.tech/labels/a!",
-      "relay.woooo.tech/labels/a! =1",
+      "radiata.woooo.tech/labels/a=(",
+      "radiata.woooo.tech/labels/a in (",
+      "radiata.woooo.tech/labels/a in (1,",
+      "radiata.woooo.tech/labels/a in ()",
+      "radiata.woooo.tech/labels/a in (1 2)",
+      "radiata.woooo.tech/labels/a in (,1)",
+      "radiata.woooo.tech/labels/a in (1,)",
+      "radiata.woooo.tech/labels/a in ((1))",
+      "radiata.woooo.tech/labels/a=",
+      "radiata.woooo.tech/labels/a!",
+      "radiata.woooo.tech/labels/a! =1",
       "!",
-      "relay.woooo.tech/labels/a=b=c",
-      "relay.woooo.tech/labels/a=bad\\q",
-      "relay.woooo.tech/features/not-a-label",
-      "relay.woooo.tech/resources/other=x",
+      "radiata.woooo.tech/labels/a=b=c",
+      "radiata.woooo.tech/labels/a=bad\\q",
+      "radiata.woooo.tech/features/not-a-label",
+      "radiata.woooo.tech/resources/other=x",
     ] {
       assert!(
         Selector::parse(malformed).is_err(),
@@ -1486,10 +1486,10 @@ mod tests {
   /// caller domains plus both reserved resource labels.
   fn arb_key() -> impl proptest::strategy::Strategy<Value = String> {
     proptest::sample::select(vec![
-      "relay.woooo.tech/labels/zone",
+      "radiata.woooo.tech/labels/zone",
       "example.org/labels/owner",
-      "relay.woooo.tech/resources/type",
-      "relay.woooo.tech/resources/uri",
+      "radiata.woooo.tech/resources/type",
+      "radiata.woooo.tech/resources/uri",
     ])
     .prop_map(str::to_owned)
   }

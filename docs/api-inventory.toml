@@ -1,4 +1,4 @@
-schema = "relay.woooo.tech/schemas/api-inventory-v1"
+schema = "radiata.woooo.tech/schemas/api-inventory-v1"
 status = "accepted"
 document = "docs/api-manifest.md"
 sha256 = "f4900e05658abb815f9c016083a286b280448bf16effb6dfa4f0988f4601bb4d"

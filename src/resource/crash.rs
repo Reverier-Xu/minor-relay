@@ -28,8 +28,8 @@ use crate::{
   transport::testing::SeedEntropy,
 };
 
-const CRASH_DIR_ENV: &str = "MINOR_RELAY_RESOURCE_CRASH_DIR";
-const CRASH_POINT_ENV: &str = "MINOR_RELAY_RESOURCE_CRASH_POINT";
+const CRASH_DIR_ENV: &str = "RADIATA_RESOURCE_CRASH_DIR";
+const CRASH_POINT_ENV: &str = "RADIATA_RESOURCE_CRASH_POINT";
 
 /// The child commits under this deterministic entropy so the parent can
 /// reproduce its exact pending-transaction identity.
@@ -49,7 +49,7 @@ fn requirements() -> StoreRequirements {
 }
 
 fn name() -> ResourceName {
-  ResourceName::parse("relay.woooo.tech/resources/crash-demo").unwrap()
+  ResourceName::parse("radiata.woooo.tech/resources/crash-demo").unwrap()
 }
 
 fn labels() -> LabelSet {

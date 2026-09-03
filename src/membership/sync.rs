@@ -30,10 +30,10 @@ use crate::{
 };
 
 /// The canonical protocol tag of the membership sync stream.
-pub(crate) const MEMBERSHIP_SYNC_PROTOCOL: &str = "relay.woooo.tech/protocols/membership-sync";
+pub(crate) const MEMBERSHIP_SYNC_PROTOCOL: &str = "radiata.woooo.tech/protocols/membership-sync";
 
 /// The wire schema of one sync payload.
-const SYNC_PAYLOAD_SCHEMA: &str = "relay.woooo.tech/schemas/membership-sync-payload-v1";
+const SYNC_PAYLOAD_SCHEMA: &str = "radiata.woooo.tech/schemas/membership-sync-payload-v1";
 
 /// Payload kinds: a membership page of descriptors, or an issuer trust
 /// snapshot (grant set).

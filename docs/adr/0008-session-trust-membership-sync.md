@@ -3,7 +3,7 @@ id: ADR-0008
 title: Trust membership sync through the authenticated session
 status: accepted
 date: 2026-08-23
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Trust Membership Sync Through the Authenticated Session

@@ -3,7 +3,7 @@ id: ADR-0006
 title: Freeze planning ownership and a typed command bus facade
 status: accepted
 date: 2026-08-02
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Freeze Planning Ownership and a Typed Command Bus Facade
@@ -12,6 +12,12 @@ deciders: minor-relay maintainers
 > ceiling, public clock injection, application-state operation inventory, and business `CleanupState`
 > boundary are superseded. Active planning documents must complete the ADR-0007 rebaseline before G1
 > corrections or G2 implementation resume.
+>
+> **Amended 2026-09-04.** The planning-freeze and evidence-verification process apparatus
+> (`task-verification.toml`, `evidence-impact.toml`, `development-gates.md`,
+> `validate-planning-docs.sh`) is removed. Task readiness and change identity are governed by git
+> commits and the repository quality suite; the frozen-ID ratification rules in this ADR no longer
+> apply.
 
 ## Context
 

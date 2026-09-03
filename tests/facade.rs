@@ -9,7 +9,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use minor_relay::{
+use radiata::{
   BoxFuture, CreateCluster, Endpoint, ErrorKind, EventOptions, EventReceive, GetResource, Listen,
   LoadBalancingPolicy, NodeBuilder, NodeConfig, NodeHandle, NodeId, PacketMetadata, PacketPolicy,
   PacketTarget, PageListeners, PageMembers, PageResources, PageSessions, PageSpec, PageTopology,
@@ -24,7 +24,7 @@ mod common;
 use common::{MemoryStorageFactory, ScriptedKeys};
 
 const SYNC_INTERVAL: Duration = Duration::from_millis(50);
-const ECHO_PROTOCOL: &str = "relay.woooo.tech/protocols/facade-echo";
+const ECHO_PROTOCOL: &str = "radiata.woooo.tech/protocols/facade-echo";
 const LOAD_BALANCER: &str = "example.org/balancers/first-match";
 
 struct Node {
@@ -38,9 +38,9 @@ struct EchoCollector {
   packets: std::sync::Mutex<usize>,
 }
 
-impl minor_relay::PacketConsumer for EchoCollector {
+impl radiata::PacketConsumer for EchoCollector {
   fn accept<'a>(
-    &'a self, mut packet: minor_relay::IncomingPacket,
+    &'a self, mut packet: radiata::IncomingPacket,
   ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
       while packet.body().next_chunk().await?.is_some() {}
@@ -56,7 +56,7 @@ struct FirstMatch;
 
 impl LoadBalancingPolicy for FirstMatch {
   fn select<'a>(
-    &'a self, _selector: &'a Selector, candidates: &'a dyn minor_relay::CandidateNodeReader,
+    &'a self, _selector: &'a Selector, candidates: &'a dyn radiata::CandidateNodeReader,
   ) -> BoxFuture<'a, Result<NodeId>> {
     Box::pin(async move {
       let page = candidates.next_matching_nodes(_selector, None, 1).await?;
@@ -65,9 +65,9 @@ impl LoadBalancingPolicy for FirstMatch {
         .first()
         .map(|member| member.node_id().clone())
         .ok_or_else(|| {
-          minor_relay::Error::provider(
-            minor_relay::ProviderErrorKind::Unsupported,
-            minor_relay::ProviderErrorContext::LoadBalancingPolicy,
+          radiata::Error::provider(
+            radiata::ProviderErrorKind::Unsupported,
+            radiata::ProviderErrorContext::LoadBalancingPolicy,
           )
         })
     })
@@ -80,10 +80,8 @@ struct EchoBody {
   chunk: Option<Arc<[u8]>>,
 }
 
-impl minor_relay::PacketBody for EchoBody {
-  fn next_chunk<'a>(
-    &'a mut self,
-  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+impl radiata::PacketBody for EchoBody {
+  fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(self.chunk.take()) })
   }
 }
@@ -96,19 +94,19 @@ async fn start_node(seed: u64, echo: bool) -> Node {
     .unwrap();
   let mut builder = NodeBuilder::new(storage, keys).config(config);
   if echo {
-    let mut extensions = minor_relay::ExtensionRegistry::new();
+    let mut extensions = radiata::ExtensionRegistry::new();
     extensions
       .register_protocol(
         ProtocolDefinition::new(
           ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
-          minor_relay::FeatureTag::parse("relay.woooo.tech/features/session-core").unwrap(),
+          radiata::FeatureTag::parse("radiata.woooo.tech/features/session-core").unwrap(),
         ),
         Arc::new(EchoCollector::default()),
       )
       .unwrap();
     extensions
       .register_load_balancer(
-        minor_relay::QualifiedTag::parse(LOAD_BALANCER).unwrap(),
+        radiata::QualifiedTag::parse(LOAD_BALANCER).unwrap(),
         Arc::new(FirstMatch),
       )
       .unwrap();
@@ -145,14 +143,14 @@ impl LeaveCapableKeys {
     ed25519_dalek::SigningKey::from_bytes(&base.to_le_bytes().repeat(4)[..32].try_into().unwrap())
   }
 
-  fn create_at(&self, operation: &minor_relay::KeyOperationId) -> minor_relay::KeyCreateState {
+  fn create_at(&self, operation: &radiata::KeyOperationId) -> radiata::KeyCreateState {
     let mut operations = self.operations.lock().unwrap();
     if let Some(handle) = operations.get(operation.as_str().as_bytes()) {
       let signing = self.records.lock().unwrap().get(handle).cloned();
       if let Some(signing) = signing {
-        return minor_relay::KeyCreateState::Present(minor_relay::CreatedKey::new(
-          minor_relay::KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
-          minor_relay::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+        return radiata::KeyCreateState::Present(radiata::CreatedKey::new(
+          radiata::KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
+          radiata::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
         ));
       }
     }
@@ -161,41 +159,39 @@ impl LeaveCapableKeys {
     *next += 1;
     let signing = Self::seed_for(index + 1);
     let handle = format!("facade-handle-{index}").into_bytes();
-    let created = minor_relay::CreatedKey::new(
-      minor_relay::KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
-      minor_relay::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+    let created = radiata::CreatedKey::new(
+      radiata::KeyHandle::from_provider_bytes(Arc::from(handle.clone())).unwrap(),
+      radiata::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
     );
     operations.insert(operation.as_str().as_bytes().to_vec(), handle.clone());
     self.records.lock().unwrap().insert(handle, signing);
-    minor_relay::KeyCreateState::Present(created)
+    radiata::KeyCreateState::Present(created)
   }
 
-  fn lookup(&self, operation: &minor_relay::KeyOperationId) -> Option<minor_relay::KeyCreateState> {
+  fn lookup(&self, operation: &radiata::KeyOperationId) -> Option<radiata::KeyCreateState> {
     let operations = self.operations.lock().unwrap();
     let handle = operations.get(operation.as_str().as_bytes())?.clone();
     drop(operations);
     let signing = self.records.lock().unwrap().get(&handle).cloned()?;
-    Some(minor_relay::KeyCreateState::Present(
-      minor_relay::CreatedKey::new(
-        minor_relay::KeyHandle::from_provider_bytes(Arc::from(handle)).unwrap(),
-        minor_relay::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
-      ),
-    ))
+    Some(radiata::KeyCreateState::Present(radiata::CreatedKey::new(
+      radiata::KeyHandle::from_provider_bytes(Arc::from(handle)).unwrap(),
+      radiata::PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+    )))
   }
 
-  fn public_key_of(&self, handle: &minor_relay::KeyHandle) -> Option<minor_relay::PublicKey> {
+  fn public_key_of(&self, handle: &radiata::KeyHandle) -> Option<radiata::PublicKey> {
     let signing = self
       .records
       .lock()
       .unwrap()
       .get(handle.expose_provider_handle())
       .cloned()?;
-    Some(minor_relay::PublicKey::from_bytes(
+    Some(radiata::PublicKey::from_bytes(
       signing.verifying_key().to_bytes(),
     ))
   }
 
-  fn signing_of(&self, handle: &minor_relay::KeyHandle) -> Option<ed25519_dalek::SigningKey> {
+  fn signing_of(&self, handle: &radiata::KeyHandle) -> Option<ed25519_dalek::SigningKey> {
     self
       .records
       .lock()
@@ -204,7 +200,7 @@ impl LeaveCapableKeys {
       .cloned()
   }
 
-  fn remove(&self, handle: &minor_relay::KeyHandle) -> bool {
+  fn remove(&self, handle: &radiata::KeyHandle) -> bool {
     let removed = self
       .records
       .lock()
@@ -225,7 +221,7 @@ impl LeaveCapableKeys {
     self.deleted.lock().unwrap().len()
   }
 
-  fn contains(&self, handle: &minor_relay::KeyHandle) -> bool {
+  fn contains(&self, handle: &radiata::KeyHandle) -> bool {
     self
       .records
       .lock()
@@ -235,71 +231,71 @@ impl LeaveCapableKeys {
 }
 
 impl KeyProvider for LeaveCapableKeys {
-  fn capabilities(&self) -> minor_relay::KeyCapabilities {
-    minor_relay::KeyCapabilities::new()
+  fn capabilities(&self) -> radiata::KeyCapabilities {
+    radiata::KeyCapabilities::new()
       .ed25519(true)
       .reconciliation(true)
       .deletion(true)
   }
 
   fn create_ed25519<'a>(
-    &'a self, operation: &'a minor_relay::KeyOperationId,
-  ) -> BoxFuture<'a, Result<minor_relay::KeyCreateState>> {
+    &'a self, operation: &'a radiata::KeyOperationId,
+  ) -> BoxFuture<'a, Result<radiata::KeyCreateState>> {
     let created = self.create_at(operation);
     Box::pin(async move { Ok(created) })
   }
 
   fn reconcile_create<'a>(
-    &'a self, operation: &'a minor_relay::KeyOperationId,
-  ) -> BoxFuture<'a, Result<minor_relay::KeyCreateState>> {
+    &'a self, operation: &'a radiata::KeyOperationId,
+  ) -> BoxFuture<'a, Result<radiata::KeyCreateState>> {
     let created = self.lookup(operation);
-    Box::pin(async move { Ok(created.unwrap_or(minor_relay::KeyCreateState::Absent)) })
+    Box::pin(async move { Ok(created.unwrap_or(radiata::KeyCreateState::Absent)) })
   }
 
   fn public_key<'a>(
-    &'a self, handle: &'a minor_relay::KeyHandle,
-  ) -> BoxFuture<'a, Result<minor_relay::PublicKey>> {
+    &'a self, handle: &'a radiata::KeyHandle,
+  ) -> BoxFuture<'a, Result<radiata::PublicKey>> {
     let result = self.public_key_of(handle).ok_or_else(|| {
-      minor_relay::Error::provider(
-        minor_relay::ProviderErrorKind::Internal,
-        minor_relay::ProviderErrorContext::KeyPublicKey,
+      radiata::Error::provider(
+        radiata::ProviderErrorKind::Internal,
+        radiata::ProviderErrorContext::KeyPublicKey,
       )
     });
     Box::pin(async move { result })
   }
 
   fn sign<'a>(
-    &'a self, handle: &'a minor_relay::KeyHandle, message: &'a [u8],
-  ) -> BoxFuture<'a, Result<minor_relay::Signature>> {
+    &'a self, handle: &'a radiata::KeyHandle, message: &'a [u8],
+  ) -> BoxFuture<'a, Result<radiata::Signature>> {
     use ed25519_dalek::Signer as _;
     let result = self
       .signing_of(handle)
-      .map(|signing| minor_relay::Signature::from_bytes(signing.sign(message).to_bytes()))
+      .map(|signing| radiata::Signature::from_bytes(signing.sign(message).to_bytes()))
       .ok_or_else(|| {
-        minor_relay::Error::provider(
-          minor_relay::ProviderErrorKind::Internal,
-          minor_relay::ProviderErrorContext::KeySign,
+        radiata::Error::provider(
+          radiata::ProviderErrorKind::Internal,
+          radiata::ProviderErrorContext::KeySign,
         )
       });
     Box::pin(async move { result })
   }
 
   fn delete<'a>(
-    &'a self, _operation: &'a minor_relay::KeyOperationId, handle: &'a minor_relay::KeyHandle,
-  ) -> BoxFuture<'a, Result<minor_relay::KeyDeleteState>> {
+    &'a self, _operation: &'a radiata::KeyOperationId, handle: &'a radiata::KeyHandle,
+  ) -> BoxFuture<'a, Result<radiata::KeyDeleteState>> {
     self.remove(handle);
-    Box::pin(async move { Ok(minor_relay::KeyDeleteState::Absent) })
+    Box::pin(async move { Ok(radiata::KeyDeleteState::Absent) })
   }
 
   fn reconcile_delete<'a>(
-    &'a self, _operation: &'a minor_relay::KeyOperationId, handle: &'a minor_relay::KeyHandle,
-  ) -> BoxFuture<'a, Result<minor_relay::KeyDeleteState>> {
+    &'a self, _operation: &'a radiata::KeyOperationId, handle: &'a radiata::KeyHandle,
+  ) -> BoxFuture<'a, Result<radiata::KeyDeleteState>> {
     let present = self.contains(handle);
     Box::pin(async move {
       Ok(if present {
-        minor_relay::KeyDeleteState::Present
+        radiata::KeyDeleteState::Present
       } else {
-        minor_relay::KeyDeleteState::Absent
+        radiata::KeyDeleteState::Absent
       })
     })
   }
@@ -307,9 +303,12 @@ impl KeyProvider for LeaveCapableKeys {
 
 fn resource_write(name_seed: u8, resource_type: &str) -> PutResource {
   PutResource::new(ResourceWrite::new(
-    ResourceName::parse(&format!("relay.woooo.tech/resources/facade-{name_seed:03}")).unwrap(),
+    ResourceName::parse(&format!(
+      "radiata.woooo.tech/resources/facade-{name_seed:03}"
+    ))
+    .unwrap(),
     ResourceLabels::new(
-      minor_relay::LabelValue::parse(resource_type).unwrap(),
+      radiata::LabelValue::parse(resource_type).unwrap(),
       ResourceUri::parse(&format!("file:///facade/{name_seed:03}")).unwrap(),
     ),
   ))
@@ -352,7 +351,7 @@ async fn e2e08_resources_revoke_and_leave() {
   common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
   let member_id = member
     .handle
-    .query(minor_relay::GetLocalNode::new())
+    .query(radiata::GetLocalNode::new())
     .await
     .unwrap()
     .node_id()
@@ -373,7 +372,7 @@ async fn e2e08_resources_revoke_and_leave() {
     let page = issuer
       .handle
       .query(SelectResources::new(
-        Selector::parse("relay.woooo.tech/resources/type=gpu-worker").unwrap(),
+        Selector::parse("radiata.woooo.tech/resources/type=gpu-worker").unwrap(),
         PageSpec::first(8).unwrap(),
       ))
       .await
@@ -413,7 +412,7 @@ async fn e2e08_resources_revoke_and_leave() {
   let still_there = issuer
     .handle
     .query(SelectResources::new(
-      Selector::parse("relay.woooo.tech/resources/type=gpu-worker").unwrap(),
+      Selector::parse("radiata.woooo.tech/resources/type=gpu-worker").unwrap(),
       PageSpec::first(8).unwrap(),
     ))
     .await
@@ -433,12 +432,12 @@ async fn e2e08_resources_revoke_and_leave() {
   // still intact afterwards.
   let mut events = issuer
     .handle
-    .events::<minor_relay::IdentityReplaced>(EventOptions::new())
+    .events::<radiata::IdentityReplaced>(EventOptions::new())
     .unwrap();
   let outcome = issuer
     .handle
-    .command(minor_relay::LeaveCluster::new(
-      minor_relay::ReplaceIdentityAndDeleteOldCoreMetadata::new(),
+    .command(radiata::LeaveCluster::new(
+      radiata::ReplaceIdentityAndDeleteOldCoreMetadata::new(),
     ))
     .await
     .unwrap();
@@ -450,7 +449,7 @@ async fn e2e08_resources_revoke_and_leave() {
   assert_ne!(outcome.former_identity(), outcome.replacement_identity());
   let reason = issuer
     .handle
-    .query(minor_relay::WaitForShutdown::new())
+    .query(radiata::WaitForShutdown::new())
     .await
     .unwrap();
   assert_eq!(reason, ShutdownReason::ActiveLeave);
@@ -476,7 +475,7 @@ async fn g9_facade_core_only_operations() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
       tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=debug"))
+        .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=debug"))
         .with_test_writer()
         .init();
     });
@@ -490,7 +489,7 @@ async fn g9_facade_core_only_operations() {
   common::join_with_retry(&member.handle, &issuer.handle, issuer_endpoint).await;
   let member_id = member
     .handle
-    .query(minor_relay::GetLocalNode::new())
+    .query(radiata::GetLocalNode::new())
     .await
     .unwrap()
     .node_id()
@@ -521,15 +520,15 @@ async fn g9_facade_core_only_operations() {
   }
 
   // The member labels itself as an echo-capable zone member.
-  let patch = minor_relay::NodeMetadataPatch::new()
+  let patch = radiata::NodeMetadataPatch::new()
     .set_capability(
-      minor_relay::LabelKey::parse("example.org/labels/zone").unwrap(),
-      minor_relay::LabelValue::parse("edge").unwrap(),
+      radiata::LabelKey::parse("example.org/labels/zone").unwrap(),
+      radiata::LabelValue::parse("edge").unwrap(),
     )
     .unwrap();
   let revision = member
     .handle
-    .query(minor_relay::GetLocalNode::new())
+    .query(radiata::GetLocalNode::new())
     .await
     .ok()
     .map(|_| 1_u64)
@@ -553,7 +552,7 @@ async fn g9_facade_core_only_operations() {
       member.node_id() == &member_id
         && member
           .labels()
-          .get(&minor_relay::LabelKey::parse("example.org/labels/zone").unwrap())
+          .get(&radiata::LabelKey::parse("example.org/labels/zone").unwrap())
           .is_some_and(|value| value.as_str() == "edge")
     });
     if labeled {
@@ -576,7 +575,7 @@ async fn g9_facade_core_only_operations() {
       ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
       PacketPolicy::new(RoutingPolicy::Direct, 1)
         .unwrap()
-        .load_balancer(minor_relay::QualifiedTag::parse(LOAD_BALANCER).unwrap()),
+        .load_balancer(radiata::QualifiedTag::parse(LOAD_BALANCER).unwrap()),
       PacketMetadata::new(),
     )
     .unwrap();
@@ -621,7 +620,7 @@ async fn g9_facade_core_only_operations() {
   let view = issuer
     .handle
     .query(GetResource::new(
-      ResourceName::parse("relay.woooo.tech/resources/facade-002").unwrap(),
+      ResourceName::parse("radiata.woooo.tech/resources/facade-002").unwrap(),
     ))
     .await
     .unwrap()
@@ -642,7 +641,7 @@ async fn g9_facade_core_only_operations() {
   issuer
     .handle
     .command(RemoveResource::new(
-      ResourceName::parse("relay.woooo.tech/resources/facade-002").unwrap(),
+      ResourceName::parse("radiata.woooo.tech/resources/facade-002").unwrap(),
       view.version().clone(),
     ))
     .await
@@ -651,7 +650,7 @@ async fn g9_facade_core_only_operations() {
     issuer
       .handle
       .query(GetResource::new(
-        ResourceName::parse("relay.woooo.tech/resources/facade-002").unwrap(),
+        ResourceName::parse("radiata.woooo.tech/resources/facade-002").unwrap(),
       ))
       .await
       .unwrap()
@@ -731,7 +730,10 @@ async fn g9_resource_labels_never_enable_protocols() {
     let page = issuer
       .handle
       .query(SelectResources::new(
-        Selector::parse(&format!("relay.woooo.tech/resources/type={ECHO_PROTOCOL}")).unwrap(),
+        Selector::parse(&format!(
+          "radiata.woooo.tech/resources/type={ECHO_PROTOCOL}"
+        ))
+        .unwrap(),
         PageSpec::first(8).unwrap(),
       ))
       .await
@@ -751,7 +753,7 @@ async fn g9_resource_labels_never_enable_protocols() {
       PacketTarget::Exact(
         member
           .handle
-          .query(minor_relay::GetLocalNode::new())
+          .query(radiata::GetLocalNode::new())
           .await
           .unwrap()
           .node_id()

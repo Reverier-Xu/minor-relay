@@ -517,41 +517,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
-name = "minor-relay"
-version = "0.1.0"
-dependencies = [
- "base64",
- "domain",
- "ed25519-dalek",
- "fs4",
- "futures-util",
- "getrandom 0.4.3",
- "hkdf",
- "hmac",
- "minicbor",
- "rcgen",
- "rustix",
- "rustls",
- "secrecy",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "minor-relay-fuzz"
-version = "0.0.0"
-dependencies = [
- "libfuzzer-sys",
- "minor-relay",
-]
-
-[[package]]
 name = "mio"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -665,6 +630,41 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "radiata"
+version = "0.0.2"
+dependencies = [
+ "base64",
+ "domain",
+ "ed25519-dalek",
+ "fs4",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hmac",
+ "minicbor",
+ "rcgen",
+ "rustix",
+ "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "radiata-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "radiata",
+]
 
 [[package]]
 name = "rand"

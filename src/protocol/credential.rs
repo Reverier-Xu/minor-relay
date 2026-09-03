@@ -4,8 +4,8 @@
 //!
 //! ```text
 //! prk = HKDF-Extract-SHA256(salt = cb, IKM = credential_bytes)
-//! responder_key = HKDF-Expand-SHA256(prk, "relay.woooo.tech/crypto/bootstrap-v1-responder", 32)
-//! initiator_key = HKDF-Expand-SHA256(prk, "relay.woooo.tech/crypto/bootstrap-v1-initiator", 32)
+//! responder_key = HKDF-Expand-SHA256(prk, "radiata.woooo.tech/crypto/bootstrap-v1-responder", 32)
+//! initiator_key = HKDF-Expand-SHA256(prk, "radiata.woooo.tech/crypto/bootstrap-v1-initiator", 32)
 //! proof = HMAC-SHA256(role_key, transcript_digest)
 //! ```
 //!
@@ -23,9 +23,9 @@ use zeroize::Zeroizing;
 use crate::{Digest, Error, JoinCredential, Result};
 
 /// The exact ADR-0001 responder bootstrap key info label.
-pub(crate) const RESPONDER_KEY_INFO: &[u8] = b"relay.woooo.tech/crypto/bootstrap-v1-responder";
+pub(crate) const RESPONDER_KEY_INFO: &[u8] = b"radiata.woooo.tech/crypto/bootstrap-v1-responder";
 /// The exact ADR-0001 initiator bootstrap key info label.
-pub(crate) const INITIATOR_KEY_INFO: &[u8] = b"relay.woooo.tech/crypto/bootstrap-v1-initiator";
+pub(crate) const INITIATOR_KEY_INFO: &[u8] = b"radiata.woooo.tech/crypto/bootstrap-v1-initiator";
 
 const ROLE_KEY_LEN: usize = 32;
 pub(crate) const PROOF_LEN: usize = 32;
@@ -151,13 +151,13 @@ mod tests {
   // 32-byte output block and RFC 2104 HMAC-SHA256 over the digest.
   const EXPECTED_PRK_HEX: &str = "27b8df2164d66f6cca05beb2b54f8cd40188814fc29022f890c0bd0ad6adc6f7";
   const EXPECTED_RESPONDER_KEY_HEX: &str =
-    "e81b02a1953ac81a7fc8eb2430facc9ad93d9940b34857a04cbd9c60d09b1a30";
+    "9eeaa14504d7e577ebad1f92d826872607bb5cbcbe07be1ec5a69d0fc2c8b907";
   const EXPECTED_INITIATOR_KEY_HEX: &str =
-    "0158dfdf8407a24cfea607e52b2ca1e8c88fb933ec1702606d92222a80f56b8a";
+    "a0d7b7783f1a1fe85b0e10427714d97e1850cd0b385d62f04852a21fdb42e42c";
   const EXPECTED_RESPONDER_PROOF_HEX: &str =
-    "4adc064c920c858a21548d3b1b3e925ae309e849cb75cbaa65caff50531ad520";
+    "f8377c0931f46833a71b2eb1095bd20a5f4a6d4212819f9ba9eae2c2983064f2";
   const EXPECTED_INITIATOR_PROOF_HEX: &str =
-    "e2fbc91f358f4041783d434cc5b215c3b75a90c539b414a69d7960dd43f47da0";
+    "d269973797d0a42bdc5f3313c4ec484122c57a5ad27ce9dea92c6ddbf8c60091";
 
   use crate::hex::encode as hex;
 
@@ -173,11 +173,11 @@ mod tests {
   fn tls_transport_proof_vectors_are_exact() {
     assert_eq!(
       RESPONDER_KEY_INFO,
-      b"relay.woooo.tech/crypto/bootstrap-v1-responder"
+      b"radiata.woooo.tech/crypto/bootstrap-v1-responder"
     );
     assert_eq!(
       INITIATOR_KEY_INFO,
-      b"relay.woooo.tech/crypto/bootstrap-v1-initiator"
+      b"radiata.woooo.tech/crypto/bootstrap-v1-initiator"
     );
     assert!(RESPONDER_KEY_INFO.is_ascii());
     assert!(INITIATOR_KEY_INFO.is_ascii());

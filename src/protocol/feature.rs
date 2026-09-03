@@ -11,21 +11,21 @@
 //! SHA-256 of one exact frozen seed string per feature:
 //!
 //! ```text
-//! seed = "relay.woooo.tech/crypto/feature-fingerprint-v1/" ++ <full feature tag>
+//! seed = "radiata.woooo.tech/crypto/feature-fingerprint-v1/" ++ <full feature tag>
 //! ```
 //!
 //! The five frozen seeds are:
 //!
-//! - `relay.woooo.tech/crypto/feature-fingerprint-v1/relay.woooo.tech/features/
-//!   auth-ed25519-session`
-//! - `relay.woooo.tech/crypto/feature-fingerprint-v1/relay.woooo.tech/features/
-//!   session-core`
-//! - `relay.woooo.tech/crypto/feature-fingerprint-v1/relay.woooo.tech/features/
-//!   data-messages`
-//! - `relay.woooo.tech/crypto/feature-fingerprint-v1/relay.woooo.tech/features/
-//!   direct-request`
-//! - `relay.woooo.tech/crypto/feature-fingerprint-v1/relay.woooo.tech/features/
-//!   routed-delivery`
+//! - `radiata.woooo.tech/crypto/feature-fingerprint-v1/radiata.woooo.tech/
+//!   features/ auth-ed25519-session`
+//! - `radiata.woooo.tech/crypto/feature-fingerprint-v1/radiata.woooo.tech/
+//!   features/ session-core`
+//! - `radiata.woooo.tech/crypto/feature-fingerprint-v1/radiata.woooo.tech/
+//!   features/ data-messages`
+//! - `radiata.woooo.tech/crypto/feature-fingerprint-v1/radiata.woooo.tech/
+//!   features/ direct-request`
+//! - `radiata.woooo.tech/crypto/feature-fingerprint-v1/radiata.woooo.tech/
+//!   features/ routed-delivery`
 //!
 //! `handshake_feature_registry_golden_fixture_is_frozen` pins the exact
 //! fingerprints and definition digests those seeds produce.
@@ -40,14 +40,14 @@ use crate::{Digest, Error, Result};
 
 const BUILTIN_DOMAIN: &str = super::tag::BUILTIN_DOMAIN;
 const BUILTIN_TEST_OWNER: &str = "VERIFY-G03-01";
-const FINGERPRINT_SEED_PREFIX: &str = "relay.woooo.tech/crypto/feature-fingerprint-v1/";
+const FINGERPRINT_SEED_PREFIX: &str = "radiata.woooo.tech/crypto/feature-fingerprint-v1/";
 
-pub(crate) const AUTH_ED25519_SESSION: &str = "relay.woooo.tech/features/auth-ed25519-session";
-pub(crate) const SESSION_CORE: &str = "relay.woooo.tech/features/session-core";
-pub(crate) const DATA_MESSAGES: &str = "relay.woooo.tech/features/data-messages";
-pub(crate) const DIRECT_REQUEST: &str = "relay.woooo.tech/features/direct-request";
-pub(crate) const ROUTED_DELIVERY: &str = "relay.woooo.tech/features/routed-delivery";
-pub(crate) const DATA_BODY_BYTES_LIMIT: &str = "relay.woooo.tech/limits/data-body-bytes";
+pub(crate) const AUTH_ED25519_SESSION: &str = "radiata.woooo.tech/features/auth-ed25519-session";
+pub(crate) const SESSION_CORE: &str = "radiata.woooo.tech/features/session-core";
+pub(crate) const DATA_MESSAGES: &str = "radiata.woooo.tech/features/data-messages";
+pub(crate) const DIRECT_REQUEST: &str = "radiata.woooo.tech/features/direct-request";
+pub(crate) const ROUTED_DELIVERY: &str = "radiata.woooo.tech/features/routed-delivery";
+pub(crate) const DATA_BODY_BYTES_LIMIT: &str = "radiata.woooo.tech/limits/data-body-bytes";
 
 /// The five built-in feature labels in declaration order. Fixtures and
 /// tests reuse this single list so adding a built-in feature cannot
@@ -60,8 +60,8 @@ pub(crate) const BUILTIN_FEATURE_LABELS: [&str; 5] = [
   DIRECT_REQUEST,
   ROUTED_DELIVERY,
 ];
-const IN_FLIGHT_REQUESTS_LIMIT: &str = "relay.woooo.tech/limits/in-flight-requests";
-const DIRECT_REQUEST_PROTOCOL: &str = "relay.woooo.tech/protocols/direct-request";
+const IN_FLIGHT_REQUESTS_LIMIT: &str = "radiata.woooo.tech/limits/in-flight-requests";
+const DIRECT_REQUEST_PROTOCOL: &str = "radiata.woooo.tech/protocols/direct-request";
 
 const DATA_BODY_FLOOR: u64 = 64 * 1_024;
 const DATA_BODY_DEFAULT: u64 = 1_024 * 1_024;
@@ -88,7 +88,7 @@ impl FeatureDefinition {
   /// Starts a definition for an extension feature label with its immutable
   /// 32-byte contract fingerprint.
   ///
-  /// The built-in `relay.woooo.tech` domain is reserved for the frozen
+  /// The built-in `radiata.woooo.tech` domain is reserved for the frozen
   /// built-in definitions and is rejected here.
   pub fn new(tag: FeatureTag, fingerprint: Digest) -> Result<Self> {
     if tag.domain() == BUILTIN_DOMAIN {
@@ -623,28 +623,28 @@ mod tests {
     let cases = [
       (
         AUTH_ED25519_SESSION,
-        "7dbfa709e756d554e6d4ad91eb3131fc461dbba784ad3882b1c21efcdba02c05",
-        "dcf0f5c2311f4d3fb01919c600ddc46c5abe3c2a7c2f77bb835d46611538246a",
+        "a6aae08b63bae00caa00aab679575305a1706fe438b4f6174cb557ffc1494325",
+        "7e1cd8b5da6a7073ecf8bcc214f3bc23fd0e8aa5d039df81d051aebc6261dbb2",
       ),
       (
         SESSION_CORE,
-        "74866469a726a75c18a4d5c7b40554d4013fe6723655215a0e6950effab3d56b",
-        "b1b39a64e28a6d98a80804d0ace98e329c763f329ab491f723c345e59ff07585",
+        "ee00fbe9538f70fd59221ce29662b3c2e7ca641435c8d7ef9885c1b0c92404c4",
+        "c7d97780c1919caa52efbf957e11a6ed3e894724558bf0e80497996536e2fa6e",
       ),
       (
         DATA_MESSAGES,
-        "a5dbb6f8bd50975d07882da5cfa9f0483719e5ca68153f876a2719935fef1e9a",
-        "1a5ab4973d0b0ba3ee8a8e96fa581e37f50fef152a771db2f387b1ba4bb61215",
+        "1eefa1f2d6d8693aaf50c2104446b70b7f17fa5edb6f770292c98c1e79e98446",
+        "594268233e6759361cfe2a5ddb5fe318375670bd6d3c74a9dfd7970378328ba8",
       ),
       (
         DIRECT_REQUEST,
-        "140bb8e0863402c38e4543ac1c23f5256e10a68d148717db94ad2ea2866e3fb0",
-        "ff93e869ead739645e025052f910eabb3350034cbbe109e3fc39d7dd5bac73b8",
+        "b6b33d30b0f540cd765d7dcf9ba3b348073e0ebfce6614e5444a4d2c68ea5ca2",
+        "9b6e0d583656d859650b5b2f983772d13f37f0ddcb800cb5ae73b92d521d1f08",
       ),
       (
         ROUTED_DELIVERY,
-        "44af681cc82e9a4a8ff0f58bc242218e4bb64af00553385e4222b52e23770210",
-        "9cd2873e2f70befc684a8f6a137838b4e3136a7e5b863d9db7c16c2fe72163ef",
+        "98754ce760dd2308e7ee914e3575cb0cc69e4281bcda0889f13aeb35e5651609",
+        "348d89297781958b76a3b261ef9a9a1c47d5231102afad3f1a30fbce07a37537",
       ),
     ];
     for (name, fingerprint, digest) in cases {
@@ -758,7 +758,7 @@ mod tests {
       "feature definition reserved namespace"
     );
 
-    let crypto = QualifiedTag::parse("relay.woooo.tech/crypto/session-v1");
+    let crypto = QualifiedTag::parse("radiata.woooo.tech/crypto/session-v1");
     assert!(crypto.is_err());
 
     let valid = FeatureRegistry::build(vec![
@@ -815,7 +815,7 @@ mod tests {
     assert_mutation_detected(DIRECT_REQUEST, |definition| {
       definition
         .protocols
-        .push(ProtocolTag::parse("relay.woooo.tech/protocols/routed-delivery").unwrap());
+        .push(ProtocolTag::parse("radiata.woooo.tech/protocols/routed-delivery").unwrap());
     });
     assert_mutation_detected(AUTH_ED25519_SESSION, |definition| {
       definition.test_owner = "VERIFY-OTHER".to_owned();

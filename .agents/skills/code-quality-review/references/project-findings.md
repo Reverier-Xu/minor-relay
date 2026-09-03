@@ -1,4 +1,4 @@
-# minor-relay Verified Findings (G3-era review, 2026-08)
+# radiata Verified Findings (G3-era review, 2026-08)
 
 > **G9 review 2026-09-02 (main @ 8135662, four fresh reviewer lanes):
 > resources/selector, identity custody, runtime facade, cross-cutting +
@@ -594,7 +594,7 @@ total order verified by unit and integration tests.
    rejects non-16-byte fills; `KeyCall::Sign` lacks the message payload).
    Fix: parameterize `identity/testing.rs` and delete the lifecycle copy.
 7. **Constant triplication** — `PENDING_NAMESPACE`
-   ("relay.woooo.tech/metadata/pending-transaction-v1") in
+   ("radiata.woooo.tech/metadata/pending-transaction-v1") in
    `identity/testing.rs:32`, `identity/lifecycle.rs:503`,
    `storage/pending.rs:40`; built-in feature tag strings in
    `protocol/feature.rs:45-49` (private consts), `protocol/offer.rs:320-326`

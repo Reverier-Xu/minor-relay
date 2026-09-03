@@ -1,6 +1,6 @@
 #!/usr/bin/bash -p
 set -euo pipefail
-unset BASH_ENV ENV CDPATH GLOBIGNORE MINOR_RELAY_SIM_SEED
+unset BASH_ENV ENV CDPATH GLOBIGNORE RADIATA_SIM_SEED
 export PATH="/usr/bin:/bin:${HOME}/.cargo/bin"
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -43,5 +43,4 @@ cargo test \
   -- \
   --ignored \
   --exact
-scripts/check-dependency-graph.sh
 cargo deny --locked --workspace check

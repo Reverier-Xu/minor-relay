@@ -1,11 +1,11 @@
 use std::{str::FromStr, time::Duration};
 
-use minor_relay::{
+use proptest::prelude::*;
+use radiata::{
   ClusterId, Digest, DiscoveryTag, ErrorKind, FeatureTag, NodeConfig, NodeId, ParserLimits,
   ProtocolTag, ProviderErrorContext, ProviderErrorKind, PublicKey, QualifiedTag, RecoveryConfig,
   Signature, TraceId, TraceMetadataLimits, TransactionId, TransportTag,
 };
-use proptest::prelude::*;
 
 #[test]
 fn g1_core_ids_round_trip_canonical_forms() {
@@ -54,12 +54,12 @@ fn g1_core_ids_reject_noncanonical_forms() {
 
 #[test]
 fn g1_core_tags_parse_current_namespaces_and_categories() {
-  let tag = QualifiedTag::parse("relay.woooo.tech/features/session-core").unwrap();
-  assert_eq!(tag.domain(), "relay.woooo.tech");
+  let tag = QualifiedTag::parse("radiata.woooo.tech/features/session-core").unwrap();
+  assert_eq!(tag.domain(), "radiata.woooo.tech");
   assert_eq!(tag.category(), "features");
   assert_eq!(tag.name(), "session-core");
 
-  FeatureTag::parse("relay.woooo.tech/features/session-core").unwrap();
+  FeatureTag::parse("radiata.woooo.tech/features/session-core").unwrap();
   ProtocolTag::parse("example.com/protocols/work").unwrap();
   TransportTag::parse("example.com/transports/quic").unwrap();
   DiscoveryTag::parse("example.com/discovery/local").unwrap();
@@ -76,7 +76,7 @@ fn g1_core_tags_reject_noncanonical_namespaces() {
     "example.com/features/work-",
     "example.com/features/work/extra",
     "example.com/features/wörk",
-    "relay.woooo.tech/crypto/admission-grant-v1",
+    "radiata.woooo.tech/crypto/admission-grant-v1",
     too_long_tag.as_str(),
   ] {
     assert!(QualifiedTag::parse(value).is_err(), "accepted {value:?}");
@@ -159,7 +159,7 @@ fn g1_core_provider_errors_match_manifest_and_remain_redacted() {
     ),
   ];
   for (provider, expected) in cases {
-    let error = minor_relay::Error::provider(provider, ProviderErrorContext::StorageScan);
+    let error = radiata::Error::provider(provider, ProviderErrorContext::StorageScan);
     assert_eq!(error.kind(), expected);
     assert_eq!(error.context(), "storage scan");
     assert!(!format!("{error:?}").contains("provider-secret"));

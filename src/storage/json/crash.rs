@@ -17,8 +17,8 @@ use crate::{
   CommitOutcome, ReconcileOutcome, StoreRequirements, StoreRevision, provider::StorageFactory,
 };
 
-const CRASH_DIR_ENV: &str = "MINOR_RELAY_JSON_CRASH_DIR";
-const CRASH_POINT_ENV: &str = "MINOR_RELAY_JSON_CRASH_POINT";
+const CRASH_DIR_ENV: &str = "RADIATA_JSON_CRASH_DIR";
+const CRASH_POINT_ENV: &str = "RADIATA_JSON_CRASH_POINT";
 
 /// Crash points inside the commit path.
 ///

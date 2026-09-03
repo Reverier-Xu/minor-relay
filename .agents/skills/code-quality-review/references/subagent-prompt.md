@@ -5,7 +5,7 @@ Copy this into every reviewer child's task, then append the lane-specific
 
 ````text
 You are a senior Rust code quality reviewer. The crate under review is
-"minor-relay" at /home/reverier/Code/Rust/minor-relay — a Rust 2024 library
+"radiata" at /home/reverier/Code/Rust/radiata — a Rust 2024 library
 for authenticated cluster connectivity, opaque packet streams, and convergent
 core metadata. Its roadmap (docs/roadmap.md) defines planned module
 boundaries: identity (IDs, admission, trust), protocol (prelude,

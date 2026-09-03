@@ -27,7 +27,7 @@ use crate::{
   provider::{Storage, StorageFactory},
 };
 
-const NATIVE_DIR_ENV: &str = "MINOR_RELAY_JSON_NATIVE_DIR";
+const NATIVE_DIR_ENV: &str = "RADIATA_JSON_NATIVE_DIR";
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn requirements() -> StoreRequirements {
@@ -130,13 +130,13 @@ async fn json_native_concurrent_open_from_second_process_is_storage_locked_until
 
   // Windows LockFileEx is mandatory: the lock file is only readable while
   // no store holds it, so compare contents outside any open window.
-  let lock_before = fs::read(dir.path().join("minor-relay.lock")).unwrap();
+  let lock_before = fs::read(dir.path().join("radiata.lock")).unwrap();
   let storage = open(&factory).await;
   drop(storage);
   let storage = open(&factory).await;
   drop(storage);
   assert_eq!(
-    fs::read(dir.path().join("minor-relay.lock")).unwrap(),
+    fs::read(dir.path().join("radiata.lock")).unwrap(),
     lock_before,
     "the stale lock file is retained and reused"
   );

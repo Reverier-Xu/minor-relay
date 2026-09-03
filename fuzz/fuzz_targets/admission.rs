@@ -11,5 +11,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
-  minor_relay::fuzz_adapters::admission(input);
+  radiata::fuzz_adapters::admission(input);
 });

@@ -296,11 +296,11 @@ pub(crate) enum SchemaOutcome {
 /// derivation. It must stay byte-identical forever: transaction ids are
 /// deterministic across releases and re-derivation is what makes replay
 /// idempotent.
-const MIGRATION_TRANSACTION_DOMAIN: &[u8] = b"relay.woooo.tech/migration-transaction-v1";
+const MIGRATION_TRANSACTION_DOMAIN: &[u8] = b"radiata.woooo.tech/migration-transaction-v1";
 
 /// The domain-separation string for the migration implementation digest.
 /// Must stay byte-identical forever (it anchors edge identity).
-const MIGRATION_IMPLEMENTATION_DOMAIN: &[u8] = b"relay.woooo.tech/migration-implementation-v1";
+const MIGRATION_IMPLEMENTATION_DOMAIN: &[u8] = b"radiata.woooo.tech/migration-implementation-v1";
 
 /// Derives the domain-separated implementation digest of one migration
 /// tag. Production edge registration and the G10 compatibility freeze
@@ -335,11 +335,11 @@ fn migration_transaction_value(parts: &[&[u8]]) -> Result<u128> {
 // version, the current target, and each declared edge tag. These
 // literals are frozen; every migration fixture and the compatibility
 // manifest must agree with them byte-for-byte.
-pub(crate) const BASE_VERSION: &str = "relay.woooo.tech/schemas/metadata-test-v1";
-pub(crate) const V2: &str = "relay.woooo.tech/schemas/metadata-test-v2";
-pub(crate) const V3: &str = "relay.woooo.tech/schemas/metadata-test-v3";
-pub(crate) const EDGE_ONE_TAG: &str = "relay.woooo.tech/schemas/migration-edge-one-v1";
-pub(crate) const EDGE_TWO_TAG: &str = "relay.woooo.tech/schemas/migration-edge-two-v1";
+pub(crate) const BASE_VERSION: &str = "radiata.woooo.tech/schemas/metadata-test-v1";
+pub(crate) const V2: &str = "radiata.woooo.tech/schemas/metadata-test-v2";
+pub(crate) const V3: &str = "radiata.woooo.tech/schemas/metadata-test-v3";
+pub(crate) const EDGE_ONE_TAG: &str = "radiata.woooo.tech/schemas/migration-edge-one-v1";
+pub(crate) const EDGE_TWO_TAG: &str = "radiata.woooo.tech/schemas/migration-edge-two-v1";
 
 #[cfg(test)]
 mod tests {
@@ -353,7 +353,7 @@ mod tests {
   /// The edge fixtures migrate records into this namespace; single-sourced
   /// because the digest-reconstruction tests must agree with the edge
   /// transforms on the exact namespace text.
-  pub(super) const MODERN_NAMESPACE: &str = "relay.woooo.tech/migration/modern-v1";
+  pub(super) const MODERN_NAMESPACE: &str = "radiata.woooo.tech/migration/modern-v1";
 
   pub(super) fn fixture_digest(tag: &str) -> Digest {
     super::implementation_digest(tag)
@@ -691,18 +691,18 @@ mod crash_tests {
   };
 
   #[cfg(all(feature = "json", unix))]
-  const JSON_CRASH_DIR_ENV: &str = "MINOR_RELAY_JSON_MIGRATION_CRASH_DIR";
+  const JSON_CRASH_DIR_ENV: &str = "RADIATA_JSON_MIGRATION_CRASH_DIR";
   #[cfg(all(feature = "json", unix))]
-  const JSON_CRASH_POINT_ENV: &str = "MINOR_RELAY_JSON_MIGRATION_CRASH_POINT";
+  const JSON_CRASH_POINT_ENV: &str = "RADIATA_JSON_MIGRATION_CRASH_POINT";
   #[cfg(all(feature = "json", unix))]
   const JSON_FIRST_COMMITTED_POINT: u8 = 8;
   #[cfg(all(feature = "json", unix))]
   const JSON_LAST_POINT: u8 = 13;
 
   #[cfg(feature = "redb")]
-  const REDB_CRASH_DIR_ENV: &str = "MINOR_RELAY_REDB_MIGRATION_CRASH_DIR";
+  const REDB_CRASH_DIR_ENV: &str = "RADIATA_REDB_MIGRATION_CRASH_DIR";
   #[cfg(feature = "redb")]
-  const REDB_CRASH_POINT_ENV: &str = "MINOR_RELAY_REDB_MIGRATION_CRASH_POINT";
+  const REDB_CRASH_POINT_ENV: &str = "RADIATA_REDB_MIGRATION_CRASH_POINT";
   #[cfg(feature = "redb")]
   const REDB_FIRST_COMMITTED_POINT: u8 = 6;
   #[cfg(feature = "redb")]

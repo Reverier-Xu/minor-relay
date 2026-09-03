@@ -25,10 +25,10 @@ use crate::{
 };
 
 /// The canonical protocol tag of the resource sync stream.
-pub(crate) const RESOURCE_SYNC_PROTOCOL: &str = "relay.woooo.tech/protocols/resource-sync";
+pub(crate) const RESOURCE_SYNC_PROTOCOL: &str = "radiata.woooo.tech/protocols/resource-sync";
 
 /// The wire schema of one resource sync payload.
-const RESOURCE_SYNC_PAYLOAD_SCHEMA: &str = "relay.woooo.tech/schemas/resource-sync-payload-v1";
+const RESOURCE_SYNC_PAYLOAD_SCHEMA: &str = "radiata.woooo.tech/schemas/resource-sync-payload-v1";
 
 /// One resource sync payload: an encoded [`ResourcePage`].
 #[derive(Clone, Debug, Eq, PartialEq)]

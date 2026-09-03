@@ -5,8 +5,8 @@ use sha2::{Digest as ShaDigest, Sha256};
 use crate::{BoxFuture, Digest, Error, PublicKey, QualifiedTag, Result, Signature, TransactionId};
 
 const KEY_OPERATION_PREFIX: &str = "keyop_";
-const STORE_VALUE_DOMAIN: &[u8] = b"minor-relay/store-value/v1\0";
-const STORE_TRANSACTION_DOMAIN: &[u8] = b"minor-relay/store-transaction/v1\0";
+const STORE_VALUE_DOMAIN: &[u8] = b"radiata/store-value/v1\0";
+const STORE_TRANSACTION_DOMAIN: &[u8] = b"radiata/store-transaction/v1\0";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyCapabilities {
@@ -841,8 +841,8 @@ mod tests {
     assert_eq!(
       computed.as_bytes(),
       &[
-        89, 119, 103, 95, 71, 31, 154, 27, 115, 56, 18, 38, 9, 154, 106, 92, 177, 51, 198, 69, 83,
-        16, 36, 26, 30, 196, 229, 65, 207, 156, 186, 0,
+        27, 57, 99, 211, 121, 199, 94, 1, 95, 13, 213, 92, 46, 162, 233, 180, 153, 33, 204, 121,
+        57, 33, 236, 231, 201, 243, 143, 107, 110, 194, 112, 52,
       ],
     );
 
@@ -866,7 +866,7 @@ mod tests {
   #[test]
   fn g1_core_store_transaction_rejects_duplicate_identities_across_variants() {
     let namespace =
-      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/duplicates").unwrap());
+      StoreNamespace::new(QualifiedTag::parse("radiata.woooo.tech/metadata/duplicates").unwrap());
     let key = StoreKey::new(Arc::from(b"same-key".as_slice()));
     let revision = StoreRevision::new(Arc::from([1])).unwrap();
     let operations = [
@@ -924,7 +924,7 @@ mod tests {
   fn g1_core_store_transaction_accepts_large_unique_operation_set() {
     const OPERATION_COUNT: usize = 16_384;
     let namespace =
-      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/large").unwrap());
+      StoreNamespace::new(QualifiedTag::parse("radiata.woooo.tech/metadata/large").unwrap());
     let operations = (0..OPERATION_COUNT)
       .map(|index| StoreOperation::Check {
         namespace: namespace.clone(),
@@ -944,7 +944,7 @@ mod tests {
 
   fn transaction_fixture(revision: u8, value: &[u8]) -> StoreTransaction {
     let namespace =
-      StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap());
+      StoreNamespace::new(QualifiedTag::parse("radiata.woooo.tech/metadata/identity").unwrap());
     let operations = Arc::from([StoreOperation::Put {
       namespace,
       key: StoreKey::new(Arc::from(b"secret-key".as_slice())),

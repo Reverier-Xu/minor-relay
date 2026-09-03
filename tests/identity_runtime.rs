@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use minor_relay::{
+use radiata::{
   Error, ErrorKind, GetNodeStatus, KeyCapabilities, KeyOperationId, NodeBuilder, NodeHandle,
   NodeStatus, Shutdown, StoreKey,
   extension::{KeyProvider, StorageFactory},
@@ -211,7 +211,7 @@ async fn identity_runtime_mismatched_public_key_stops_before_running_without_rep
   handle.command(Shutdown::new()).await.unwrap();
 
   let mismatched = ScriptedKeys::full();
-  mismatched.override_public_key(minor_relay::PublicKey::from_bytes(
+  mismatched.override_public_key(radiata::PublicKey::from_bytes(
     scripted_signing(9_999).verifying_key().to_bytes(),
   ));
   let mismatched = Arc::new(mismatched);

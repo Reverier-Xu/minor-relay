@@ -347,11 +347,11 @@ pub(crate) mod fixtures {
   pub(crate) const BUILTIN_FEATURES: [&str; 5] = crate::protocol::feature::BUILTIN_FEATURE_LABELS;
 
   pub(crate) fn feature(name: &str) -> FeatureTag {
-    FeatureTag::parse(&format!("relay.woooo.tech/features/{name}")).unwrap()
+    FeatureTag::parse(&format!("radiata.woooo.tech/features/{name}")).unwrap()
   }
 
   pub(crate) fn limit(name: &str) -> QualifiedTag {
-    QualifiedTag::parse(&format!("relay.woooo.tech/limits/{name}")).unwrap()
+    QualifiedTag::parse(&format!("radiata.woooo.tech/limits/{name}")).unwrap()
   }
 
   /// An extension-domain feature tag (`testing.example/features/…`) for

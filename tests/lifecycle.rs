@@ -5,7 +5,7 @@ use std::{
   time::Duration,
 };
 
-use minor_relay::{
+use radiata::{
   Command, ErrorKind, GetNodeStatus, NodeBuilder, NodeHandle, NodeStatus, Query, Shutdown,
   ShutdownOutcome, ShutdownReason, WaitForShutdown,
   extension::{KeyProvider, StorageFactory},
@@ -286,11 +286,11 @@ async fn g9_select_resources_pages_the_empty_catalog() {
   let providers = Providers::new();
   let handle = providers.start().await;
 
-  let selector = minor_relay::Selector::parse("relay.woooo.tech/resources/type=document").unwrap();
+  let selector = radiata::Selector::parse("radiata.woooo.tech/resources/type=document").unwrap();
   let page = handle
-    .query(minor_relay::SelectResources::new(
+    .query(radiata::SelectResources::new(
       selector,
-      minor_relay::PageSpec::first(8).unwrap(),
+      radiata::PageSpec::first(8).unwrap(),
     ))
     .await
     .unwrap();

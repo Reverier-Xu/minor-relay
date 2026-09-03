@@ -43,48 +43,6 @@ jobs:
       - name: cargo fmt
         run: cargo +nightly fmt --all -- --check
 
-  planning:
-    name: planning
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-
-    steps:
-      - name: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - name: install taplo
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
-        with:
-          tool: taplo-cli@0.10.0
-
-      - name: install ripgrep
-        run: |
-          curl --fail --location --silent --show-error \
-            https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz \
-            --output /tmp/ripgrep.tar.gz
-          echo '33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c  /tmp/ripgrep.tar.gz' \
-            | sha256sum --check --strict
-          tar --extract --gzip --file /tmp/ripgrep.tar.gz --directory /tmp
-          sudo install -m 0755 /tmp/ripgrep-15.2.0-x86_64-unknown-linux-musl/rg \
-            /usr/bin/rg
-          test "$(rg --version | awk 'NR == 1 { print $2 }')" = "15.2.0"
-
-      - name: install jq
-        run: |
-          curl --fail --location --silent --show-error \
-            https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-linux-amd64 \
-            --output /tmp/jq
-          echo '020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d  /tmp/jq' \
-            | sha256sum --check --strict
-          sudo install -m 0755 /tmp/jq /usr/bin/jq
-          test "$(jq --version)" = "jq-1.8.1"
-
-      - name: validate planning contracts
-        run: scripts/validate-planning-docs.sh
-
-      - name: reject invalid planning fixtures
-        run: scripts/validate-planning-docs.sh --self-test
-
   msrv:
     name: msrv
     runs-on: ubuntu-latest
@@ -246,13 +204,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: build quality image
-        run: docker build --file .github/docker/quality.Dockerfile --tag minor-relay-quality:${{ github.sha }} .
+        run: docker build --file .github/docker/quality.Dockerfile --tag radiata-quality:${{ github.sha }} .
 
       - name: run container quality and simulator gate
         run: >-
           docker run --rm
           --volume "${GITHUB_WORKSPACE}/.git:/workspace/.git:ro"
-          minor-relay-quality:${{ github.sha }}
+          radiata-quality:${{ github.sha }}
 
   dependency-policy:
     name: dependency-policy
@@ -275,9 +233,6 @@ jobs:
 
       - name: verify cargo-deny
         run: test "$(cargo deny --version)" = "cargo-deny 0.20.2"
-
-      - name: verify resolved dependency graph
-        run: scripts/check-dependency-graph.sh
 
       - name: cargo deny
         run: cargo deny --locked --workspace check

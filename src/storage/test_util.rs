@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::{QualifiedTag, StoreKey, StoreNamespace, StoreValue, TransactionId};
 
 pub(crate) fn namespace(name: &str) -> StoreNamespace {
-  StoreNamespace::new(QualifiedTag::parse(&format!("relay.woooo.tech/metadata/{name}")).unwrap())
+  StoreNamespace::new(QualifiedTag::parse(&format!("radiata.woooo.tech/metadata/{name}")).unwrap())
 }
 
 pub(crate) fn key(bytes: &[u8]) -> StoreKey {

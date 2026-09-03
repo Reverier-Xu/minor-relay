@@ -1,6 +1,11 @@
 ---
 id: ADR-0004
 title: Fix the toolchain feature policy and evidence budgets
+  - date: 2026-09-04
+    summary: >-
+      Remove the evidence-impact manifest and the dependency-graph digest baseline.
+      The build provenance (git commit, lockfile digest, dirty flag) is removed from
+      build.rs and failure artifacts; change identity is the git commit revision.
 status: accepted
 date: 2026-08-02
 amended:
@@ -25,7 +30,7 @@ amended:
       The workspace builds, clippy -D warnings, and tests all pass on 1.98.0, and the
       stable CI job already runs the same compiler, so the floor and the forward
       detection lane coincide until the next stable release.
-deciders: minor-relay maintainers
+deciders: radiata maintainers
 ---
 
 # Fix the Toolchain Feature Policy and Evidence Budgets
@@ -36,7 +41,7 @@ deciders: minor-relay maintainers
 
 ## Context
 
-`minor-relay` is a Rust 2024 library with security, crash-recovery, convergence, and cross-platform
+`radiata` is a Rust 2024 library with security, crash-recovery, convergence, and cross-platform
 claims. Those claims need one fixed compiler baseline, additive Cargo features, reviewed dependency
 choices, bounded test cadences, owned regression corpora, secret-safe failure evidence, and a release
 barrier that cannot confuse the placeholder package version with the functional `0.1.0` milestone.
@@ -229,6 +234,10 @@ persisted readers remain governed by their immutable IDs rather than crate versi
 
 ### Evidence Impact Manifest
 
+> Superseded 2026-09-04: the evidence-impact manifest and the dependency-graph
+> digest baseline were removed. Change identity is the git commit revision;
+> verification is the repository quality suite (format, check, clippy, tests,
+> cargo deny) plus the functional unit, integration, simulation, and E2E tests.
 `docs/evidence-impact.toml` is the machine-readable ownership map. It maps every evidence-affecting
 repository path, including production/source files, Cargo manifests/lockfiles, build configuration,
 tests, fuzz adapters/corpora, fixtures, scripts, workflows, and evidence schemas, to property suites,
@@ -319,9 +328,9 @@ artifact as a substitute for redaction.
 ### Failure Artifact Schema
 
 Failure artifacts use deterministic bounded JSON tagged
-`relay.woooo.tech/schemas/failure-replay`. The producer-neutral serializer and closed replay model live
-in the workspace's `minor-relay-test-support` library. That package is `publish = false`, is consumed
-only through development/test dependencies, and does not enter the `minor_relay` facade or production
+`radiata.woooo.tech/schemas/failure-replay`. The producer-neutral serializer and closed replay model live
+in the workspace's `radiata-test-support` library. That package is `publish = false`, is consumed
+only through development/test dependencies, and does not enter the `radiata` facade or production
 dependency graph. Property, simulation, fuzz, crash, E2E, and soak producers use the same recorder;
 producer-owned private adapters convert source events into its sealed evidence model.
 
@@ -361,16 +370,16 @@ ReplaySpec { executable_id, argv: [validated literal argument, ...] }
 `executable_id` is a closed enum such as `cargo-test`, `simulation`, or `fuzz-corpus`; it is not a path.
 Arguments have fixed count, length, character, and value rules per executable. Replay never invokes a
 shell, concatenates a command string, derives a path from hostile data, or honors environment variables
-from the artifact. Test-support APIs are internal package APIs rather than `minor_relay` public API;
+from the artifact. Test-support APIs are internal package APIs rather than `radiata` public API;
 changes to their sealed evidence or replay models still require T-G01-04 ownership and regression review.
 
-Local failure artifacts go under ignored `target/minor-relay-failures/`. CI uploads the same secret-safe
+Local failure artifacts go under ignored `target/radiata-failures/`. CI uploads the same secret-safe
 artifact for seven days. Only minimized, reviewed regression fixtures enter the repository.
 
 ### Release Attestation Schema
 
 Every test, fuzz, soak, and SLO attempt, successful or failed, emits canonical JSON tagged
-`relay.woooo.tech/schemas/test-attestation`. It uses the same allowlisted serializer and closed
+`radiata.woooo.tech/schemas/test-attestation`. It uses the same allowlisted serializer and closed
 `ReplaySpec` as failure artifacts. Each attempt records:
 
 - exact commit and Cargo.lock digests;

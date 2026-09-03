@@ -517,7 +517,7 @@ fn complete_capabilities() -> StoreCapabilities {
 
 fn transaction(index: u8) -> PreparedTransaction {
   let namespace =
-    StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/engine-test").unwrap());
+    StoreNamespace::new(QualifiedTag::parse("radiata.woooo.tech/metadata/engine-test").unwrap());
   prepare_internal_transaction(
     transaction_id(u64::from(index)),
     revision(1),

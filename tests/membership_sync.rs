@@ -13,7 +13,7 @@
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
-use minor_relay::{
+use radiata::{
   ConnectMember, CreateCluster, DisconnectPeer, Endpoint, GetLocalNode, JoinCluster, Listen,
   NodeBuilder, NodeConfig, NodeHandle, PageMembers, PageSpec, PageTopology, PageTrust,
   RecoveryConfig, RotateJoinCredential, Shutdown, StartRecovery,
@@ -28,7 +28,7 @@ fn init_tracing() {
   static INIT: Once = Once::new();
   INIT.call_once(|| {
     tracing_subscriber::fmt()
-      .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=debug"))
+      .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=debug"))
       .with_test_writer()
       .init();
   });
@@ -42,11 +42,11 @@ const SYNC_INTERVAL: Duration = Duration::from_millis(500);
 struct Node {
   handle: NodeHandle,
   endpoint: Endpoint,
-  id: minor_relay::NodeId,
+  id: radiata::NodeId,
 }
 
 /// The echo protocol tag of the revised SLO workload sample.
-const ECHO_PROTOCOL: &str = "relay.woooo.tech/protocols/workload-echo";
+const ECHO_PROTOCOL: &str = "radiata.woooo.tech/protocols/workload-echo";
 
 /// Counts fully drained workload packets (SC-G07-P0-18 sample delivery
 /// observation).
@@ -55,12 +55,11 @@ struct EchoCollector {
   packets: std::sync::Mutex<usize>,
 }
 
-impl minor_relay::PacketConsumer for EchoCollector {
+impl radiata::PacketConsumer for EchoCollector {
   fn accept<'a>(
-    &'a self, mut packet: minor_relay::IncomingPacket,
-  ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<(), minor_relay::Error>> + Send + 'a>,
-  > {
+    &'a self, mut packet: radiata::IncomingPacket,
+  ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), radiata::Error>> + Send + 'a>>
+  {
     Box::pin(async move {
       while packet.body().next_chunk().await?.is_some() {}
       *self.packets.lock().unwrap() += 1;
@@ -75,10 +74,8 @@ struct WorkloadBody {
   chunk: Option<Arc<[u8]>>,
 }
 
-impl minor_relay::PacketBody for WorkloadBody {
-  fn next_chunk<'a>(
-    &'a mut self,
-  ) -> minor_relay::BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+impl radiata::PacketBody for WorkloadBody {
+  fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(self.chunk.take()) })
   }
 }
@@ -91,7 +88,7 @@ async fn start_node_inner(
   seed: u64, storage: Arc<MemoryStorageFactory>, echo: Option<Arc<EchoCollector>>,
 ) -> Node {
   let keys = Arc::new(ScriptedKeys::full_at(600_000 + seed * 1_000));
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage.clone();
+  let factory: Arc<dyn radiata::extension::StorageFactory> = storage.clone();
   let config = NodeConfig::new()
     .with_anti_entropy_interval(SYNC_INTERVAL)
     .unwrap()
@@ -101,12 +98,12 @@ async fn start_node_inner(
     .unwrap();
   let mut builder = NodeBuilder::new(factory, keys).config(config);
   if let Some(echo) = echo {
-    let mut extensions = minor_relay::ExtensionRegistry::new();
+    let mut extensions = radiata::ExtensionRegistry::new();
     extensions
       .register_protocol(
-        minor_relay::ProtocolDefinition::new(
-          minor_relay::ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
-          minor_relay::FeatureTag::parse("relay.woooo.tech/features/session-core").unwrap(),
+        radiata::ProtocolDefinition::new(
+          radiata::ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
+          radiata::FeatureTag::parse("radiata.woooo.tech/features/session-core").unwrap(),
         ),
         echo,
       )
@@ -119,13 +116,13 @@ async fn start_node_inner(
     handle,
     // Port zero resolves to the OS-assigned port when listening.
     endpoint: Endpoint::parse("wss://127.0.0.1:0").unwrap(),
-    id: minor_relay::NodeId::parse(&format!("node_{seed:021}")).unwrap(),
+    id: radiata::NodeId::parse(&format!("node_{seed:021}")).unwrap(),
   }
 }
 
 /// Reads the node's authenticated id from the public facade (valid once
 /// the node has a cluster).
-async fn node_id(node: &Node) -> minor_relay::NodeId {
+async fn node_id(node: &Node) -> radiata::NodeId {
   node
     .handle
     .query(GetLocalNode::new())
@@ -168,7 +165,7 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
   let deadline = std::time::Instant::now() + timeout;
   loop {
     let mut complete = true;
-    let mut views: Vec<Vec<minor_relay::TrustedIdentityView>> = Vec::new();
+    let mut views: Vec<Vec<radiata::TrustedIdentityView>> = Vec::new();
     for node in nodes {
       let page = trust_page(node).await;
       if page.len() < expected {
@@ -180,7 +177,7 @@ async fn wait_trust(nodes: &[Node], expected: usize, timeout: Duration) {
     if complete {
       // Exact NodeId-to-key agreement (SC-G05-P0-24): every peer's view of
       // a member carries the same public key as that member's self-view.
-      let mut keys: std::collections::BTreeMap<minor_relay::NodeId, Vec<minor_relay::PublicKey>> =
+      let mut keys: std::collections::BTreeMap<radiata::NodeId, Vec<radiata::PublicKey>> =
         std::collections::BTreeMap::new();
       for page in &views {
         for view in page {
@@ -236,7 +233,7 @@ async fn wait_descriptors(nodes: &[Node], expected: usize, revision: u64, timeou
     if complete {
       // Cross-node digest agreement: every peer's view of member `id`
       // exposes the identical descriptor digest.
-      let mut digests: std::collections::BTreeMap<minor_relay::NodeId, Vec<minor_relay::Digest>> =
+      let mut digests: std::collections::BTreeMap<radiata::NodeId, Vec<radiata::Digest>> =
         std::collections::BTreeMap::new();
       for page in &pages {
         for view in page {
@@ -362,7 +359,7 @@ async fn wait_settled(
       // recovery pass on every member so healing does not starve the
       // settle window.
       for node in nodes {
-        let _ = node.handle.command(minor_relay::StartRecovery::new()).await;
+        let _ = node.handle.command(radiata::StartRecovery::new()).await;
       }
     }
     if std::time::Instant::now() >= deadline {
@@ -423,7 +420,7 @@ async fn build_cluster(count: usize) -> Vec<Node> {
   nodes
 }
 
-async fn trust_page(node: &Node) -> Vec<minor_relay::TrustedIdentityView> {
+async fn trust_page(node: &Node) -> Vec<radiata::TrustedIdentityView> {
   node
     .handle
     .query(PageTrust::new(PageSpec::first(64).unwrap()))
@@ -433,7 +430,7 @@ async fn trust_page(node: &Node) -> Vec<minor_relay::TrustedIdentityView> {
     .to_vec()
 }
 
-async fn member_page(node: &Node) -> Vec<minor_relay::MemberView> {
+async fn member_page(node: &Node) -> Vec<radiata::MemberView> {
   node
     .handle
     .query(PageMembers::new(PageSpec::first(64).unwrap()))
@@ -443,7 +440,7 @@ async fn member_page(node: &Node) -> Vec<minor_relay::MemberView> {
     .to_vec()
 }
 
-async fn topology_edges(node: &Node) -> Vec<minor_relay::TopologyEdgeView> {
+async fn topology_edges(node: &Node) -> Vec<radiata::TopologyEdgeView> {
   node
     .handle
     .query(PageTopology::new(PageSpec::first(64).unwrap()))
@@ -565,7 +562,7 @@ async fn connect_cq4(nodes: &[Node]) {
 /// Issues one join credential with bounded retries: admission-sensitive
 /// operations refuse while a concurrent metadata commit holds the store
 /// frozen for microseconds, so a rotation is retried.
-async fn rotate_with_retry(issuer: &Node) -> minor_relay::IssuedJoinCredential {
+async fn rotate_with_retry(issuer: &Node) -> radiata::IssuedJoinCredential {
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   loop {
     match issuer.handle.command(RotateJoinCredential::new()).await {
@@ -598,7 +595,7 @@ async fn join_with_retry(node: &Node, endpoint: Endpoint, secret: &str) {
   let mut attempts: u32 = 0;
   loop {
     attempts = attempts.wrapping_add(1);
-    let credential = minor_relay::JoinCredential::parse(secret).unwrap();
+    let credential = radiata::JoinCredential::parse(secret).unwrap();
     match node
       .handle
       .command(JoinCluster::new(endpoint.clone(), credential))
@@ -617,7 +614,7 @@ async fn join_with_retry(node: &Node, endpoint: Endpoint, secret: &str) {
 /// One member-mode dial with bounded retries: a transient transport
 /// failure (crossed dial, accept backlog) is retried; a persistent
 /// failure fails the harness.
-async fn connect_with_retry(node: &Node, endpoint: Endpoint, peer: minor_relay::NodeId) {
+async fn connect_with_retry(node: &Node, endpoint: Endpoint, peer: radiata::NodeId) {
   // A handshake can be dropped under load and take the full
   // authentication deadline (10s) to fail, so the retry window is
   // generous.
@@ -647,7 +644,7 @@ async fn connect_with_retry(node: &Node, endpoint: Endpoint, peer: minor_relay::
 /// each authenticated session appears as a directed edge on both ends, so
 /// the set is deduplicated to one undirected edge per pair.
 async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
-  let index_of: std::collections::BTreeMap<minor_relay::NodeId, usize> = nodes
+  let index_of: std::collections::BTreeMap<radiata::NodeId, usize> = nodes
     .iter()
     .enumerate()
     .map(|(index, node)| (node.id.clone(), index))
@@ -922,10 +919,10 @@ async fn membership_sync_sixteen_node_revised_workload_slo() {
   let packet = nodes[0]
     .handle
     .create_packet(
-      minor_relay::PacketTarget::Exact(nodes[15].id.clone()),
-      minor_relay::ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
-      minor_relay::PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 1).unwrap(),
-      minor_relay::PacketMetadata::new(),
+      radiata::PacketTarget::Exact(nodes[15].id.clone()),
+      radiata::ProtocolTag::parse(ECHO_PROTOCOL).unwrap(),
+      radiata::PacketPolicy::new(radiata::RoutingPolicy::Direct, 1).unwrap(),
+      radiata::PacketMetadata::new(),
     )
     .unwrap();
   let ack = packet
@@ -938,15 +935,15 @@ async fn membership_sync_sixteen_node_revised_workload_slo() {
 
   // Wait for node15's own descriptor at revision 1, then bump it: the
   // owner-revision write goes through the public facade.
-  let patch = minor_relay::NodeMetadataPatch::new()
+  let patch = radiata::NodeMetadataPatch::new()
     .set_capability(
-      minor_relay::LabelKey::parse("example.org/labels/workload").unwrap(),
-      minor_relay::LabelValue::parse("slo").unwrap(),
+      radiata::LabelKey::parse("example.org/labels/workload").unwrap(),
+      radiata::LabelValue::parse("slo").unwrap(),
     )
     .unwrap();
   nodes[15]
     .handle
-    .command(minor_relay::UpdateNodeMetadata::new(1, patch))
+    .command(radiata::UpdateNodeMetadata::new(1, patch))
     .await
     .unwrap();
 

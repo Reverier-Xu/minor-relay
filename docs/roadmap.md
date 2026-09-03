@@ -1,4 +1,4 @@
-# minor-relay Development Roadmap
+# radiata Development Roadmap
 
 ## Reason for Existence
 
@@ -6,7 +6,7 @@ This document turns the accepted product boundary into an ordered, verifiable de
 ADRs govern design choices; [ADR-0007](adr/0007-core-responsibility-and-metadata.md) is authoritative
 where earlier decisions conflict.
 
-`minor-relay` is a Rust library for authenticated cluster connectivity, opaque packet streams, and
+`radiata` is a Rust library for authenticated cluster connectivity, opaque packet streams, and
 convergent core metadata. It does not model, persist, schedule, or deploy an application.
 
 ## Product Contract
@@ -280,9 +280,8 @@ Exit gate:
 
 ## Delivery Order
 
-Execution follows [Development Gates](development-gates.md). G0 is reopened and must pass before
-production work resumes. The critical path remains `G0 -> G1 -> G2 -> G3 -> G4 -> G5 -> G6 -> G7 ->
-G8 -> G9 -> G10`; already-landed code is re-evaluated against the revised predicates.
+Execution follows the gate order `G0 -> G1 -> G2 -> G3 -> G4 -> G5 -> G6 -> G7 -> G8 -> G9 -> G10`;
+already-landed code is re-evaluated against the revised predicates.
 
 ## Definition of Done
 

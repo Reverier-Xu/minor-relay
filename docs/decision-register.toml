@@ -1,4 +1,4 @@
-schema = "relay.woooo.tech/schemas/decision-register-v1"
+schema = "radiata.woooo.tech/schemas/decision-register-v1"
 status = "accepted"
 
 # This register contains protocol, fixed security policy, default finite-work, and evidence values.

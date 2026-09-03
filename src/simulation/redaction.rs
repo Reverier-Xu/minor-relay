@@ -1,6 +1,6 @@
 use std::fmt;
 
-use minor_relay_test_support::ForbiddenFieldClass;
+use radiata_test_support::ForbiddenFieldClass;
 
 #[derive(Clone, Copy)]
 pub(crate) struct SensitiveCandidate<'a> {
@@ -34,9 +34,9 @@ pub(crate) enum ArtifactCandidate<'a> {
 
 #[cfg(test)]
 mod tests {
-  use minor_relay_test_support::{
-    ArtifactError, CommitDigest, EvidenceId, EvidenceManifest, FailureClass, ForbiddenFieldClass,
-    LockfileDigest, ProducerKind, ReplaySpec, build_failure_artifact,
+  use radiata_test_support::{
+    ArtifactError, EvidenceId, EvidenceManifest, FailureClass, ForbiddenFieldClass, ProducerKind,
+    ReplaySpec, build_failure_artifact,
   };
 
   use super::{ArtifactCandidate, SensitiveCandidate};
@@ -74,8 +74,6 @@ mod tests {
       Some(1),
       FailureClass::Invariant,
       EvidenceId::new("forbidden-field").unwrap(),
-      CommitDigest::parse_hex("1111111111111111111111111111111111111111").unwrap(),
-      LockfileDigest::from_bytes([0x22; 32]),
       ReplaySpec::simulation_network_fault_matrix(1),
     )
     .unwrap();

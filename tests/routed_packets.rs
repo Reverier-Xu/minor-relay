@@ -15,7 +15,7 @@ use std::{
   time::Duration,
 };
 
-use minor_relay::{
+use radiata::{
   ConnectMember, CreateCluster, DisconnectPeer, ErrorKind, GetRoute, IncomingPacket, JoinCluster,
   Listen, NodeBuilder, NodeConfig, NodeHandle, PacketBody, PacketConsumer, PacketMetadata,
   PacketPolicy, PacketTarget, PageTopology, ProtocolTag, QualifiedTag, RotateJoinCredential,
@@ -26,9 +26,9 @@ mod common;
 
 use common::{MemoryStorageFactory, ScriptedKeys, required_capabilities};
 
-const POLICY_TAG: &str = "relay.woooo.tech/policies/linear";
-const PROTOCOL_TAG: &str = "relay.woooo.tech/protocols/test-echo";
-const FEATURE_TAG: &str = "relay.woooo.tech/features/session-core";
+const POLICY_TAG: &str = "radiata.woooo.tech/policies/linear";
+const PROTOCOL_TAG: &str = "radiata.woooo.tech/protocols/test-echo";
+const FEATURE_TAG: &str = "radiata.woooo.tech/features/session-core";
 
 type SharedTable = Arc<Mutex<BTreeMap<String, String>>>;
 
@@ -42,9 +42,9 @@ struct SharedPolicy {
 
 impl RouteNextHop for SharedPolicy {
   fn next_hop<'a>(
-    &'a self, view: minor_relay::NextHopView<'a>,
+    &'a self, view: radiata::NextHopView<'a>,
   ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = minor_relay::Result<minor_relay::NodeId>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = radiata::Result<radiata::NodeId>> + Send + 'a>,
   > {
     Box::pin(async move {
       // The topology is per-node: which neighbour leads toward the
@@ -52,12 +52,12 @@ impl RouteNextHop for SharedPolicy {
       let key = format!("{}|{}", view.local().as_str(), view.destination().as_str());
       let guard = self.table.lock().unwrap();
       let next = guard.get(&key).ok_or_else(|| {
-        minor_relay::Error::provider(
-          minor_relay::ProviderErrorKind::Unsupported,
-          minor_relay::ProviderErrorContext::RoutingPolicy,
+        radiata::Error::provider(
+          radiata::ProviderErrorKind::Unsupported,
+          radiata::ProviderErrorContext::RoutingPolicy,
         )
       })?;
-      minor_relay::NodeId::parse(next)
+      radiata::NodeId::parse(next)
     })
   }
 }
@@ -70,9 +70,8 @@ struct Collector {
 impl PacketConsumer for Collector {
   fn accept<'a>(
     &'a self, mut packet: IncomingPacket,
-  ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<(), minor_relay::Error>> + Send + 'a>,
-  > {
+  ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), radiata::Error>> + Send + 'a>>
+  {
     Box::pin(async move {
       let trace = packet.trace_id().to_string();
       let mut body = Vec::new();
@@ -117,7 +116,7 @@ impl PacketBody for GatedBody {
   fn next_chunk<'a>(
     &'a mut self,
   ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = minor_relay::Result<Option<Arc<[u8]>>>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = radiata::Result<Option<Arc<[u8]>>>> + Send + 'a>,
   > {
     if !self.first {
       return Box::pin(async { Ok(None) });
@@ -141,7 +140,7 @@ impl PacketBody for VecBody {
   fn next_chunk<'a>(
     &'a mut self,
   ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = minor_relay::Result<Option<Arc<[u8]>>>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = radiata::Result<Option<Arc<[u8]>>>> + Send + 'a>,
   > {
     let next = if self.0.is_empty() {
       None
@@ -154,33 +153,33 @@ impl PacketBody for VecBody {
 
 struct Node {
   handle: NodeHandle,
-  endpoint: Option<minor_relay::Endpoint>,
-  id: Option<minor_relay::NodeId>,
+  endpoint: Option<radiata::Endpoint>,
+  id: Option<radiata::NodeId>,
   #[allow(dead_code)]
   collector: Arc<Collector>,
 }
 
 impl Node {
-  fn id(&self) -> &minor_relay::NodeId {
+  fn id(&self) -> &radiata::NodeId {
     self.id.as_ref().unwrap()
   }
 
-  fn set_id(&mut self, id: minor_relay::NodeId) {
+  fn set_id(&mut self, id: radiata::NodeId) {
     self.id = Some(id);
   }
 }
 
 async fn start_node(seed: u64, collector: Arc<Collector>, table: SharedTable) -> Node {
   let keys = Arc::new(ScriptedKeys::full_at(800_000 + seed * 1_000));
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> =
+  let factory: Arc<dyn radiata::extension::StorageFactory> =
     Arc::new(MemoryStorageFactory::new(required_capabilities()));
-  let mut registry = minor_relay::ExtensionRegistry::new();
+  let mut registry = radiata::ExtensionRegistry::new();
   let consumer: Arc<dyn PacketConsumer> = Arc::clone(&collector) as Arc<dyn PacketConsumer>;
   registry
     .register_protocol(
-      minor_relay::ProtocolDefinition::new(
+      radiata::ProtocolDefinition::new(
         ProtocolTag::parse(PROTOCOL_TAG).unwrap(),
-        minor_relay::FeatureTag::parse(FEATURE_TAG).unwrap(),
+        radiata::FeatureTag::parse(FEATURE_TAG).unwrap(),
       ),
       consumer,
     )
@@ -213,14 +212,14 @@ impl Node {
     let listener = self
       .handle
       .command(Listen::new(
-        minor_relay::Endpoint::parse("wss://127.0.0.1:0").unwrap(),
+        radiata::Endpoint::parse("wss://127.0.0.1:0").unwrap(),
       ))
       .await
       .unwrap();
     self.endpoint = Some(listener.endpoint().clone());
   }
 
-  fn endpoint(&self) -> &minor_relay::Endpoint {
+  fn endpoint(&self) -> &radiata::Endpoint {
     self.endpoint.as_ref().unwrap()
   }
 
@@ -261,7 +260,7 @@ async fn wait_for<F: FnMut() -> bool>(mut probe: F, timeout: Duration, what: &'s
   }
 }
 
-async fn wait_until_terminal(handle: &NodeHandle, route: &minor_relay::RouteHandle) -> RouteState {
+async fn wait_until_terminal(handle: &NodeHandle, route: &radiata::RouteHandle) -> RouteState {
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   loop {
     let state = match handle.query(GetRoute::new(route.clone())).await {
@@ -282,7 +281,7 @@ async fn wait_until_terminal(handle: &NodeHandle, route: &minor_relay::RouteHand
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn routed_packets_cross_three_hops_and_interrupt_explicitly() {
   tracing_subscriber::fmt()
-    .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=trace"))
+    .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=trace"))
     .with_test_writer()
     .init();
   let table: SharedTable = Arc::default();
@@ -316,7 +315,7 @@ async fn routed_packets_cross_three_hops_and_interrupt_explicitly() {
         .handle
         .command(JoinCluster::new(
           nodes[0].endpoint().clone(),
-          minor_relay::JoinCredential::parse(&secret).unwrap(),
+          radiata::JoinCredential::parse(&secret).unwrap(),
         ))
         .await;
       match result {
@@ -368,8 +367,8 @@ async fn routed_packets_cross_three_hops_and_interrupt_explicitly() {
     for node in &nodes {
       let page = node
         .handle
-        .query(minor_relay::PageTrust::new(
-          minor_relay::PageSpec::first(64).unwrap(),
+        .query(radiata::PageTrust::new(
+          radiata::PageSpec::first(64).unwrap(),
         ))
         .await;
       match page {
@@ -428,7 +427,7 @@ async fn routed_packets_cross_three_hops_and_interrupt_explicitly() {
     for node in &nodes {
       let page = node
         .handle
-        .query(PageTopology::new(minor_relay::PageSpec::first(64).unwrap()))
+        .query(PageTopology::new(radiata::PageSpec::first(64).unwrap()))
         .await
         .unwrap();
       for edge in page.items() {

@@ -8,9 +8,9 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY test-support ./test-support
 COPY tests ./tests
-COPY .github/docker/run-quality.sh /usr/local/bin/minor-relay-container-quality
+COPY .github/docker/run-quality.sh /usr/local/bin/radiata-container-quality
 
 ENV RUSTFLAGS="-Dwarnings"
 ENV RUSTDOCFLAGS="-Dwarnings"
 
-ENTRYPOINT ["/usr/local/bin/minor-relay-container-quality"]
+ENTRYPOINT ["/usr/local/bin/radiata-container-quality"]

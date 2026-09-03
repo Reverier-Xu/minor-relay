@@ -190,7 +190,7 @@ mod tests {
   const SEED: [u8; 32] = [41; 32];
 
   fn name(seed: u8) -> ResourceName {
-    ResourceName::parse(&format!("relay.woooo.tech/resources/retention-{seed}")).unwrap()
+    ResourceName::parse(&format!("radiata.woooo.tech/resources/retention-{seed}")).unwrap()
   }
 
   fn labels() -> LabelSet {

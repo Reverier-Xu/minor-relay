@@ -17,8 +17,8 @@ use crate::{
   StoreRequirements, StoreRevision, StoreTransaction, StoreValue, provider::StorageFactory,
 };
 
-const CRASH_DIR_ENV: &str = "MINOR_RELAY_REDB_CRASH_DIR";
-const CRASH_POINT_ENV: &str = "MINOR_RELAY_REDB_CRASH_POINT";
+const CRASH_DIR_ENV: &str = "RADIATA_REDB_CRASH_DIR";
+const CRASH_POINT_ENV: &str = "RADIATA_REDB_CRASH_POINT";
 
 /// Crash points inside the commit path.
 ///
@@ -34,7 +34,7 @@ fn requirements() -> StoreRequirements {
 }
 
 fn namespace() -> StoreNamespace {
-  StoreNamespace::new(crate::QualifiedTag::parse("relay.woooo.tech/crash/redb-v1").unwrap())
+  StoreNamespace::new(crate::QualifiedTag::parse("radiata.woooo.tech/crash/redb-v1").unwrap())
 }
 
 fn put_transaction(index: u64, base: StoreRevision, name: &[u8], value: &[u8]) -> StoreTransaction {

@@ -8,7 +8,7 @@
 //! revision, and rejects over-capacity pages and looping cursors.
 
 /// The schema of one membership sync page.
-pub(crate) const MEMBERSHIP_PAGE_SCHEMA: &str = "relay.woooo.tech/schemas/membership-page-v1";
+pub(crate) const MEMBERSHIP_PAGE_SCHEMA: &str = "radiata.woooo.tech/schemas/membership-page-v1";
 
 /// The default page limit when the caller supplies none.
 pub(crate) const DEFAULT_PAGE_LIMIT: usize = 16;
@@ -437,7 +437,7 @@ mod label_fixture_tests {
   }
 
   fn key(name: &str) -> LabelKey {
-    LabelKey::parse(&format!("relay.woooo.tech/labels/{name}")).unwrap()
+    LabelKey::parse(&format!("radiata.woooo.tech/labels/{name}")).unwrap()
   }
 
   fn base(node_index: u8) -> NodeDescriptorV1 {

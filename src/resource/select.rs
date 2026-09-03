@@ -97,7 +97,7 @@ mod tests {
   }
 
   fn name(seed: u8) -> ResourceName {
-    ResourceName::parse(&format!("relay.woooo.tech/resources/sel-{seed:03}")).unwrap()
+    ResourceName::parse(&format!("radiata.woooo.tech/resources/sel-{seed:03}")).unwrap()
   }
 
   /// One signed record with a distinguishable reserved type, URI, and
@@ -209,18 +209,18 @@ mod tests {
 
     let cases: [(&str, &[u8]); 7] = [
       // Reserved type equality / inequality / set / non-set.
-      ("relay.woooo.tech/resources/type=document", &[2, 4]),
-      ("relay.woooo.tech/resources/type!=document", &[1, 3]),
+      ("radiata.woooo.tech/resources/type=document", &[2, 4]),
+      ("radiata.woooo.tech/resources/type!=document", &[1, 3]),
       (
-        "relay.woooo.tech/resources/type in (blob,document)",
+        "radiata.woooo.tech/resources/type in (blob,document)",
         &[1, 2, 3, 4],
       ),
-      ("relay.woooo.tech/resources/type notin (blob)", &[2, 4]),
+      ("radiata.woooo.tech/resources/type notin (blob)", &[2, 4]),
       // Reserved URI equality and non-existence of a custom key.
-      ("relay.woooo.tech/resources/uri=file:///sel/001", &[1]),
+      ("radiata.woooo.tech/resources/uri=file:///sel/001", &[1]),
       // Custom label operators, including absence semantics.
       (
-        "example.org/labels/lane=odd !relay.woooo.tech/labels/zone",
+        "example.org/labels/lane=odd !radiata.woooo.tech/labels/zone",
         &[1, 3],
       ),
       ("example.org/labels/lane notin (odd)", &[2, 4]),
@@ -246,7 +246,7 @@ mod tests {
     for seed in 1..=70_u8 {
       install(&store, &record(seed, 1_000, &writer(), 0, false, SEED)).await;
     }
-    let all = Selector::parse("relay.woooo.tech/resources/type").unwrap();
+    let all = Selector::parse("radiata.woooo.tech/resources/type").unwrap();
 
     // Requesting more than the view bound clamps to it: one 64-item page
     // plus one 6-item page.
@@ -280,7 +280,7 @@ mod tests {
     install(&store, &record(2, 1_000, &writer(), 0, false, SEED)).await;
     install(&store, &record(2, 500, &writer(), 1, true, SEED)).await;
 
-    let all = Selector::parse("relay.woooo.tech/resources/type").unwrap();
+    let all = Selector::parse("radiata.woooo.tech/resources/type").unwrap();
     let walked = select_all(&store, &all, 64).await;
     assert_eq!(walked, [name(2).as_str().to_owned()]);
   }
@@ -338,14 +338,14 @@ mod tests {
     }
 
     for (selector_text, expected_count) in [
-      ("relay.woooo.tech/resources/type", 6),
-      ("relay.woooo.tech/resources/type=document", 3),
+      ("radiata.woooo.tech/resources/type", 6),
+      ("radiata.woooo.tech/resources/type=document", 3),
       ("example.org/labels/lane in (even,odd)", 6),
       (
-        "example.org/labels/lane=odd !relay.woooo.tech/labels/zone",
+        "example.org/labels/lane=odd !radiata.woooo.tech/labels/zone",
         3,
       ),
-      ("relay.woooo.tech/resources/uri!=file:///sel/003", 5),
+      ("radiata.woooo.tech/resources/uri!=file:///sel/003", 5),
     ] {
       let selector = Selector::parse(selector_text).unwrap();
       let names_a = select_all(&store_a, &selector, 2).await;

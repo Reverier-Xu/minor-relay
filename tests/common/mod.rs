@@ -19,7 +19,7 @@ use std::{
 };
 
 use ed25519_dalek::{Signer, SigningKey};
-use minor_relay::{
+use radiata::{
   BoxFuture, CommitOutcome, CommitReceipt, CreatedKey, Digest, DurabilityLevel, Error,
   KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId, ProviderErrorContext,
   ProviderErrorKind, PublicKey, QualifiedTag, ReconcileOutcome, Result, Signature,
@@ -29,9 +29,10 @@ use minor_relay::{
 };
 use tokio::sync::Notify;
 
-pub const LOCAL_IDENTITY_NAMESPACE: &str = "relay.woooo.tech/metadata/local-identity-v1";
-pub const KEY_CREATION_INTENT_NAMESPACE: &str = "relay.woooo.tech/metadata/key-creation-intent-v1";
-pub const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transaction-v1";
+pub const LOCAL_IDENTITY_NAMESPACE: &str = "radiata.woooo.tech/metadata/local-identity-v1";
+pub const KEY_CREATION_INTENT_NAMESPACE: &str =
+  "radiata.woooo.tech/metadata/key-creation-intent-v1";
+pub const PENDING_NAMESPACE: &str = "radiata.woooo.tech/metadata/pending-transaction-v1";
 
 /// One join with bounded retries against one stable credential: the
 /// accept loop precomputes its join hint, so rotating on every retry
@@ -39,9 +40,9 @@ pub const PENDING_NAMESPACE: &str = "relay.woooo.tech/metadata/pending-transacti
 /// retry with the same secret). Admission-sensitive operations
 /// transiently refuse while concurrent metadata commits hold the store.
 pub async fn join_with_retry(
-  node: &minor_relay::NodeHandle, issuer: &minor_relay::NodeHandle, endpoint: minor_relay::Endpoint,
+  node: &radiata::NodeHandle, issuer: &radiata::NodeHandle, endpoint: radiata::Endpoint,
 ) {
-  use minor_relay::{JoinCluster, JoinCredential, RotateJoinCredential};
+  use radiata::{JoinCluster, JoinCredential, RotateJoinCredential};
   let issued = issuer.command(RotateJoinCredential::new()).await.unwrap();
   let secret = issued.credential().expose_secret().to_owned();
   let deadline = std::time::Instant::now() + Duration::from_secs(60);

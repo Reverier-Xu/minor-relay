@@ -11,7 +11,7 @@ const MAX_COMPONENT_LEN: usize = 63;
 /// feature registry independently rejects caller definitions under the
 /// whole domain. One constant so tag grammar and the registry cannot
 /// drift apart.
-pub(crate) const BUILTIN_DOMAIN: &str = "relay.woooo.tech";
+pub(crate) const BUILTIN_DOMAIN: &str = "radiata.woooo.tech";
 
 /// The closed tag categories the crate compares against (single source):
 /// protocol-fixed, so one constant table makes the set auditable and a

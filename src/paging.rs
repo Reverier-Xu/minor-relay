@@ -174,7 +174,7 @@ mod tests {
   impl VecScan {
     fn new(count: usize) -> Self {
       let namespace =
-        StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/test/paging").unwrap());
+        StoreNamespace::new(QualifiedTag::parse("radiata.woooo.tech/test/paging").unwrap());
       let entries = (0..count)
         .map(|index| {
           StoreEntry::new(

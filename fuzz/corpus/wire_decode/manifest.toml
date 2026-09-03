@@ -1,4 +1,4 @@
-schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+schema = "radiata.woooo.tech/schemas/fuzz-corpus-v1"
 status = "accepted"
 target = "wire_decode"
 owner_task = "T-G10-03"
@@ -8,14 +8,14 @@ minimizer = { tool = "none", version = "0" }
 aggregate = { entry_count = 10, total_bytes = 863 }
 
 [[entry]]
-digest = "8dfcb4614675cfddefaa8d5594b1345780ce9c29208cc9bf8fdf6835e67297ce"
+digest = "3015c3df6c7ad84650d01266c263738389b0a45951bd42f61db6f97bb610eedc"
 byte_count = 167
 origin = "golden-fixture"
 lineage = "compatibility manifest open-direct-v1"
 schema_tags = ["packet kind 0x0010..0x0013"]
 
 [[entry]]
-digest = "656b97c6f45f7b6abfdba05b70ab4df84ffe10bae6b2b3c01bfb11fbcdccadd6"
+digest = "4ed045aaa9eea669de8fda0da0282c35549f6a8a71052a8f9fac7382a65c49ed"
 byte_count = 226
 origin = "golden-fixture"
 lineage = "compatibility manifest open-routed-v1"
@@ -71,7 +71,7 @@ lineage = "oversized prelude body length"
 schema_tags = ["packet kind 0x0010..0x0013"]
 
 [[entry]]
-digest = "b07073a1c0744f6fb2653a583c45e7751613cbb0d1fb5f2b92dc9eefe10e9c5d"
+digest = "5035f34690ec4fc3486a51e2028703b7fac5238d21cf4b0b0c13d73396aacb56"
 byte_count = 166
 origin = "synthetic-generator"
 lineage = "open frame missing final byte"

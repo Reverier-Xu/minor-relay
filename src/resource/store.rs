@@ -194,7 +194,7 @@ mod tests {
   const SEED: [u8; 32] = [21; 32];
 
   fn name() -> ResourceName {
-    ResourceName::parse("relay.woooo.tech/resources/store-demo").unwrap()
+    ResourceName::parse("radiata.woooo.tech/resources/store-demo").unwrap()
   }
 
   fn labels() -> LabelSet {

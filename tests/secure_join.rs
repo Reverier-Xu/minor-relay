@@ -7,7 +7,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use minor_relay::{
+use radiata::{
   CreateCluster, Endpoint, ErrorKind, GetLocalNode, JoinCluster, JoinCredential, Listen,
   NodeBuilder, NodeHandle, RotateJoinCredential, Shutdown,
 };
@@ -46,7 +46,7 @@ fn init_tracing() {
   static INIT: Once = Once::new();
   INIT.call_once(|| {
     tracing_subscriber::fmt()
-      .with_env_filter(tracing_subscriber::EnvFilter::new("minor_relay=trace"))
+      .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=trace"))
       .with_test_writer()
       .init();
   });
@@ -64,7 +64,7 @@ fn retry_backoff(attempts: u32) -> Duration {
   Duration::from_millis(millis.max(250)).min(Duration::from_secs(4))
 }
 
-async fn rotate_with_retry(issuer: &NodeHandle) -> minor_relay::IssuedJoinCredential {
+async fn rotate_with_retry(issuer: &NodeHandle) -> radiata::IssuedJoinCredential {
   let deadline = std::time::Instant::now() + Duration::from_secs(30);
   loop {
     match issuer.command(RotateJoinCredential::new()).await {
@@ -81,7 +81,7 @@ async fn rotate_with_retry(issuer: &NodeHandle) -> minor_relay::IssuedJoinCreden
 /// consumes no credential, so each attempt reissues a fresh one.
 async fn join_with_retry(
   node: &NodeHandle, endpoint: &Endpoint, secret: &str,
-) -> minor_relay::AdmissionView {
+) -> radiata::AdmissionView {
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let mut attempts = 0_u32;
   loop {
@@ -104,7 +104,7 @@ async fn join_with_retry(
 
 async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> Node {
   init_tracing();
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  let factory: Arc<dyn radiata::extension::StorageFactory> = storage;
   let handle = NodeBuilder::new(factory, keys).start().await.unwrap();
   Node {
     handle,
@@ -115,7 +115,7 @@ async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> N
 #[cfg(all(unix, feature = "json"))]
 async fn start_json(dir: &TempDir, keys: Arc<ScriptedKeys>) -> Node {
   let handle = NodeBuilder::new(
-    minor_relay::adapters::json_store(dir.path().to_path_buf()),
+    radiata::adapters::json_store(dir.path().to_path_buf()),
     keys,
   )
   .start()
@@ -268,7 +268,7 @@ async fn secure_join_wrong_credential_fails_without_admission() {
 
 use std::sync::Mutex as StdMutex;
 
-use minor_relay::{
+use radiata::{
   BoxFuture, ExtensionRegistry, GetRoute, IncomingPacket, PacketBody, PacketMetadata, PacketPolicy,
   PacketTarget, ProtocolDefinition, ProtocolTag, QualifiedTag, RouteState,
 };
@@ -291,7 +291,7 @@ impl VecBody {
 }
 
 impl PacketBody for VecBody {
-  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(self.chunks.next()) })
   }
 }
@@ -301,8 +301,8 @@ struct Collector {
   packets: StdMutex<Vec<(String, Vec<u8>)>>,
 }
 
-impl minor_relay::PacketConsumer for Collector {
-  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, minor_relay::Result<()>> {
+impl radiata::PacketConsumer for Collector {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, radiata::Result<()>> {
     Box::pin(async move {
       let mut body = Vec::new();
       while let Some(chunk) = packet.body().next_chunk().await? {
@@ -325,7 +325,7 @@ async fn start_with_protocol(
   init_tracing();
   let mut extensions = ExtensionRegistry::new();
   extensions.register_protocol(definition, consumer).unwrap();
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  let factory: Arc<dyn radiata::extension::StorageFactory> = storage;
   NodeBuilder::new(factory, keys)
     .extensions(extensions)
     .start()
@@ -351,7 +351,7 @@ async fn restart_with_protocol(
     .await
     {
       Ok(handle) => return handle,
-      Err(error) if error.kind() == minor_relay::ErrorKind::StorageLocked => {
+      Err(error) if error.kind() == radiata::ErrorKind::StorageLocked => {
         assert!(
           std::time::Instant::now() < deadline,
           "restarted storage stays locked: {error}"
@@ -367,11 +367,11 @@ async fn restart_with_protocol(
 async fn start_with_protocol_result(
   storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
   consumer: Arc<Collector>,
-) -> Result<NodeHandle, minor_relay::Error> {
+) -> Result<NodeHandle, radiata::Error> {
   init_tracing();
   let mut extensions = ExtensionRegistry::new();
   extensions.register_protocol(definition, consumer)?;
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  let factory: Arc<dyn radiata::extension::StorageFactory> = storage;
   NodeBuilder::new(factory, keys)
     .extensions(extensions)
     .start()
@@ -380,22 +380,22 @@ async fn start_with_protocol_result(
 
 fn protocol(tag: &str) -> ProtocolDefinition {
   ProtocolDefinition::new(
-    ProtocolTag::parse(&format!("relay.woooo.tech/protocols/{tag}")).unwrap(),
-    minor_relay::FeatureTag::parse("relay.woooo.tech/features/session-core").unwrap(),
+    ProtocolTag::parse(&format!("radiata.woooo.tech/protocols/{tag}")).unwrap(),
+    radiata::FeatureTag::parse("radiata.woooo.tech/features/session-core").unwrap(),
   )
 }
 
 fn metadata() -> PacketMetadata {
   PacketMetadata::new()
     .insert(
-      QualifiedTag::parse("relay.woooo.tech/resources/test-label").unwrap(),
+      QualifiedTag::parse("radiata.woooo.tech/resources/test-label").unwrap(),
       Arc::from(b"value".as_slice()),
     )
     .unwrap()
 }
 
 fn policy() -> PacketPolicy {
-  PacketPolicy::new(minor_relay::RoutingPolicy::Direct, 1).unwrap()
+  PacketPolicy::new(radiata::RoutingPolicy::Direct, 1).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -445,7 +445,7 @@ async fn secure_join_packet_streams_ordered_after_authentication() {
     .handle
     .create_packet(
       PacketTarget::Exact(admission.admitted_node().clone()),
-      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap(),
       policy(),
       metadata(),
     )
@@ -493,12 +493,12 @@ async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
 
   // No session to any node: routing to an unknown exact node fails before
   // any delivery work.
-  let unknown = minor_relay::NodeId::parse("node_999999999999999999999").unwrap();
+  let unknown = radiata::NodeId::parse("node_999999999999999999999").unwrap();
   let packet = receiver
     .handle
     .create_packet(
       PacketTarget::Exact(unknown),
-      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap(),
       policy(),
       PacketMetadata::new(),
     )
@@ -542,7 +542,7 @@ async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
     .handle
     .create_packet(
       PacketTarget::Exact(admission.admitted_node().clone()),
-      ProtocolTag::parse("relay.woooo.tech/protocols/not-registered").unwrap(),
+      ProtocolTag::parse("radiata.woooo.tech/protocols/not-registered").unwrap(),
       policy(),
       PacketMetadata::new(),
     )
@@ -556,13 +556,13 @@ async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
 // ---- T-G03-04 feature selection / credential-free reconnect evidence (E2E-01)
 // ----
 
-use minor_relay::ConnectMember;
+use radiata::ConnectMember;
 
 /// Sends one two-chunk packet from `sender` to `target` and waits for the
 /// receiver-side collector to observe it in order.
 async fn packet_round_trip(
-  sender: &NodeHandle, target: &minor_relay::NodeId, collector: &Arc<Collector>,
-) -> minor_relay::NodeId {
+  sender: &NodeHandle, target: &radiata::NodeId, collector: &Arc<Collector>,
+) -> radiata::NodeId {
   // Right after crossed-dial convergence the drained connection can
   // still interrupt one in-flight send; an explicit interruption is a
   // contract outcome, so the round trip retries briefly before failing.
@@ -571,7 +571,7 @@ async fn packet_round_trip(
     let packet = sender
       .create_packet(
         PacketTarget::Exact(target.clone()),
-        ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+        ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap(),
         policy(),
         metadata(),
       )
@@ -733,7 +733,7 @@ struct BlockingBody {
 }
 
 impl PacketBody for BlockingBody {
-  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, minor_relay::Result<Option<Arc<[u8]>>>> {
+  fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     if self.released {
       return Box::pin(async move { Ok(None) });
     }
@@ -751,8 +751,8 @@ struct RecordingConsumer {
   packets: StdMutex<Vec<(String, Vec<u8>)>>,
 }
 
-impl minor_relay::PacketConsumer for RecordingConsumer {
-  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, minor_relay::Result<()>> {
+impl radiata::PacketConsumer for RecordingConsumer {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, radiata::Result<()>> {
     Box::pin(async move {
       let mut body = Vec::new();
       while let Some(chunk) = packet.body().next_chunk().await? {
@@ -775,8 +775,8 @@ struct ReplyConsumer {
   pings: StdMutex<Vec<(String, Vec<u8>)>>,
 }
 
-impl minor_relay::PacketConsumer for ReplyConsumer {
-  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, minor_relay::Result<()>> {
+impl radiata::PacketConsumer for ReplyConsumer {
+  fn accept<'a>(&'a self, mut packet: IncomingPacket) -> BoxFuture<'a, radiata::Result<()>> {
     Box::pin(async move {
       let mut body = Vec::new();
       while let Some(chunk) = packet.body().next_chunk().await? {
@@ -786,7 +786,7 @@ impl minor_relay::PacketConsumer for ReplyConsumer {
       self.pings.lock().unwrap().push((trace.to_string(), body));
       let reply = packet
         .derive_return_packet(
-          ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+          ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap(),
           PacketMetadata::new(),
         )
         .unwrap();
@@ -803,13 +803,13 @@ impl minor_relay::PacketConsumer for ReplyConsumer {
   }
 }
 
-async fn start_with_config<C: minor_relay::PacketConsumer + Send + Sync + 'static>(
+async fn start_with_config<C: radiata::PacketConsumer + Send + Sync + 'static>(
   storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>, definition: ProtocolDefinition,
-  consumer: Arc<C>, config: minor_relay::NodeConfig,
+  consumer: Arc<C>, config: radiata::NodeConfig,
 ) -> NodeHandle {
   let mut extensions = ExtensionRegistry::new();
   extensions.register_protocol(definition, consumer).unwrap();
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  let factory: Arc<dyn radiata::extension::StorageFactory> = storage;
   NodeBuilder::new(factory, keys)
     .extensions(extensions)
     .config(config)
@@ -824,7 +824,7 @@ async fn start_with_reply_consumer(
 ) -> NodeHandle {
   let mut extensions = ExtensionRegistry::new();
   extensions.register_protocol(definition, consumer).unwrap();
-  let factory: Arc<dyn minor_relay::extension::StorageFactory> = storage;
+  let factory: Arc<dyn radiata::extension::StorageFactory> = storage;
   NodeBuilder::new(factory, keys)
     .extensions(extensions)
     .start()
@@ -833,13 +833,12 @@ async fn start_with_reply_consumer(
 }
 
 async fn round_trip_to(
-  sender: &NodeHandle, target: &minor_relay::NodeId, body: &[&'static [u8]],
-  collector: &Arc<Collector>,
-) -> minor_relay::TraceId {
+  sender: &NodeHandle, target: &radiata::NodeId, body: &[&'static [u8]], collector: &Arc<Collector>,
+) -> radiata::TraceId {
   let packet = sender
     .create_packet(
       PacketTarget::Exact(target.clone()),
-      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap(),
       policy(),
       metadata(),
     )
@@ -1008,7 +1007,7 @@ async fn secure_join_derived_return_packet_reuses_trace_id() {
 /// backpressure at the configured capacity, and release frees every slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers() {
-  let config = minor_relay::NodeConfig::new()
+  let config = radiata::NodeConfig::new()
     .with_session_queue_limits(4, 65_536)
     .unwrap();
   let recorder = Arc::new(RecordingConsumer::default());
@@ -1053,7 +1052,7 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
   let _joiner_id = admission.admitted_node().clone();
 
   let release = Arc::new(ReleaseGate::default());
-  let protocol_tag = ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap();
+  let protocol_tag = ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap();
   for _ in 0..4 {
     let packet = joiner_handle
       .create_packet(
@@ -1311,7 +1310,7 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
   let packet = joiner_handle
     .create_packet(
       PacketTarget::Exact(receiver_id),
-      ProtocolTag::parse("relay.woooo.tech/protocols/test-echo").unwrap(),
+      ProtocolTag::parse("radiata.woooo.tech/protocols/test-echo").unwrap(),
       policy(),
       metadata(),
     )
@@ -1410,7 +1409,7 @@ async fn secure_join_join_after_listener_stop_fails_closed() {
     .unwrap();
   receiver
     .handle
-    .command(minor_relay::StopListener::new(listener.id().clone()))
+    .command(radiata::StopListener::new(listener.id().clone()))
     .await
     .unwrap();
 
@@ -1576,7 +1575,7 @@ async fn secure_join_shutdown_rejects_new_work_after_drain() {
 
 // ---- G5 public membership and topology views (SC-G05-P0-23..26 core) ----
 
-use minor_relay::{GetMember, PageMembers, PageSpec, PageTopology};
+use radiata::{GetMember, PageMembers, PageSpec, PageTopology};
 
 /// The public membership/topology views expose the local owner-marked
 /// descriptor and the authenticated session edge after a join.

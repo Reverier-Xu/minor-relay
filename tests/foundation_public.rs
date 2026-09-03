@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use minor_relay::{
+use radiata::{
   BoxFuture, CommitOutcome, CommitReceipt, CreatedKey, Digest, DurabilityLevel, Error,
   KeyCapabilities, KeyCreateState, KeyDeleteState, KeyHandle, KeyOperationId, ProviderErrorContext,
   ProviderErrorKind, PublicKey, QualifiedTag, ReconcileOutcome, Result, Signature,
@@ -185,10 +185,10 @@ fn g1_core_storage_boundary_values_round_trip() {
   assert!(StoreRevision::new(Arc::from([])).is_err());
 
   let namespace =
-    StoreNamespace::new(QualifiedTag::parse("relay.woooo.tech/metadata/identity").unwrap());
+    StoreNamespace::new(QualifiedTag::parse("radiata.woooo.tech/metadata/identity").unwrap());
   let key = StoreKey::new(Arc::from(b"node-key".as_slice()));
   let value = StoreValue::new(Arc::from(b"metadata-value".as_slice()));
-  assert_eq!(namespace.as_str(), "relay.woooo.tech/metadata/identity");
+  assert_eq!(namespace.as_str(), "radiata.woooo.tech/metadata/identity");
   assert_eq!(key.as_bytes(), b"node-key");
   assert_eq!(value.as_bytes(), b"metadata-value");
   assert_eq!(

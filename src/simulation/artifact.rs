@@ -5,9 +5,9 @@ use std::{
   sync::atomic::{AtomicU64, Ordering},
 };
 
-use minor_relay_test_support::{
-  ArtifactBytes, CommitDigest, EvidenceId, EvidenceManifest, FailureClass, LockfileDigest,
-  ProducerKind, ReplaySpec, build_failure_artifact,
+use radiata_test_support::{
+  ArtifactBytes, EvidenceId, EvidenceManifest, FailureClass, ProducerKind, ReplaySpec,
+  build_failure_artifact,
 };
 
 use crate::simulation::{
@@ -45,58 +45,12 @@ impl MatrixFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FailureCaptureError {
-  DirtyBuildProvenance,
-  InvalidBuildProvenance,
-  InvalidCommit,
-  InvalidLockfile,
   InvalidMetadata,
   InvalidSource,
   Artifact,
   Directory,
   Write,
   Simulation,
-}
-
-#[derive(Clone, Copy)]
-struct TrustedProvenance {
-  commit: CommitDigest,
-  lockfile: LockfileDigest,
-}
-
-fn trusted_provenance() -> Result<TrustedProvenance, FailureCaptureError> {
-  parse_embedded_provenance(
-    env!("MINOR_RELAY_BUILD_COMMIT"),
-    env!("MINOR_RELAY_BUILD_LOCKFILE"),
-    env!("MINOR_RELAY_BUILD_DIRTY"),
-  )
-}
-
-fn parse_embedded_provenance(
-  commit: &str, lockfile: &str, dirty: &str,
-) -> Result<TrustedProvenance, FailureCaptureError> {
-  match dirty {
-    "true" => return Err(FailureCaptureError::DirtyBuildProvenance),
-    "false" => {}
-    _ => return Err(FailureCaptureError::InvalidBuildProvenance),
-  }
-  let commit = CommitDigest::parse_hex(commit).map_err(|_| FailureCaptureError::InvalidCommit)?;
-  let lockfile = parse_lockfile_digest(lockfile)?;
-  Ok(TrustedProvenance { commit, lockfile })
-}
-
-fn parse_lockfile_digest(value: &str) -> Result<LockfileDigest, FailureCaptureError> {
-  let bytes = crate::hex::decode_array::<32>(value, "lockfile digest")
-    .map_err(|_| FailureCaptureError::InvalidLockfile)?;
-  Ok(LockfileDigest::from_bytes(bytes))
-}
-
-fn synthetic_fixture_provenance() -> Result<TrustedProvenance, FailureCaptureError> {
-  let commit = CommitDigest::parse_hex("1111111111111111111111111111111111111111")
-    .map_err(|_| FailureCaptureError::InvalidCommit)?;
-  Ok(TrustedProvenance {
-    commit,
-    lockfile: LockfileDigest::from_bytes([0x22; 32]),
-  })
 }
 
 /// Evidence identifiers and file prefix for the network fault-matrix
@@ -109,7 +63,7 @@ pub(crate) const MATRIX_REPLAY_TEST_FILTER: &str =
   "simulation::network::tests::simulation_network_fault_matrix_replay_exact_seed";
 
 fn matrix_manifest(
-  seed: u64, failure: MatrixFailure, provenance: TrustedProvenance,
+  seed: u64, failure: MatrixFailure,
 ) -> Result<EvidenceManifest, FailureCaptureError> {
   let scenario =
     EvidenceId::new(MATRIX_SCENARIO_ID).map_err(|_| FailureCaptureError::InvalidMetadata)?;
@@ -123,42 +77,37 @@ fn matrix_manifest(
     Some(seed),
     FailureClass::Invariant,
     invariant,
-    provenance.commit,
-    provenance.lockfile,
     ReplaySpec::simulation_network_fault_matrix(seed),
   )
   .map_err(|_| FailureCaptureError::InvalidMetadata)
 }
 
 fn build_matrix_artifact(
-  seed: u64, failure: MatrixFailure, provenance: TrustedProvenance, records: &[EventRecord],
+  seed: u64, failure: MatrixFailure, records: &[EventRecord],
 ) -> Result<ArtifactBytes, FailureCaptureError> {
   let fixture =
     ScenarioFixture::network_fault_matrix().map_err(|_| FailureCaptureError::InvalidSource)?;
   let source = SimulationEvidenceSource::records(&fixture, records);
-  let manifest = matrix_manifest(seed, failure, provenance)?;
+  let manifest = matrix_manifest(seed, failure)?;
   build_failure_artifact(&manifest, &source).map_err(|_| FailureCaptureError::Artifact)
 }
 
 pub(crate) fn retain_matrix_failure(
   seed: u64, failure: MatrixFailure, records: &[EventRecord],
 ) -> Result<(), FailureCaptureError> {
-  let provenance = trusted_provenance()?;
   retain_matrix_failure_at(
     Path::new(env!("CARGO_MANIFEST_DIR")),
     seed,
     failure,
     records,
-    provenance,
   )
   .map(|_| ())
 }
 
 fn retain_matrix_failure_at(
   repository_root: &Path, seed: u64, failure: MatrixFailure, records: &[EventRecord],
-  provenance: TrustedProvenance,
 ) -> Result<PathBuf, FailureCaptureError> {
-  let artifact = build_matrix_artifact(seed, failure, provenance, records)?;
+  let artifact = build_matrix_artifact(seed, failure, records)?;
   write_failure_artifact(repository_root, seed, failure, &artifact)
 }
 
@@ -205,7 +154,7 @@ fn ensure_failure_artifact_directory(
 
   let target = repository_root.join("target");
   ensure_directory_level(&target, repository_root, sync_directory)?;
-  let directory = target.join("minor-relay-failures");
+  let directory = target.join("radiata-failures");
   ensure_directory_level(&directory, &target, sync_directory)?;
   Ok(directory)
 }
@@ -311,12 +260,7 @@ pub(crate) fn capture_network_fault_matrix_fixture(
   seed: u64,
 ) -> Result<ArtifactBytes, FailureCaptureError> {
   let run = run_fault_matrix_seed(seed).map_err(|_| FailureCaptureError::Simulation)?;
-  build_matrix_artifact(
-    seed,
-    MatrixFailure::FaultCoverage,
-    synthetic_fixture_provenance()?,
-    run.records(),
-  )
+  build_matrix_artifact(seed, MatrixFailure::FaultCoverage, run.records())
 }
 
 #[cfg(test)]
@@ -326,17 +270,14 @@ mod tests {
     fs,
     io::{self, Write},
     path::Path,
-    process::Command as ProcessCommand,
   };
 
-  use minor_relay_test_support::{LockfileDigest, MAX_ARTIFACT_BYTES};
+  use radiata_test_support::MAX_ARTIFACT_BYTES;
 
   use super::{
     FailureCaptureError, MatrixFailure, build_matrix_artifact,
-    capture_network_fault_matrix_fixture, ensure_failure_artifact_directory,
-    parse_embedded_provenance, publish_new_file, publish_new_file_with_sync,
-    retain_matrix_failure_at, synthetic_fixture_provenance, trusted_provenance,
-    write_failure_artifact, write_failure_artifact_with_sync,
+    capture_network_fault_matrix_fixture, ensure_failure_artifact_directory, publish_new_file,
+    publish_new_file_with_sync, write_failure_artifact, write_failure_artifact_with_sync,
   };
 
   #[test]
@@ -403,107 +344,11 @@ mod tests {
   }
 
   #[test]
-  fn simulation_failure_artifact_security_embedded_provenance_matches_clean_checkout() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let status = ProcessCommand::new("git")
-      .args([
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
-        "--ignore-submodules=none",
-        "--",
-        "Cargo.toml",
-        "Cargo.lock",
-        "build.rs",
-        "src",
-        "tests",
-        "test-support",
-      ])
-      .current_dir(root)
-      .output()
-      .unwrap();
-    assert!(status.status.success());
-    assert!(
-      status.stdout.is_empty(),
-      "provenance test requires a clean checkout"
-    );
-
-    let commit = ProcessCommand::new("git")
-      .args(["rev-parse", "HEAD"])
-      .current_dir(root)
-      .output()
-      .unwrap();
-    assert!(commit.status.success());
-    let expected_commit = std::str::from_utf8(&commit.stdout)
-      .unwrap()
-      .trim_end_matches(['\r', '\n']);
-    let expected_lockfile = LockfileDigest::sha256(&fs::read(root.join("Cargo.lock")).unwrap());
-    let provenance = trusted_provenance().unwrap();
-
-    assert_eq!(provenance.commit.as_hex(), expected_commit);
-    assert_eq!(provenance.lockfile, expected_lockfile);
-  }
-
-  #[test]
-  fn simulation_failure_artifact_security_rejects_untrusted_embedded_provenance() {
-    let commit = "1111111111111111111111111111111111111111";
-    let lockfile = "2222222222222222222222222222222222222222222222222222222222222222";
-    assert_eq!(
-      parse_embedded_provenance(commit, lockfile, "true").map(|_| ()),
-      Err(FailureCaptureError::DirtyBuildProvenance),
-    );
-    assert_eq!(
-      parse_embedded_provenance(commit, lockfile, "unknown").map(|_| ()),
-      Err(FailureCaptureError::InvalidBuildProvenance),
-    );
-    assert_eq!(
-      parse_embedded_provenance("/private/source", lockfile, "false").map(|_| ()),
-      Err(FailureCaptureError::InvalidCommit),
-    );
-    assert_eq!(
-      parse_embedded_provenance(commit, "/private/source", "false").map(|_| ()),
-      Err(FailureCaptureError::InvalidLockfile),
-    );
-    let error = match parse_embedded_provenance(commit, "/private/source", "false") {
-      Ok(_) => panic!("invalid lockfile provenance was accepted"),
-      Err(error) => error,
-    };
-    assert_eq!(format!("{error:?}"), "InvalidLockfile");
-  }
-
-  #[test]
-  fn simulation_failure_artifact_security_actual_failure_retention_uses_real_provenance() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-      .join("target")
-      .join(format!(
-        "minor-relay-real-provenance-test-{}",
-        std::process::id()
-      ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    let provenance = trusted_provenance().unwrap();
-    let path = retain_matrix_failure_at(&root, 92, MatrixFailure::Run, &[], provenance).unwrap();
-    let bytes = fs::read(&path).unwrap();
-    let encoded = std::str::from_utf8(&bytes).unwrap();
-    assert!(bytes.len() <= MAX_ARTIFACT_BYTES);
-    assert!(bytes.starts_with(b"{\"schema\":\"relay.woooo.tech/schemas/failure-replay\""));
-    assert!(encoded.contains(&format!(
-      "\"commit_digest\":\"{}\"",
-      provenance.commit.as_hex()
-    )));
-    assert!(encoded.contains(&format!(
-      "\"lockfile_digest\":\"{}\"",
-      provenance.lockfile.as_hex()
-    )));
-    fs::remove_dir_all(root).unwrap();
-  }
-
-  #[test]
   fn simulation_failure_artifact_security_new_directories_are_synced_child_before_parent() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-directory-creation-test-{}",
+        "radiata-directory-creation-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
@@ -516,13 +361,13 @@ mod tests {
     })
     .unwrap();
 
-    assert_eq!(directory, root.join("target/minor-relay-failures"));
+    assert_eq!(directory, root.join("target/radiata-failures"));
     assert_eq!(
       barriers.into_inner(),
       [
         root.join("target"),
         root.clone(),
-        root.join("target/minor-relay-failures"),
+        root.join("target/radiata-failures"),
         root.join("target"),
       ]
     );
@@ -534,18 +379,12 @@ mod tests {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-directory-barrier-test-{}",
+        "radiata-directory-barrier-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    let artifact = build_matrix_artifact(
-      93,
-      MatrixFailure::Run,
-      synthetic_fixture_provenance().unwrap(),
-      &[],
-    )
-    .unwrap();
+    let artifact = build_matrix_artifact(93, MatrixFailure::Run, &[]).unwrap();
     let barriers = Cell::new(0);
 
     let result = write_failure_artifact_with_sync(&root, 93, MatrixFailure::Run, &artifact, |_| {
@@ -561,7 +400,7 @@ mod tests {
 
     assert_eq!(result, Err(FailureCaptureError::Directory));
     assert_eq!(barriers.get(), 4);
-    let directory = root.join("target/minor-relay-failures");
+    let directory = root.join("target/radiata-failures");
     assert!(directory.is_dir());
     assert_eq!(fs::read_dir(directory).unwrap().count(), 0);
     fs::remove_dir_all(root).unwrap();
@@ -572,11 +411,11 @@ mod tests {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-existing-directory-test-{}",
+        "radiata-existing-directory-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("target/minor-relay-failures")).unwrap();
+    fs::create_dir_all(root.join("target/radiata-failures")).unwrap();
 
     let directory = ensure_failure_artifact_directory(&root, &mut |_| {
       Err(io::Error::other(
@@ -585,7 +424,7 @@ mod tests {
     })
     .unwrap();
 
-    assert_eq!(directory, root.join("target/minor-relay-failures"));
+    assert_eq!(directory, root.join("target/radiata-failures"));
     fs::remove_dir_all(root).unwrap();
   }
 
@@ -594,7 +433,7 @@ mod tests {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-nondirectory-level-test-{}",
+        "radiata-nondirectory-level-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
@@ -612,7 +451,7 @@ mod tests {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-partial-artifact-test-{}",
+        "radiata-partial-artifact-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
@@ -634,10 +473,7 @@ mod tests {
   fn simulation_failure_artifact_security_first_directory_barrier_failure_is_conservative() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
-      .join(format!(
-        "minor-relay-first-barrier-test-{}",
-        std::process::id()
-      ));
+      .join(format!("radiata-first-barrier-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let final_path = root.join("artifact.json");
@@ -672,7 +508,7 @@ mod tests {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-second-barrier-test-{}",
+        "radiata-second-barrier-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
@@ -705,10 +541,7 @@ mod tests {
   fn simulation_failure_artifact_security_publication_never_overwrites() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
-      .join(format!(
-        "minor-relay-no-overwrite-test-{}",
-        std::process::id()
-      ));
+      .join(format!("radiata-no-overwrite-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let final_path = root.join("artifact.json");
@@ -736,24 +569,18 @@ mod tests {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("target")
       .join(format!(
-        "minor-relay-failure-artifact-test-{}",
+        "radiata-failure-artifact-test-{}",
         std::process::id()
       ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    let artifact = build_matrix_artifact(
-      91,
-      MatrixFailure::DeterministicReplay,
-      synthetic_fixture_provenance().unwrap(),
-      &[],
-    )
-    .unwrap();
+    let artifact = build_matrix_artifact(91, MatrixFailure::DeterministicReplay, &[]).unwrap();
     let path =
       write_failure_artifact(&root, 91, MatrixFailure::DeterministicReplay, &artifact).unwrap();
     let bytes = fs::read(&path).unwrap();
     assert_eq!(bytes, artifact.as_bytes());
     assert!(bytes.len() <= MAX_ARTIFACT_BYTES);
-    assert!(bytes.starts_with(b"{\"schema\":\"relay.woooo.tech/schemas/failure-replay\""));
+    assert!(bytes.starts_with(b"{\"schema\":\"radiata.woooo.tech/schemas/failure-replay\""));
     assert!(bytes.ends_with(b"}"));
     assert_eq!(
       path.file_name().and_then(|value| value.to_str()),

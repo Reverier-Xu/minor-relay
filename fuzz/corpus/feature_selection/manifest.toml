@@ -1,4 +1,4 @@
-schema = "relay.woooo.tech/schemas/fuzz-corpus-v1"
+schema = "radiata.woooo.tech/schemas/fuzz-corpus-v1"
 status = "accepted"
 target = "feature_selection"
 owner_task = "T-G10-04"

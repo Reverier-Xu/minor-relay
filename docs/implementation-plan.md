@@ -1,15 +1,13 @@
-# minor-relay Implementation Task Plan
+# radiata Implementation Task Plan
 
 ## Responsibility Rebaseline
 
-This is the executable backlog derived from [Development Gates](development-gates.md). ADR-0007 reopened
-G0. `T-G00-06` now owns the planning rebaseline with its stable ID; no production task resumes until it
-passes. Already-landed code and evidence are re-evaluated against the revised row and scenario text.
+This is the executable backlog for the radiata implementation. Already-landed code is re-evaluated
+against the revised rows and scenario text.
 
-The plan retains exactly 69 task IDs, 226 SC IDs, ten E2E IDs, and 29 THR IDs. A task begins only with
-literal argv registered in `task-verification.toml`, passes focused evidence and `Q`, and changes no
-public/wire/persisted contract beyond this plan and the API manifest. Population-sized outputs are
-always streamed, paged, or incremental. Packet bodies and application objects never enter core storage.
+A task changes no public/wire/persisted contract beyond this plan and the API manifest.
+Population-sized outputs are always streamed, paged, or incremental. Packet bodies and application
+objects never enter core storage.
 
 Rollback codes: `R0` independent before compatibility; `R1` before dependents; `R2` retain shipped
 readers/tags/migrations; `R3` irreversible security action requiring forward recovery.

@@ -38,7 +38,7 @@ fn writer_b() -> NodeId {
 }
 
 fn name(seed: u8) -> ResourceName {
-  ResourceName::parse(&format!("relay.woooo.tech/resources/e2e-{seed}")).unwrap()
+  ResourceName::parse(&format!("radiata.woooo.tech/resources/e2e-{seed}")).unwrap()
 }
 
 fn labels() -> LabelSet {

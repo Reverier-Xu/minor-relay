@@ -652,7 +652,7 @@ mod tests {
   use crate::{ErrorKind, QualifiedTag};
 
   fn key(name: &str) -> QualifiedTag {
-    QualifiedTag::parse(&format!("relay.woooo.tech/labels/{name}")).unwrap()
+    QualifiedTag::parse(&format!("radiata.woooo.tech/labels/{name}")).unwrap()
   }
 
   #[test]
