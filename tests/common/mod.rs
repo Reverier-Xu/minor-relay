@@ -67,6 +67,30 @@ pub async fn join_with_retry(
   }
 }
 
+/// One resource write with bounded retries: a commit racing the
+/// anti-entropy driver's writes transiently refuses with NotReady (the
+/// single-store in-flight-commit rule). Retries with a bound, matching
+/// the admission harness precedent. `write` rebuilds the command for
+/// each attempt (commands are single-use values).
+pub async fn put_resource_with_retry(
+  node: &radiata::NodeHandle, mut write: impl FnMut() -> radiata::PutResource,
+) {
+  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  loop {
+    match node.command(write()).await {
+      Ok(_) => return,
+      Err(error) => {
+        assert!(
+          deadline.elapsed() < Duration::from_secs(30),
+          "put never committed: {error:?}"
+        );
+        assert_eq!(error.kind(), radiata::ErrorKind::NotReady);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+    }
+  }
+}
+
 pub fn required_capabilities() -> StoreCapabilities {
   StoreCapabilities::new(DurabilityLevel::OsCrashDurable)
     .conditional_batch(true)

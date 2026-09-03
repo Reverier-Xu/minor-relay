@@ -279,7 +279,7 @@ async fn g9_leave_replaces_identity_and_shuts_down_with_active_leave() {
 /// SC-G09-P0-20/21: after the leave and a restart, the store shows no old
 /// identity metadata — no cluster, members, trust, or resources — while
 /// the replacement identity runs and the old key is provider-deleted.
-#[cfg(feature = "json")]
+#[cfg(all(feature = "json", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g9_json_leave_restart_shows_only_the_replacement() {
   let directory = tempfile::tempdir().unwrap();

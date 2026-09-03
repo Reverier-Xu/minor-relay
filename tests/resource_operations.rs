@@ -323,17 +323,14 @@ async fn g9_maintenance_preserves_labels_and_emits_nothing() {
   .await;
   issuer.handle.command(CreateCluster::new()).await.unwrap();
   let issuer_endpoint = listen(&issuer).await;
-  issuer
-    .handle
-    .command(
-      PutResource::new(ResourceWrite::new(
-        resource_name(4),
-        resource_labels("document", 4),
-      ))
-      .unwrap(),
-    )
-    .await
-    .unwrap();
+  common::put_resource_with_retry(&issuer.handle, || {
+    PutResource::new(ResourceWrite::new(
+      resource_name(4),
+      resource_labels("document", 4),
+    ))
+    .unwrap()
+  })
+  .await;
 
   let member = start_node(
     1,
