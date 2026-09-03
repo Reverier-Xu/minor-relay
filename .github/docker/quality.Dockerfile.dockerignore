@@ -1,8 +1,11 @@
 **
 !Cargo.toml
 !Cargo.lock
-!build.rs
 !src/**
 !test-support/**
 !tests/**
+!fuzz/Cargo.toml
+!fuzz/Cargo.lock
+!fuzz/fuzz_targets/**
+!fuzz/corpus/**
 !.github/docker/run-quality.sh

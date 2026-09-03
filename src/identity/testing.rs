@@ -246,7 +246,7 @@ impl ScriptedKeys {
   /// Registers the deterministic handle for one creation index without
   /// consuming the creation counter (crash-matrix parents resolve the
   /// child process's handles this way).
-  #[cfg(all(test, any(feature = "json", feature = "redb")))]
+  #[cfg(all(test, unix, any(feature = "json", feature = "redb")))]
   pub(crate) fn register_handle_index(&self, index: u64) {
     let handle = format!("scripted-handle-{index}").into_bytes();
     self
