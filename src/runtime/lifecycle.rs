@@ -164,6 +164,9 @@ pub(crate) enum Control {
     acknowledgement: crate::ReplaceIdentityAndDeleteOldCoreMetadata,
     reply: oneshot::Sender<Result<crate::LeaveOutcome>>,
   },
+  Observability {
+    reply: oneshot::Sender<Result<crate::ObservabilitySnapshot>>,
+  },
 }
 
 #[derive(Clone)]
@@ -202,6 +205,13 @@ impl RuntimeClient {
 
   pub(crate) fn status(&self) -> NodeStatus {
     self.state.borrow().status()
+  }
+
+  /// The bounded observability snapshot (T-G10-05).
+  pub(crate) async fn observability_snapshot(&self) -> Result<crate::ObservabilitySnapshot> {
+    self
+      .send_command(|reply| Control::Observability { reply })
+      .await
   }
 
   pub(crate) async fn shutdown(&self) -> Result<ShutdownOutcome> {

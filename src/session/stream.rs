@@ -278,6 +278,16 @@ pub(crate) struct BoundedSender {
 }
 
 impl BoundedSender {
+  /// The current queued frame count (runtime status view, T-G10-05).
+  pub(crate) fn queued_messages(&self) -> usize {
+    self.state.count.load(Ordering::Relaxed)
+  }
+
+  /// The current queued frame bytes (runtime status view, T-G10-05).
+  pub(crate) fn queued_bytes(&self) -> u64 {
+    u64::try_from(self.state.bytes.load(Ordering::Relaxed)).unwrap_or(u64::MAX)
+  }
+
   /// Best-effort admission-status relay (single construction site): the
   /// encoded ack is enqueued when the bounded queue has room; a saturated
   /// queue drops the status and the upstream liveness policy bounds the
@@ -449,6 +459,16 @@ impl SessionEntry {
   /// Whether the session's reader loop is still serving the connection.
   pub(crate) fn alive(&self) -> bool {
     self.alive.load(Ordering::SeqCst)
+  }
+
+  /// The queued outbound frame count (runtime status view, T-G10-05).
+  pub(crate) fn queued_messages(&self) -> usize {
+    self.frames.queued_messages()
+  }
+
+  /// The queued outbound frame bytes (runtime status view, T-G10-05).
+  pub(crate) fn queued_bytes(&self) -> u64 {
+    self.frames.queued_bytes()
   }
 }
 

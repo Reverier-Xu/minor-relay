@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use crate::{
   Command, ConnectMember, CreateCluster, DisconnectPeer, Error, Event, EventOptions,
-  EventSubscription, GetLocalNode, GetMember, GetNodeStatus, GetRoute, JoinCluster, Listen,
-  NodeStatus, OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget, PageMembers,
-  PageTopology, PageTrust, ProtocolTag, Query, Result, RotateJoinCredential, SelectResources,
-  Shutdown, StartRecovery, StopListener, TraceId, UpdateNodeMetadata, WaitForShutdown,
+  EventSubscription, GetLocalNode, GetMember, GetNodeStatus, GetObservability, GetRoute,
+  JoinCluster, Listen, NodeStatus, OutboundPacket, PacketMetadata, PacketPolicy, PacketTarget,
+  PageMembers, PageTopology, PageTrust, ProtocolTag, Query, Result, RotateJoinCredential,
+  SelectResources, Shutdown, StartRecovery, StopListener, TraceId, UpdateNodeMetadata,
+  WaitForShutdown,
   api::{BoxFuture, Entropy},
   extension_registry::ExtensionRegistry,
   runtime::RuntimeClient,
@@ -90,6 +91,13 @@ impl DispatchQuery for GetNodeStatus {
   fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
     let runtime = runtime.clone();
     Box::pin(async move { Ok(runtime.status()) })
+  }
+}
+
+impl DispatchQuery for GetObservability {
+  fn dispatch(self, runtime: &RuntimeClient) -> BoxFuture<'static, Result<Self::Output>> {
+    let runtime = runtime.clone();
+    Box::pin(async move { runtime.observability_snapshot().await })
   }
 }
 

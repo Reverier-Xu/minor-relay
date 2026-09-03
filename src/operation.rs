@@ -177,6 +177,25 @@ impl Query for GetNodeStatus {
   type Output = crate::NodeStatus;
 }
 
+/// The bounded observability snapshot query (T-G10-05): one snapshot of
+/// counters and flags, never an enumeration.
+pub struct GetObservability {
+  _private: (),
+}
+
+#[allow(clippy::new_without_default)]
+impl GetObservability {
+  pub fn new() -> Self {
+    Self { _private: () }
+  }
+}
+
+impl private::Sealed for GetObservability {}
+
+impl Query for GetObservability {
+  type Output = crate::ObservabilitySnapshot;
+}
+
 pub struct GetLocalNode {
   _private: (),
 }

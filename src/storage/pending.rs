@@ -769,6 +769,25 @@ pub(super) fn pending_namespace() -> Result<StoreNamespace> {
   Ok(StoreNamespace::new(tag))
 }
 
+/// Counts pending journal records for the bounded runtime status view
+/// (T-G10-05). The journal is bounded by construction (one record per
+/// in-flight transaction); the count never exposes record contents.
+pub(crate) async fn pending_transaction_count(
+  store: &crate::storage::MetadataStore,
+) -> Result<usize> {
+  let snapshot = store.snapshot().await?;
+  let namespace = pending_namespace()?;
+  let mut scan = snapshot.scan(&namespace, &[]).await?;
+  let mut count = 0_usize;
+  while let Some(entry) = scan.next().await? {
+    if entry.namespace() != &namespace {
+      return Err(storage_corrupt());
+    }
+    count += 1;
+  }
+  Ok(count)
+}
+
 pub(super) fn pending_key(purpose: &str) -> StoreKey {
   StoreKey::new(Arc::from(purpose.as_bytes()))
 }

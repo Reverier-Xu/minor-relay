@@ -1,5 +1,5 @@
 use crate::{
-  ClusterId, Endpoint, Error, ErrorKind, NodeId, PublicKey,
+  ClusterId, Endpoint, Error, ErrorKind, NodeId, PublicKey, QualifiedTag, Result,
   identity::{ListenerId, SessionId},
 };
 
@@ -211,6 +211,105 @@ impl SessionPage {
 
   pub(crate) fn new(items: Vec<SessionView>, next: Option<crate::PageCursor>) -> Self {
     Self { items, next }
+  }
+}
+
+/// The bounded observability snapshot of one node (T-G10-05,
+/// SC-G10-P0-15): counters keyed by well-known tags covering sessions,
+/// listeners, background tasks, queue totals, open routes, retained trace
+/// metadata, pending transactions, and metadata-store availability,
+/// captured at the local host wall clock. Counters and flags only; the
+/// snapshot carries no identity, address, path, selector, body, or
+/// credential material and never enumerates a whole population.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ObservabilitySnapshot {
+  captured_at: std::time::SystemTime,
+  counters: std::collections::BTreeMap<QualifiedTag, u64>,
+}
+
+impl ObservabilitySnapshot {
+  /// Well-known counter tag: live authenticated sessions.
+  pub const SESSIONS: &str = "relay.woooo.tech/status/sessions";
+  /// Well-known counter tag: live listeners.
+  pub const LISTENERS: &str = "relay.woooo.tech/status/listeners";
+  /// Well-known counter tag: live background tasks.
+  pub const BACKGROUND_TASKS: &str = "relay.woooo.tech/status/background-tasks";
+  /// Well-known counter tag: total queued outbound session frames.
+  pub const QUEUED_SESSION_MESSAGES: &str = "relay.woooo.tech/status/queued-session-messages";
+  /// Well-known counter tag: total queued outbound session bytes.
+  pub const QUEUED_SESSION_BYTES: &str = "relay.woooo.tech/status/queued-session-bytes";
+  /// Well-known counter tag: open outbound routes.
+  pub const OPEN_ROUTES: &str = "relay.woooo.tech/status/open-routes";
+  /// Well-known counter tag: retained trace metadata records.
+  pub const TRACE_RECORDS: &str = "relay.woooo.tech/status/trace-records";
+  /// Well-known counter tag: pending metadata transactions.
+  pub const PENDING_TRANSACTIONS: &str = "relay.woooo.tech/status/pending-transactions";
+  /// Well-known counter tag: metadata store availability (1 = available).
+  pub const METADATA_STORE_AVAILABLE: &str = "relay.woooo.tech/status/metadata-store-available";
+
+  /// The value of one well-known counter, if the snapshot carries it.
+  pub fn counter(&self, tag: &QualifiedTag) -> Option<u64> {
+    self.counters.get(tag).copied()
+  }
+
+  /// The local host wall-clock instant of the capture.
+  pub fn captured_at(&self) -> std::time::SystemTime {
+    self.captured_at
+  }
+
+  /// Builds the snapshot from the runtime collectors; every well-known
+  /// tag is present exactly once, in canonical order.
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn new(
+    captured_at: std::time::SystemTime, sessions: usize, listeners: usize, background_tasks: usize,
+    queued_session_messages: usize, queued_session_bytes: u64, open_routes: usize,
+    trace_records: usize, pending_transactions: usize, storage_available: bool,
+  ) -> Result<Self> {
+    let internal = || Error::internal("observability counter");
+    let counters: [(&str, u64); 9] = [
+      (
+        Self::SESSIONS,
+        u64::try_from(sessions).map_err(|_| internal())?,
+      ),
+      (
+        Self::LISTENERS,
+        u64::try_from(listeners).map_err(|_| internal())?,
+      ),
+      (
+        Self::BACKGROUND_TASKS,
+        u64::try_from(background_tasks).map_err(|_| internal())?,
+      ),
+      (
+        Self::QUEUED_SESSION_MESSAGES,
+        u64::try_from(queued_session_messages).map_err(|_| internal())?,
+      ),
+      (Self::QUEUED_SESSION_BYTES, queued_session_bytes),
+      (
+        Self::OPEN_ROUTES,
+        u64::try_from(open_routes).map_err(|_| internal())?,
+      ),
+      (
+        Self::TRACE_RECORDS,
+        u64::try_from(trace_records).map_err(|_| internal())?,
+      ),
+      (
+        Self::PENDING_TRANSACTIONS,
+        u64::try_from(pending_transactions).map_err(|_| internal())?,
+      ),
+      (Self::METADATA_STORE_AVAILABLE, u64::from(storage_available)),
+    ];
+    let mut map = std::collections::BTreeMap::new();
+    for (tag, value) in counters {
+      let parsed = QualifiedTag::parse(tag)?;
+      if map.insert(parsed, value).is_some() {
+        return Err(Error::internal("observability duplicate counter"));
+      }
+    }
+    Ok(Self {
+      captured_at,
+      counters: map,
+    })
   }
 }
 

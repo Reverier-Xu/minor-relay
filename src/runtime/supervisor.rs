@@ -455,6 +455,10 @@ async fn supervise(
           }
         }
       }
+      Control::Observability { reply } => {
+        let result = supervisor.observability_snapshot(&tasks).await;
+        let _ = reply.send(result);
+      }
         }
       }
       request = packets.recv() => {
@@ -1328,6 +1332,63 @@ impl Supervisor {
       .next
       .map(|key| crate::PageCursor::new(std::sync::Arc::from(key)));
     Ok(crate::SessionPage::new(paged.items, next))
+  }
+
+  /// The bounded observability snapshot (T-G10-05, SC-G10-P0-15):
+  /// session/listener/task counters, queue totals, route and trace
+  /// counters, the pending-transaction count, and metadata-store
+  /// availability, captured at the local host wall clock. Counters and
+  /// flags only; the snapshot never enumerates a whole population and
+  /// carries no identity, address, path, selector, body, or credential
+  /// material.
+  async fn observability_snapshot(
+    &mut self, tasks: &JoinSet<()>,
+  ) -> Result<crate::ObservabilitySnapshot> {
+    let Some(context) = self.dependencies.context.clone() else {
+      return Err(Error::not_ready("observability snapshot"));
+    };
+    let (sessions, queued_messages, queued_bytes) = {
+      let table = self
+        .dependencies
+        .sessions
+        .lock()
+        .map_err(Error::session_table)?;
+      let messages = table.values().map(|entry| entry.queued_messages()).sum();
+      let bytes = table.values().map(|entry| entry.queued_bytes()).sum();
+      (table.len(), messages, bytes)
+    };
+    let open_routes = {
+      let routes = self
+        .dependencies
+        .routes
+        .lock()
+        .map_err(Error::session_table)?;
+      routes.len()
+    };
+    let connection_tasks = self
+      .connection_tasks
+      .lock()
+      .map_err(Error::session_table)?
+      .len();
+    let background_tasks = tasks.len() + connection_tasks + usize::from(self.sync_driver.is_some());
+    let trace_records = self
+      .trace_records
+      .load(std::sync::atomic::Ordering::Relaxed);
+    let pending_transactions =
+      crate::storage::pending::pending_transaction_count(context.store()).await?;
+    let storage_available = !context.store().is_blocked()?;
+    crate::ObservabilitySnapshot::new(
+      std::time::SystemTime::now(),
+      sessions,
+      self.listeners.len(),
+      background_tasks,
+      queued_messages,
+      queued_bytes,
+      open_routes,
+      trace_records,
+      pending_transactions,
+      storage_available,
+    )
   }
 
   /// Pages the authenticated sessions as directed topology edges
