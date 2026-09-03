@@ -1,0 +1,176 @@
+name: evidence
+
+on:
+  schedule:
+    # Nightly evidence lane: fuzz cadence plus a bounded soak attempt.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      soak_duration_secs:
+        description: "Soak duration in seconds (weekly 8h = 28800, release 24h = 86400)"
+        required: false
+        default: "600"
+      soak_mode:
+        description: "Evidence lane to run: nightly, weekly, or release"
+        required: false
+        default: "nightly"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evidence-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz-${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - wire_decode
+          - persisted_decode
+          - selector
+          - admission
+          - feature_selection
+          - routing
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: install nightly rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly
+
+      - name: install cargo-fuzz
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
+        with:
+          tool: cargo-fuzz@0.13.2
+
+      - name: ordered corpus replay
+        run: cargo test --locked --all-features --lib fuzz_adapters
+
+      - name: live fuzz budget
+        working-directory: fuzz
+        run: |
+          mkdir -p "../target/fuzz-work/${{ matrix.target }}"
+          cargo +nightly fuzz run "${{ matrix.target }}" \
+            --target x86_64-unknown-linux-gnu \
+            "../target/fuzz-work/${{ matrix.target }}" "corpus/${{ matrix.target }}/" -- \
+            -max_total_time=1800 -timeout=10 -rss_limit_mb=4096 \
+            -print_final_stats=1 2>&1 | tee "../target/fuzz-${{ matrix.target }}.log"
+
+      - name: attestation
+        if: always()
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          lock_digest=$(sha256sum Cargo.lock | awk '{ print $1 }')
+          corpus_digest=$(find fuzz/corpus/${{ matrix.target }} -name '*.bin' -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum | awk '{ print $1 }')
+          log="target/fuzz-${{ matrix.target }}.log"
+          if grep -q "Done .* runs" "$log" && ! grep -qE "ERROR|libFuzzer: deadly" "$log"; then
+            result="pass"; uninterrupted="true"
+          else
+            result="fail"; uninterrupted="false"
+          fi
+          jq -n \
+            --arg schema "radiata.woooo.tech/schemas/test-attestation" \
+            --arg commit "$commit" \
+            --arg lock "$lock_digest" \
+            --arg run "${{ github.run_id }}" \
+            --arg attempt "${{ github.run_attempt }}" \
+            --arg job "fuzz-${{ matrix.target }}" \
+            --arg target "${{ matrix.target }}" \
+            --arg rust "$(rustc +nightly --version)" \
+            --arg fuzz "$(cargo +nightly fuzz --version)" \
+            --arg corpus "$corpus_digest" \
+            --arg result "$result" \
+            --argjson budget 1800 \
+            --argjson timeout 10 \
+            --argjson rss 4096 \
+            --argjson uninterrupted "$uninterrupted" \
+            '{schema: $schema, commit: $commit, lock_digest: $lock, provider_run_id: $run,
+              attempt: $attempt, job: $job, target: $target, toolchain: {rust: $rust, cargo_fuzz: $fuzz},
+              corpus_digest: $corpus, budget_seconds: $budget, input_timeout_seconds: $timeout,
+              rss_limit_mb: $rss, uninterrupted: $uninterrupted, result: $result}' \
+            > "target/attestation-fuzz-${{ matrix.target }}.json"
+          cat "target/attestation-fuzz-${{ matrix.target }}.json"
+
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540478e92f5e7f873de7e08c
+        with:
+          name: fuzz-evidence-${{ matrix.target }}
+          path: |
+            target/attestation-fuzz-${{ matrix.target }}.json
+            target/fuzz-${{ matrix.target }}.log
+          retention-days: 30
+
+  soak:
+    name: soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: install MSRV toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.98.0
+
+      - name: install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: bounded soak attempt
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          export RADIATA_SOAK_DURATION_SECS="${{ inputs.soak_duration_secs || 600 }}"
+          export RADIATA_SOAK_LEDGER="$PWD/target/soak-ledger.ndjson"
+          export RADIATA_SOAK_COMMIT="$commit"
+          cargo test --locked --all-features --test soak -- --ignored --exact soak_churn_then_baseline_return
+          jq -e '.schema == "radiata.woooo.tech/schemas/soak-attempt-v1"
+            and .result == "pass"
+            and (.duration_secs | . >= 600)' "$RADIATA_SOAK_LEDGER" > /dev/null
+
+      - name: attestation
+        if: always()
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          lock_digest=$(sha256sum Cargo.lock | awk '{ print $1 }')
+          jq -n \
+            --arg schema "radiata.woooo.tech/schemas/test-attestation" \
+            --arg commit "$commit" \
+            --arg lock "$lock_digest" \
+            --arg run "${{ github.run_id }}" \
+            --arg attempt "${{ github.run_attempt }}" \
+            --arg job "soak" \
+            --arg target "soak_churn_then_baseline_return" \
+            --arg rust "$(rustc +1.98.0 --version)" \
+            --arg result "$(jq -rs 'map(.result) | if all(. == "pass") then "pass" else "fail" end' target/soak-ledger.ndjson)" \
+            --argjson duration "${{ inputs.soak_duration_secs || 600 }}" \
+            '{schema: $schema, commit: $commit, lock_digest: $lock, provider_run_id: $run,
+              attempt: $attempt, job: $job, target: $target, toolchain: {rust: $rust},
+              budget_seconds: $duration, result: $result}' \
+            > target/attestation-soak.json
+          cat target/attestation-soak.json
+
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540478e92f5e7f873de7e08c
+        with:
+          name: soak-evidence
+          path: |
+            target/attestation-soak.json
+            target/soak-ledger.ndjson
+          retention-days: 30

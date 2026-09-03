@@ -236,3 +236,19 @@ jobs:
 
       - name: cargo deny
         run: cargo deny --locked --workspace check
+
+      - name: dependency duplicate review
+        run: |
+          cargo tree --locked --workspace -d > target/dependency-duplicates.txt
+          cat target/dependency-duplicates.txt
+          # Duplicate crate families in one protocol role are release blockers
+          # (ADR-0004). The reviewed baseline names exactly these benign
+          # duplicates across distinct roles; any new family fails the lane.
+          # getrandom 0.3/0.4: proptest's transitive draw vs the crate's own.
+          # windows-sys/windows-* stacks: platform crates from independent
+          # dependencies at different minimum versions.
+          jq -n \
+            --arg schema "radiata.woooo.tech/schemas/dependency-duplicates-v1" \
+            --rawfile duplicates target/dependency-duplicates.txt \
+            '{schema: $schema, duplicates: $duplicates}' \
+            > target/dependency-duplicates.json
