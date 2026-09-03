@@ -8,7 +8,7 @@
 //! material and proves no credential, key, body, path, address, selector,
 //! or hostile string enters the emitted log stream.
 
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 use std::sync::Mutex;
 use std::{sync::Arc, time::Duration};
 
@@ -17,7 +17,7 @@ use radiata::{
   PacketMetadata, PacketPolicy, PacketTarget, PageSessions, PageSpec, ProtocolTag, QualifiedTag,
   Shutdown, extension::KeyProvider,
 };
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 use radiata::{
   DisconnectPeer, PageResources, ResourceLabels, ResourceName, ResourceUri, ResourceWrite,
   RotateJoinCredential,
@@ -28,13 +28,13 @@ mod common;
 use common::{MemoryStorageFactory, ScriptedKeys};
 
 /// Captures every emitted log line for the redaction scan.
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 #[derive(Clone, Default)]
 struct LogCapture {
   buffer: Arc<Mutex<Vec<u8>>>,
 }
 
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 impl std::io::Write for LogCapture {
   fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
     self.buffer.lock().unwrap().extend_from_slice(bytes);
@@ -46,7 +46,7 @@ impl std::io::Write for LogCapture {
   }
 }
 
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
   type Writer = LogCapture;
 
@@ -239,8 +239,9 @@ impl std::fmt::Debug for EmptyBody {
 /// stream of a full node workflow.
 ///
 /// The path marker rides the JSON adapter (the only backend that mounts
-/// a real filesystem path), so the lane requires the `json` feature.
-#[cfg(all(test, feature = "json"))]
+/// a real filesystem path), so the lane requires the `json` feature and
+/// the unix directory barrier the full-node open demands.
+#[cfg(all(test, feature = "json", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn redaction_lane_rejects_every_forbidden_class() {
   let capture = LogCapture::default();
@@ -406,19 +407,19 @@ async fn redaction_lane_rejects_every_forbidden_class() {
   );
 }
 
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 struct MarkerBody {
   marker: Arc<[u8]>,
 }
 
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 impl radiata::PacketBody for MarkerBody {
   fn next_chunk<'a>(&'a mut self) -> radiata::BoxFuture<'a, radiata::Result<Option<Arc<[u8]>>>> {
     Box::pin(async move { Ok(Some(self.marker.clone())) })
   }
 }
 
-#[cfg(feature = "json")]
+#[cfg(all(test, feature = "json", unix))]
 impl std::fmt::Debug for MarkerBody {
   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     formatter.write_str("MarkerBody")
