@@ -242,7 +242,7 @@ pub(crate) async fn ensure_local_descriptor(
     // for this exact node and key.
     let installed = crate::membership::store::read_descriptor_ctx(store, &node)
       .await?
-      .map(|current| current.revision() >= &revision)
+      .map(|current| current.revision() >= revision)
       .unwrap_or(false);
     if !installed {
       return Err(error);
