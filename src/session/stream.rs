@@ -256,6 +256,11 @@ struct QueueState {
   /// Signalled by [`BoundedReceiver::recv`] after every reservation
   /// release, so waiting relays wake on progress instead of spinning.
   released: tokio::sync::Notify,
+  /// Soak diagnostic (T-G10-06): admissions granted and removals (drains
+  /// plus error-path releases). reserved - removed = frames sitting in
+  /// the channel.
+  audit_reserved: AtomicUsize,
+  audit_removed: AtomicUsize,
 }
 
 /// The admission overhead of one queued frame beyond its body bytes.
@@ -286,6 +291,17 @@ impl BoundedSender {
   /// The current queued frame bytes (runtime status view, T-G10-05).
   pub(crate) fn queued_bytes(&self) -> u64 {
     u64::try_from(self.state.bytes.load(Ordering::Relaxed)).unwrap_or(u64::MAX)
+  }
+
+  /// The reservation audit delta: reserved minus removed. Zero means
+  /// every admission was matched by a drain or release; positive means
+  /// frames are sitting in the channel (soak diagnostic).
+  pub(crate) fn audit_delta(&self) -> usize {
+    self
+      .state
+      .audit_reserved
+      .load(Ordering::Relaxed)
+      .saturating_sub(self.state.audit_removed.load(Ordering::Relaxed))
   }
 
   /// Best-effort admission-status relay (single construction site): the
@@ -344,6 +360,7 @@ impl BoundedSender {
         } else {
           self.state.count.fetch_add(1, Ordering::Relaxed);
           self.state.bytes.fetch_add(bytes, Ordering::Relaxed);
+          self.state.audit_reserved.fetch_add(1, Ordering::Relaxed);
           Ok(Some(bytes))
         }
       }
@@ -358,6 +375,7 @@ impl BoundedSender {
   fn release(&self, bytes: usize) {
     self.state.count.fetch_sub(1, Ordering::Relaxed);
     self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
+    self.state.audit_removed.fetch_add(1, Ordering::Relaxed);
   }
 
   /// The forwarding variant: waits for downstream capacity instead of
@@ -420,7 +438,7 @@ impl BoundedReceiver {
     let bytes = FRAME_OVERHEAD.saturating_add(frame.body.len());
     self.state.count.fetch_sub(1, Ordering::Relaxed);
     self.state.bytes.fetch_sub(bytes, Ordering::Relaxed);
-    // One release frees exactly one waiting relay's slot.
+    self.state.audit_removed.fetch_add(1, Ordering::Relaxed);
     self.state.released.notify_one();
     Some(frame)
   }
@@ -469,6 +487,11 @@ impl SessionEntry {
   /// The queued outbound frame bytes (runtime status view, T-G10-05).
   pub(crate) fn queued_bytes(&self) -> u64 {
     self.frames.queued_bytes()
+  }
+
+  /// Frames admitted into the channel but not drained (soak diagnostic).
+  pub(crate) fn queue_audit_delta(&self) -> usize {
+    self.frames.audit_delta()
   }
 }
 

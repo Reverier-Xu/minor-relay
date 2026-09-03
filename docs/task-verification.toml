@@ -853,14 +853,14 @@ timeout_seconds = 1800
 [[task]]
 id = "T-G10-06"
 verification_id = "VERIFY-G10-06"
-state = "planned"
+state = "ready"
 include_quality = true
 
 [[verification]]
 id = "VERIFY-G10-06"
 owner_task = "T-G10-06"
-state = "planned"
-argv = []
+state = "ready"
+argv = ["scripts/verify-g10-06-soak.sh"]
 timeout_seconds = 1800
 
 [[task]]

@@ -398,23 +398,38 @@ pub(crate) async fn sync_tick(
   let protocol = ProtocolTag::parse(MEMBERSHIP_SYNC_PROTOCOL)?;
   let peers = crate::sync_common::alive_peers(sessions)?;
   let peers_fp = crate::sync_common::peers_fingerprint(&peers);
+  // A paged anti-entropy round advances the cursor only while it is
+  // sending; a steady state with an unchanged first page never turns the
+  // cursor, so the page content (and its fingerprint) cannot change
+  // between ticks and the quiet state costs no sends at all (T-G10-06
+  // soak finding: an unconditional cursor turn re-sent every page every
+  // tick, keeping one frame in flight permanently).
+  let starting_round = cursor.page.is_none();
   let page = page_sync::emit_page_ctx(
     store,
     cursor.page.as_deref(),
     crate::membership::page::DEFAULT_PAGE_LIMIT,
   )
   .await?;
-  cursor.page = page.cursor().map(|value| value.to_vec());
   let page_payload = SyncPayload::Page(ByteVec::from(page.encode()?));
   let page_bytes = page_payload.encode()?;
-  // A page is sent when its content or the alive-peer set changed, and
-  // retried on a slow cadence otherwise (lost-delivery healing,
-  // SC-G05-P0-07); an unchanged steady state costs no sends at all.
+  // A round starts when the first page's content or the alive-peer set
+  // changed, and is retried on a slow cadence otherwise (lost-delivery
+  // healing, SC-G05-P0-07). Mid-round pages always send: they are the
+  // continuation of an already-started round.
   let page_fp = page.fingerprint();
-  let page_due = page_fp != cursor.page_fingerprint
-    || peers_fp != cursor.peers_fingerprint
-    || cursor.ticks_since_page_send >= PAGE_RESEND_TICKS;
-  cursor.page_fingerprint = page_fp;
+  let page_due = if starting_round {
+    let due = page_fp != cursor.page_fingerprint
+      || peers_fp != cursor.peers_fingerprint
+      || cursor.ticks_since_page_send >= PAGE_RESEND_TICKS;
+    cursor.page_fingerprint = page_fp;
+    due
+  } else {
+    true
+  };
+  if page_due || !starting_round {
+    cursor.page = page.cursor().map(|value| value.to_vec());
+  }
   cursor.peers_fingerprint = peers_fp;
   // A snapshot is sent when its revision advanced, and retried on a slow
   // cadence even when unchanged: re-sending the same revision to every
@@ -439,7 +454,7 @@ pub(crate) async fn sync_tick(
     Some(payload) => Some(payload.encode()?),
     None => None,
   };
-  if page_due {
+  if page_due || !starting_round {
     cursor.ticks_since_page_send = 0;
     for peer in &peers {
       if let Some(bytes) = &snapshot_bytes {

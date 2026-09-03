@@ -157,23 +157,36 @@ pub(crate) async fn resource_sync_tick(
   }
   let protocol = ProtocolTag::parse(RESOURCE_SYNC_PROTOCOL)?;
   let peers_fp = crate::sync_common::peers_fingerprint(&peers);
+  // A paged anti-entropy round advances the cursor only while it is
+  // sending; a steady state with an unchanged first page never turns the
+  // cursor, so the page content cannot change between ticks and the
+  // quiet state costs no sends at all (T-G10-06 soak finding: an
+  // unconditional cursor turn re-sent every page every tick).
+  let starting_round = cursor.page.is_none();
   let page = page_sync::emit_page_ctx(
     store,
     cursor.page.as_deref(),
     super::page::DEFAULT_RESOURCE_PAGE_LIMIT,
   )
   .await?;
-  cursor.page = page.cursor().map(|value| value.to_vec());
   let page_fp = page.fingerprint();
-  // A page is sent when its content or the alive-peer set changed, and
-  // retried on a slow cadence otherwise; an unchanged steady state costs
-  // no sends at all (a second completed pass transfers no changes).
-  let due = page_fp != cursor.page_fingerprint
-    || peers_fp != cursor.peers_fingerprint
-    || cursor.ticks_since_page_send >= RESOURCE_PAGE_RESEND_TICKS;
-  cursor.page_fingerprint = page_fp;
+  // A round starts when the first page's content or the alive-peer set
+  // changed, and is retried on a slow cadence otherwise; mid-round pages
+  // always send as the continuation of an already-started round.
+  let due = if starting_round {
+    let due = page_fp != cursor.page_fingerprint
+      || peers_fp != cursor.peers_fingerprint
+      || cursor.ticks_since_page_send >= RESOURCE_PAGE_RESEND_TICKS;
+    cursor.page_fingerprint = page_fp;
+    due
+  } else {
+    true
+  };
+  if due || !starting_round {
+    cursor.page = page.cursor().map(|value| value.to_vec());
+  }
   cursor.peers_fingerprint = peers_fp;
-  if !due {
+  if !due && starting_round {
     cursor.ticks_since_page_send = cursor.ticks_since_page_send.saturating_add(1);
     return Ok(());
   }

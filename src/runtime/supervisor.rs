@@ -1347,7 +1347,7 @@ impl Supervisor {
     let Some(context) = self.dependencies.context.clone() else {
       return Err(Error::not_ready("observability snapshot"));
     };
-    let (sessions, queued_messages, queued_bytes) = {
+    let (sessions, queued_messages, queued_bytes, audit_delta) = {
       let table = self
         .dependencies
         .sessions
@@ -1355,7 +1355,8 @@ impl Supervisor {
         .map_err(Error::session_table)?;
       let messages = table.values().map(|entry| entry.queued_messages()).sum();
       let bytes = table.values().map(|entry| entry.queued_bytes()).sum();
-      (table.len(), messages, bytes)
+      let audit: usize = table.values().map(|entry| entry.queue_audit_delta()).sum();
+      (table.len(), messages, bytes, audit)
     };
     let open_routes = {
       let routes = self
@@ -1377,6 +1378,14 @@ impl Supervisor {
     let pending_transactions =
       crate::storage::pending::pending_transaction_count(context.store()).await?;
     let storage_available = !context.store().is_blocked()?;
+    if queued_messages > 0 || audit_delta != queued_messages {
+      tracing::warn!(
+        queued_messages,
+        queued_bytes,
+        audit_reserved_minus_removed = audit_delta,
+        "runtime status: queued session frames"
+      );
+    }
     crate::ObservabilitySnapshot::new(
       std::time::SystemTime::now(),
       sessions,
