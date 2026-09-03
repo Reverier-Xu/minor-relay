@@ -201,14 +201,10 @@ async fn secure_join_json_backend_round_trips_the_same_join() {
     .await
     .unwrap();
 
-  let admission = joiner
-    .handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  // The json restart lane contends with the parallel powerset suite, so
+  // the join uses the same bounded-retry helper as the memory lanes.
+  let secret = issued.credential().expose_secret().to_owned();
+  let admission = join_with_retry(&joiner.handle, listener.endpoint(), &secret).await;
   assert_eq!(admission.cluster_id(), cluster.cluster_id());
 
   // Both sides persist through reopen: shutdown and restart the joiner on

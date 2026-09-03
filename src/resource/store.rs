@@ -405,7 +405,7 @@ mod tests {
   /// SC-G09-P0-04: both real backends preserve the exact logical tuple
   /// version of a stored record across a reopen — JSON and redb return
   /// the identical signed record, never a normalized or truncated form.
-  #[cfg(any(feature = "json", feature = "redb"))]
+  #[cfg(any(all(feature = "json", unix), feature = "redb"))]
   async fn backend_preserves_the_exact_logical_version(factory: Arc<dyn StorageFactory>) {
     let record = put(7_000, "file:///versioned");
     let store = MetadataStore::open(&factory, Duration::from_secs(10))

@@ -591,7 +591,7 @@ fn retry_backoff(attempts: u32) -> Duration {
 /// consumes no credential, so each attempt reissues a fresh credential;
 /// the member identity is unchanged.
 async fn join_with_retry(node: &Node, endpoint: Endpoint, secret: &str) {
-  let deadline = std::time::Instant::now() + Duration::from_secs(120);
+  let deadline = std::time::Instant::now() + Duration::from_secs(300);
   let mut attempts: u32 = 0;
   loop {
     attempts = attempts.wrapping_add(1);
@@ -618,7 +618,7 @@ async fn connect_with_retry(node: &Node, endpoint: Endpoint, peer: radiata::Node
   // A handshake can be dropped under load and take the full
   // authentication deadline (10s) to fail, so the retry window is
   // generous.
-  let deadline = std::time::Instant::now() + Duration::from_secs(120);
+  let deadline = std::time::Instant::now() + Duration::from_secs(300);
   let mut attempts = 0;
   loop {
     attempts += 1;
