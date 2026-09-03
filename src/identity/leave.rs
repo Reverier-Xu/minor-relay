@@ -779,6 +779,7 @@ mod crash {
   /// create from 5000 and parents from 6000, and every provider
   /// pre-registers 5000..6008, so a reopen resolves any persisted handle
   /// without ever reusing one.
+  #[cfg(all(test, unix, any(feature = "json", feature = "redb")))]
   fn keyed_providers() -> (Arc<ScriptedKeys>, Arc<ScriptedKeys>) {
     let child_keys = ScriptedKeys::full_at(5_000);
     let parent_keys = ScriptedKeys::full_at(6_000);
@@ -789,6 +790,7 @@ mod crash {
     (child_keys, parent_keys)
   }
 
+  #[cfg(all(test, unix, any(feature = "json", feature = "redb")))]
   async fn open(
     factory: &Arc<dyn StorageFactory>,
   ) -> (
@@ -802,6 +804,7 @@ mod crash {
   /// Opens with the entropy sequence started far past every child draw:
   /// a resume must never regenerate a transaction id the crashed child
   /// already used (the store's used-id markers would fail it closed).
+  #[cfg(all(test, unix, any(feature = "json", feature = "redb")))]
   async fn open_with_entropy_offset(
     factory: &Arc<dyn StorageFactory>, entropy_offset: u128,
   ) -> (
