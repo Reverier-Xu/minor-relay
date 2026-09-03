@@ -224,9 +224,30 @@ pub(crate) async fn ensure_local_descriptor(
   let revision = existing
     .as_ref()
     .map_or(1, |current| current.revision().saturating_add(1));
-  let descriptor =
-    crate::membership::NodeDescriptorV1::new(node, public_key, endpoints, revision, false, 1);
-  crate::membership::store::store_descriptor_ctx(store, entropy.as_ref(), &descriptor).await?;
+  let descriptor = crate::membership::NodeDescriptorV1::new(
+    node.clone(),
+    public_key,
+    endpoints,
+    revision,
+    false,
+    1,
+  );
+  if let Err(error) =
+    crate::membership::store::store_descriptor_ctx(store, entropy.as_ref(), &descriptor).await
+  {
+    // A concurrent caller may have installed the same descriptor between
+    // the read and the commit (every public operation ensures the local
+    // descriptor first). The ensure is idempotent: the conflict is
+    // acceptable only when the descriptor now exists at revision >= ours
+    // for this exact node and key.
+    let installed = crate::membership::store::read_descriptor_ctx(store, &node)
+      .await?
+      .map(|current| current.revision() >= &revision)
+      .unwrap_or(false);
+    if !installed {
+      return Err(error);
+    }
+  }
   Ok(())
 }
 

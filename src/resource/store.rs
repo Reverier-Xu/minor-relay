@@ -434,7 +434,9 @@ mod tests {
     assert_eq!(version.digest(), record.digest());
   }
 
-  #[cfg(feature = "json")]
+  // Windows JSON cannot satisfy the metadata open requirements (no durable
+  // directory barrier); the JSON arm is unix-only per ADR-0004.
+  #[cfg(all(feature = "json", unix))]
   #[tokio::test]
   async fn json_backend_preserves_the_exact_logical_version() {
     let directory = tempfile::tempdir().unwrap();
