@@ -1646,100 +1646,115 @@ impl Supervisor {
     // The writer's descriptor anchors the removal's signature for the
     // same propagation reason as a put.
     self.ensure_self_descriptor().await?;
-    let store = context.store();
-    let stored = crate::resource::store::read_record_ctx(store, &name)
-      .await?
-      .ok_or_else(|| Error::not_found("resource"))?;
-    if !expected.matches_record(&stored) {
-      // A stale observation never becomes a newer wall-clock winner.
-      return Err(Error::conflict("resource version"));
-    }
-    if stored.removed() {
-      // The exact removal already won: idempotent, no new transition.
-      return Ok(crate::ResourceMutationView::new(
-        crate::resource::select::resource_view(&stored),
-        true,
-      ));
-    }
     let cluster = crate::identity::genesis::local_cluster(&context)
       .await?
       .ok_or_else(|| Error::not_ready("local cluster"))?
       .cluster()
       .clone();
     let writer = context.identity().node().clone();
-    let timestamp_millis = crate::time::now_millis();
-    // A synced record may legally carry the maximum rank; a saturated
-    // register cannot host a further removal and fails closed instead of
-    // wrapping the rank order.
-    let removal_rank = stored
-      .removal_rank()
-      .checked_add(1)
-      .ok_or_else(|| Error::conflict("resource removal rank"))?;
-    let body = crate::resource::ResourceRecordV1::encode_signed_body(
-      &cluster,
-      &name,
-      stored.resource_type(),
-      stored.resource_uri(),
-      stored.labels(),
-      timestamp_millis,
-      &writer,
-      removal_rank,
-      true,
-    )?;
-    let signature = self
-      .dependencies
-      .keys
-      .sign(
-        context.identity().handle(),
-        &crate::identity::signature::signature_message(
-          crate::resource::RESOURCE_RECORD_V1_DOMAIN,
-          &body,
-        ),
-      )
-      .await?;
-    let removal = crate::resource::ResourceRecordV1::seal(
-      cluster,
-      name.clone(),
-      stored.resource_type().clone(),
-      stored.resource_uri().clone(),
-      stored.labels().clone(),
-      timestamp_millis,
-      writer,
-      removal_rank,
-      true,
-      signature,
-    )?;
-    if !removal.wins_over(&stored) {
-      // A rolled-back host clock cannot pose as a newer winner: the
-      // removal is refused and the live record stays.
-      return Err(Error::conflict("resource removal clock"));
-    }
-    match crate::resource::store::commit_removal_ctx(
-      store,
-      self.dependencies.entropy.as_ref(),
-      &removal,
-      &stored,
-    )
-    .await?
-    {
-      crate::resource::store::ResourceCommitOutcome::Installed(_) => {
-        self
-          .dependencies
-          .events
-          .emit(crate::ResourceChanged::new(name));
-        Ok(crate::ResourceMutationView::new(
-          crate::resource::select::resource_view(&removal),
+    // The snapshot-exact CAS can lose a race against a concurrent internal
+    // committer, so the observation, signature, and commit re-run within
+    // a bounded retry; the caller's `expected` stays the only authority
+    // on which register state the removal may replace.
+    let mut attempts = 0_u32;
+    loop {
+      attempts += 1;
+      let store = context.store();
+      let stored = crate::resource::store::read_record_ctx(store, &name)
+        .await?
+        .ok_or_else(|| Error::not_found("resource"))?;
+      if !expected.matches_record(&stored) {
+        // A stale observation never becomes a newer wall-clock winner.
+        return Err(Error::conflict("resource version"));
+      }
+      if stored.removed() {
+        // The exact removal already won: idempotent, no new transition.
+        return Ok(crate::ResourceMutationView::new(
+          crate::resource::select::resource_view(&stored),
           true,
-        ))
+        ));
       }
-      // The register moved between the observation and the commit.
-      crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
-        Err(Error::conflict("resource version"))
+      let timestamp_millis = crate::time::now_millis();
+      // A synced record may legally carry the maximum rank; a saturated
+      // register cannot host a further removal and fails closed instead of
+      // wrapping the rank order.
+      let removal_rank = stored
+        .removal_rank()
+        .checked_add(1)
+        .ok_or_else(|| Error::conflict("resource removal rank"))?;
+      let body = crate::resource::ResourceRecordV1::encode_signed_body(
+        &cluster,
+        &name,
+        stored.resource_type(),
+        stored.resource_uri(),
+        stored.labels(),
+        timestamp_millis,
+        &writer,
+        removal_rank,
+        true,
+      )?;
+      let signature = self
+        .dependencies
+        .keys
+        .sign(
+          context.identity().handle(),
+          &crate::identity::signature::signature_message(
+            crate::resource::RESOURCE_RECORD_V1_DOMAIN,
+            &body,
+          ),
+        )
+        .await?;
+      let removal = crate::resource::ResourceRecordV1::seal(
+        cluster.clone(),
+        name.clone(),
+        stored.resource_type().clone(),
+        stored.resource_uri().clone(),
+        stored.labels().clone(),
+        timestamp_millis,
+        writer.clone(),
+        removal_rank,
+        true,
+        signature,
+      )?;
+      if !removal.wins_over(&stored) {
+        // A rolled-back host clock cannot pose as a newer winner: the
+        // removal is refused and the live record stays.
+        return Err(Error::conflict("resource removal clock"));
       }
-      crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => Err(Error::provider(
-        crate::ProviderErrorKind::CommitUnknown,
-        crate::ProviderErrorContext::StorageCommit,
-      )),
+      let outcome = match crate::resource::store::commit_removal_ctx(
+        store,
+        self.dependencies.entropy.as_ref(),
+        &removal,
+        &stored,
+      )
+      .await
+      {
+        Err(error) if error.kind() == crate::ErrorKind::Conflict && attempts < 3 => {
+          tracing::debug!(attempts, "resource removal lost the commit race; retrying");
+          tokio::time::sleep(std::time::Duration::from_millis(10 * u64::from(attempts))).await;
+          continue;
+        }
+        result => result?,
+      };
+      return Ok(match outcome {
+        crate::resource::store::ResourceCommitOutcome::Installed(_) => {
+          self
+            .dependencies
+            .events
+            .emit(crate::ResourceChanged::new(name));
+          crate::ResourceMutationView::new(crate::resource::select::resource_view(&removal), true)
+        }
+        // The register moved between the observation and the commit.
+        crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
+          return Err(Error::conflict("resource version"));
+        }
+        crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => {
+          return Err(Error::provider(
+            crate::ProviderErrorKind::CommitUnknown,
+            crate::ProviderErrorContext::StorageCommit,
+          ));
+        }
+      });
     }
   }
 

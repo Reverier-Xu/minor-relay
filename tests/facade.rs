@@ -541,7 +541,9 @@ async fn g9_facade_core_only_operations() {
 
   // Wait until the label converges to the issuer's descriptor store: the
   // selector resolves over the issuer's authoritative descriptors.
-  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  // Functional convergence wait: loaded runners converge slower than
+  // the sample window, and this is a setup phase, not an SLO sample.
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
   loop {
     let members = issuer
       .handle
