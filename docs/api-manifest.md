@@ -97,9 +97,7 @@ pub enum ProviderErrorContext {
     TransportClose,
     Discovery,
     PacketConsumer,
-    NeighborPolicy,
     LoadBalancingPolicy,
-    RoutingPolicy,
 }
 
 impl Error {
@@ -251,9 +249,8 @@ impl ExtensionRegistry {
     pub fn new() -> Self;
     pub fn register_feature(&mut self, value: FeatureDefinition) -> Result<&mut Self>;
     pub fn register_protocol(&mut self, value: ProtocolDefinition, consumer: std::sync::Arc<dyn PacketConsumer>) -> Result<&mut Self>;
-    pub fn register_neighbor_policy(&mut self, tag: QualifiedTag, value: std::sync::Arc<dyn NeighborPolicy>) -> Result<&mut Self>;
     pub fn register_load_balancer(&mut self, tag: QualifiedTag, value: std::sync::Arc<dyn LoadBalancingPolicy>) -> Result<&mut Self>;
-    pub fn register_routing_policy(&mut self, tag: QualifiedTag, value: std::sync::Arc<dyn RoutingPolicy>) -> Result<&mut Self>;
+    pub fn register_next_hop(&mut self, tag: QualifiedTag, value: std::sync::Arc<dyn RouteNextHop>) -> Result<&mut Self>;
 }
 
 pub struct NodeBuilder { /* private */ }
@@ -1018,12 +1015,6 @@ pub trait PacketConsumer: std::fmt::Debug + Send + Sync + 'static {
     fn accept<'a>(&'a self, packet: IncomingPacket) -> BoxFuture<'a, Result<()>>;
 }
 
-pub struct NeighborPlan { /* private bounded selected peers */ }
-impl NeighborPlan {
-    pub fn new(peers: Vec<NodeId>) -> Result<Self>;
-    pub fn peers(&self) -> &[NodeId];
-}
-
 pub struct RouteContext { /* private current route observation */ }
 impl RouteContext {
     pub fn trace_id(&self) -> &TraceId;
@@ -1033,31 +1024,35 @@ impl RouteContext {
     pub fn visited(&self) -> &[NodeId];
 }
 
-pub trait PopulationReader: private::Sealed + std::fmt::Debug + Send + Sync + 'static {
-    fn next_members<'a>(&'a self, cursor: Option<PageCursor>, limit: usize) -> BoxFuture<'a, Result<MemberPage>>;
-    fn next_topology<'a>(&'a self, cursor: Option<PageCursor>, limit: usize) -> BoxFuture<'a, Result<TopologyPage>>;
+pub struct NextHopView<'a> { /* private sealed per-hop decision inputs */ }
+impl NextHopView<'_> {
+    pub fn destination(&self) -> &NodeId;
+    pub fn local(&self) -> &NodeId;
+    pub fn peers(&self) -> &[NodeId];
 }
+pub trait RouteNextHop: std::fmt::Debug + Send + Sync + 'static {
+    fn next_hop<'a>(&'a self, view: NextHopView<'a>) -> BoxFuture<'a, Result<NodeId>>;
+}
+
 pub trait CandidateNodeReader: private::Sealed + std::fmt::Debug + Send + Sync + 'static {
     fn next_matching_nodes<'a>(
         &'a self,
         selector: &'a Selector,
-        cursor: Option<PageCursor>,
+        cursor: Option<&PageCursor>,
         limit: usize,
     ) -> BoxFuture<'a, Result<MemberPage>>;
 }
 
-pub trait NeighborPolicy: std::fmt::Debug + Send + Sync + 'static {
-    fn choose<'a>(&'a self, population: &'a dyn PopulationReader) -> BoxFuture<'a, Result<NeighborPlan>>;
-}
 pub trait LoadBalancingPolicy: std::fmt::Debug + Send + Sync + 'static {
     fn select<'a>(&'a self, selector: &'a Selector, candidates: &'a dyn CandidateNodeReader) -> BoxFuture<'a, Result<NodeId>>;
 }
 ```
 
-`PopulationReader` and `CandidateNodeReader` are sealed, core-implemented incremental views passed to
-open policy traits; external policies consume them but cannot substitute an unvalidated population.
+`CandidateNodeReader` is a sealed, core-implemented incremental view passed to the open
+load-balancing policy; external policies consume it but cannot substitute an unvalidated population.
 Policy inputs use caller-selected finite pages. Core validates selected nodes, active edges, loop/hop
-constraints, and authenticated feature compatibility.
+constraints, and authenticated feature compatibility. A `RouteNextHop` returning a `NodeId` outside
+`NextHopView::peers` fails closed at the route boundary.
 
 ## Adapter Constructors
 
