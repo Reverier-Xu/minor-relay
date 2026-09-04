@@ -997,8 +997,18 @@ async fn every_typed_facade_signature_drives_a_real_cluster() {
     .await
     .unwrap();
 
-  // Resource removal with the exact observed version.
-  let expected = one_resource.unwrap().version().clone();
+  // Resource removal with the exact observed version: re-observe
+  // immediately before the removal so the precondition is never stale.
+  let expected = issuer
+    .handle
+    .query(GetResource::new(
+      ResourceName::parse("radiata.woooo.tech/resources/pub-api-001").unwrap(),
+    ))
+    .await
+    .unwrap()
+    .unwrap()
+    .version()
+    .clone();
   let removal: ResourceMutationView = issuer
     .handle
     .command(RemoveResource::new(
