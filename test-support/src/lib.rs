@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+pub mod ledger;
+
 use sha2::{Digest as ShaDigest, Sha256};
 
 pub const MAX_ARTIFACT_BYTES: usize = 1_048_576;
