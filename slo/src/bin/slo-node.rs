@@ -5,10 +5,12 @@
 //! private modules, storage internals, or test-only features.
 //!
 //! Stdin protocol (no secret ever rides the environment or argv):
-//! - creator: `ready` line first, then answers `rotate` with
-//!   `credential <secret>` lines, and shuts down on `shutdown` or EOF;
-//! - member: expects `join <secret>` as the first line, answers `ready`,
-//!   and shuts down on `shutdown` or EOF.
+//! - creator: prints `credential <secret>` (initial rotation) then
+//!   `ready <node-id> <endpoint>`, then answers commands until `shutdown`
+//!   or EOF: `rotate`, `myrevision`, `workload ...`, `members`.
+//! - member: expects `join <secret>` as the first line, prints
+//!   `ready <node-id> <endpoint>`, then answers `setzone <value>` and
+//!   `id` commands until `shutdown` or EOF.
 
 use std::{
   io::{BufRead, Write},
@@ -17,18 +19,31 @@ use std::{
 };
 
 use radiata::{
-  adapters::redb_store, CreateCluster, Endpoint, GetLocalNode, JoinCluster, Listen, NodeBuilder,
-  NodeConfig, PageMembers, PageSpec, RotateJoinCredential,
+  CreateCluster, Endpoint, GetLocalNode, JoinCluster, Listen, NodeBuilder, NodeConfig, PageMembers,
+  PageSpec, RotateJoinCredential, adapters::redb_store,
 };
 
-use radiata_slo::common;
+#[path = "../common_impl.rs"]
+mod common;
+#[path = "../workload.rs"]
+mod workload;
+
+/// Counts delivered workload packets (the consumer every node registers).
+#[derive(Debug, Default)]
+struct EchoConsumer;
+
+impl radiata::PacketConsumer for EchoConsumer {
+  fn accept<'a>(
+    &'a self, mut packet: radiata::IncomingPacket,
+  ) -> radiata::BoxFuture<'a, radiata::Result<()>> {
+    Box::pin(async move {
+      while packet.body().next_chunk().await?.is_some() {}
+      Ok(())
+    })
+  }
+}
 
 fn main() -> ExitCode {
-  if std::env::var("RADIATA_SLO_LOG").is_ok() {
-    tracing_subscriber::fmt()
-      .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=debug"))
-      .init();
-  }
   let runtime = match tokio::runtime::Builder::new_multi_thread()
     .worker_threads(2)
     .enable_all()
@@ -52,7 +67,8 @@ fn main() -> ExitCode {
 async fn run() -> Result<(), String> {
   let role = std::env::var(common::ENV_ROLE).map_err(|_| "role unset".to_owned())?;
   let directory = std::env::var(common::ENV_DIR).map_err(|_| "dir unset".to_owned())?;
-  let endpoint_text = std::env::var(common::ENV_ENDPOINT).map_err(|_| "endpoint unset".to_owned())?;
+  let endpoint_text =
+    std::env::var(common::ENV_ENDPOINT).map_err(|_| "endpoint unset".to_owned())?;
   let endpoint = Endpoint::parse(&endpoint_text).map_err(|error| error.to_string())?;
 
   std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
@@ -62,116 +78,378 @@ async fn run() -> Result<(), String> {
   let config = NodeConfig::new()
     .with_anti_entropy_interval(Duration::from_millis(250))
     .map_err(|error| error.to_string())?;
+  // The workload protocol rides the core session feature with an echo
+  // consumer owned by the helper; every node registers the same surface
+  // so packets deliver at any member.
+  let mut extensions = radiata::ExtensionRegistry::new();
+  let protocol_tag = radiata::ProtocolTag::parse(workload::WORKLOAD_PROTOCOL)
+    .map_err(|error| error.to_string())?;
+  let feature_tag = radiata::FeatureTag::parse(workload::WORKLOAD_FEATURE)
+    .map_err(|error| error.to_string())?;
+  extensions
+    .register_protocol(
+      radiata::ProtocolDefinition::new(protocol_tag, feature_tag),
+      std::sync::Arc::new(EchoConsumer),
+    )
+    .map_err(|error| error.to_string())?;
+  let balancer_tag = radiata::QualifiedTag::parse(workload::WORKLOAD_BALANCER)
+    .map_err(|error| error.to_string())?;
+  extensions
+    .register_load_balancer(balancer_tag, std::sync::Arc::new(workload::FirstMatch))
+    .map_err(|error| error.to_string())?;
   let handle = NodeBuilder::new(factory, keys)
     .config(config)
+    .extensions(extensions)
     .start()
     .await
     .map_err(|error| error.to_string())?;
 
   let mut stdin = std::io::stdin().lock();
   let mut stdout = std::io::stdout().lock();
-  let mut line = String::new();
-
-  // The member listens before it joins so the accept loop holds its
-  // precomputed join hint; the creator creates first, then listens.
-  let listen_endpoint = if role == "member" {
-    let listener = handle
-      .command(Listen::new(endpoint.clone()))
-      .await
-      .map_err(|error| error.to_string())?;
-    listener.endpoint().clone()
-  } else {
-    endpoint.clone()
-  };
 
   match role.as_str() {
-    "creator" => {
-      // The cluster exists before the listener: genesis runs on the
-      // unlistening store, matching the create-then-listen ordering the
-      // facade proof uses. The initial credential rotates BEFORE the
-      // listener starts, so the accept loop's first computed hint already
-      // carries an active generation (a hint computed before any
-      // credential exists would refuse every early joiner).
-      handle
-        .command(CreateCluster::new())
-        .await
-        .map_err(|error| error.to_string())?;
-      let issued = handle
-        .command(RotateJoinCredential::new())
-        .await
-        .map_err(|error| error.to_string())?;
-      let listener = handle
-        .command(Listen::new(endpoint))
-        .await
-        .map_err(|error| error.to_string())?;
-      let creator_endpoint = listener.endpoint().clone();
-      println!("credential {}", issued.credential().expose_secret());
-      println!("ready creator {}", creator_endpoint.as_str());
-      stdout.flush().map_err(|error| error.to_string())?;
-      loop {
-        line.clear();
-        match stdin.read_line(&mut line) {
-          Ok(0) => break,
-          Ok(_) if line.trim() == "shutdown" => break,
-          Ok(_) if line.trim() == "rotate" => {
+    "creator" => creator(handle, endpoint, &mut stdin, &mut stdout).await,
+    "member" => member(handle, endpoint, &mut stdin, &mut stdout).await,
+    other => Err(format!("unknown role {other}")),
+  }
+}
+
+async fn creator(
+  handle: radiata::NodeHandle, endpoint: Endpoint, stdin: &mut std::io::StdinLock<'static>,
+  stdout: &mut std::io::StdoutLock<'static>,
+) -> Result<(), String> {
+  // Genesis runs on the unlistening store; the initial credential rotates
+  // BEFORE the listener starts, so the accept loop's first computed hint
+  // already carries an active generation (a hint computed before any
+  // credential exists refuses every early joiner).
+  handle
+    .command(CreateCluster::new())
+    .await
+    .map_err(|error| error.to_string())?;
+  let issued = handle
+    .command(RotateJoinCredential::new())
+    .await
+    .map_err(|error| error.to_string())?;
+  let listener = handle
+    .command(Listen::new(endpoint))
+    .await
+    .map_err(|error| error.to_string())?;
+  let local = handle
+    .query(GetLocalNode::new())
+    .await
+    .map_err(|error| error.to_string())?;
+  println!("credential {}", issued.credential().expose_secret());
+  println!("ready {} {}", local.node_id(), listener.endpoint().as_str());
+  stdout.flush().map_err(|error| error.to_string())?;
+
+  #[allow(unused_mut)]
+  let mut line = String::new();
+  loop {
+    line.clear();
+    match stdin.read_line(&mut line) {
+      Ok(0) => {
+        eprintln!("slo-node: creator stdin closed; exiting");
+        break;
+      }
+      Ok(_) => {
+        let command = line.trim().to_owned();
+        let mut parts = command.split_whitespace();
+        match parts.next().unwrap_or("") {
+          "shutdown" => {
+            eprintln!("slo-node: creator received shutdown");
+            break;
+          }
+          "rotate" => {
             let issued = handle
               .command(RotateJoinCredential::new())
               .await
               .map_err(|error| error.to_string())?;
             println!("credential {}", issued.credential().expose_secret());
-            stdout.flush().map_err(|error| error.to_string())?;
           }
-          Ok(_) => {}
-          Err(error) => return Err(error.to_string()),
+          "myrevision" => {
+            let local = handle
+              .query(GetLocalNode::new())
+              .await
+              .map_err(|error| error.to_string())?;
+            let page = handle
+              .query(PageMembers::new(PageSpec::first(64).unwrap()))
+              .await
+              .map_err(|error| error.to_string())?;
+            let revision = page
+              .items()
+              .iter()
+              .find(|view| view.node_id() == local.node_id())
+              .map(|view| view.owner_revision())
+              .unwrap_or(0);
+            println!("revision {revision}");
+          }
+          "members" => {
+            let page = handle
+              .query(PageMembers::new(PageSpec::first(64).unwrap()))
+              .await
+              .map_err(|error| error.to_string())?;
+            let ids = page
+              .items()
+              .iter()
+              .map(|view| view.node_id().as_str())
+              .collect::<Vec<_>>()
+              .join(",");
+            println!("members {ids}");
+          }
+          "zones" => {
+            let page = handle
+              .query(PageMembers::new(PageSpec::first(64).unwrap()))
+              .await
+              .map_err(|error| error.to_string())?;
+            let zone_key = radiata::LabelKey::parse("example.org/labels/zone")
+              .map_err(|error| error.to_string())?;
+            let count = page
+              .items()
+              .iter()
+              .filter(|view| {
+                view.labels().get(&zone_key).is_some()
+              })
+              .count();
+            println!("zones {count}");
+          }
+          "workload" => {
+            let reply = run_workload_command(&handle, parts).await;
+            println!("{reply}");
+          }
+          _ => println!("error unknown command"),
         }
+        stdout.flush().map_err(|error| error.to_string())?;
       }
+      Err(error) => return Err(error.to_string()),
     }
-    "member" => {
-      // The first line carries the single-use credential; the helper
-      // joins the issuer, then proves readiness through one paged
-      // observation. The listener is already up: a member listens before
-      // it joins so the accept loop holds its precomputed join hint.
-      stdin.read_line(&mut line).map_err(|error| error.to_string())?;
-      let mut parts = line.split_whitespace();
-      let tag = parts.next().unwrap_or("");
-      if tag != "join" {
-        return Err("expected join line".to_owned());
-      }
-      let secret = parts.next().ok_or("expected credential".to_owned())?;
-      let credential =
-        radiata::JoinCredential::parse(secret).map_err(|error| error.to_string())?;
-      let issuer_text = std::env::var(common::ENV_ISSUER).map_err(|_| "issuer unset".to_owned())?;
-      let issuer = Endpoint::parse(&issuer_text).map_err(|error| error.to_string())?;
-      handle
-        .command(JoinCluster::new(issuer, credential))
-        .await
-        .map_err(|error| error.to_string())?;
-      let local = handle
-        .query(GetLocalNode::new())
-        .await
-        .map_err(|error| error.to_string())?;
-      let _page = handle
-        .query(PageMembers::new(PageSpec::first(64).unwrap()))
-        .await
-        .map_err(|error| error.to_string())?;
-      println!("ready {} {}", local.node_id(), listen_endpoint.as_str());
-      stdout.flush().map_err(|error| error.to_string())?;
-      loop {
-        line.clear();
-        match stdin.read_line(&mut line) {
-          Ok(0) => break,
-          Ok(_) if line.trim() == "shutdown" => break,
-          Ok(_) => {}
-          Err(error) => return Err(error.to_string()),
-        }
-      }
-    }
-    other => return Err(format!("unknown role {other}")),
   }
-
   handle
     .command(radiata::Shutdown::new())
     .await
     .map_err(|error| error.to_string())?;
   Ok(())
+}
+
+async fn member(
+  handle: radiata::NodeHandle, endpoint: Endpoint, stdin: &mut std::io::StdinLock<'static>,
+  stdout: &mut std::io::StdoutLock<'static>,
+) -> Result<(), String> {
+  // The first line carries the single-use credential; the member listens
+  // before it joins so the accept loop holds its precomputed join hint.
+  let listener = handle
+    .command(Listen::new(endpoint))
+    .await
+    .map_err(|error| error.to_string())?;
+  let listen_endpoint = listener.endpoint().clone();
+  let mut line = String::new();
+  stdin
+    .read_line(&mut line)
+    .map_err(|error| error.to_string())?;
+  let mut parts = line.split_whitespace();
+  if parts.next().unwrap_or("") != "join" {
+    return Err("expected join line".to_owned());
+  }
+  let secret = parts.next().ok_or("expected credential".to_owned())?;
+  let issuer_text = std::env::var(common::ENV_ISSUER).map_err(|_| "issuer unset".to_owned())?;
+  let issuer = Endpoint::parse(&issuer_text).map_err(|error| error.to_string())?;
+  let credential = radiata::JoinCredential::parse(secret).map_err(|error| error.to_string())?;
+  handle
+    .command(JoinCluster::new(issuer, credential))
+    .await
+    .map_err(|error| error.to_string())?;
+  let local = handle
+    .query(GetLocalNode::new())
+    .await
+    .map_err(|error| error.to_string())?;
+  let node_id = local.node_id().clone();
+  let _page = handle
+    .query(PageMembers::new(PageSpec::first(64).unwrap()))
+    .await
+    .map_err(|error| error.to_string())?;
+  println!("ready {node_id} {}", listen_endpoint.as_str());
+  stdout.flush().map_err(|error| error.to_string())?;
+
+  loop {
+    line.clear();
+    match stdin.read_line(&mut line) {
+      Ok(0) => break,
+      Ok(_) => {
+        let command = line.trim().to_owned();
+        let mut parts = command.split_whitespace();
+        match parts.next().unwrap_or("") {
+          "shutdown" => break,
+          "id" => println!("id {node_id}"),
+          "revision" => {
+            let reply = own_revision(&handle, &node_id).await;
+            println!("{reply}");
+          }
+          "haszone" => {
+            let Some(value) = parts.next() else {
+              println!("error missing zone value");
+              continue;
+            };
+            let reply = own_zone_is(&handle, &node_id, value).await;
+            println!("{reply}");
+          }
+          "has" => {
+            let Some(name_text) = parts.next() else {
+              println!("error missing resource name");
+              continue;
+            };
+            let reply = has_resource(&handle, name_text).await;
+            println!("{reply}");
+          }
+          "setzone" => {
+            let value = parts.next().unwrap_or("edge").to_owned();
+            let reply = set_own_zone(&handle, &node_id, &value).await;
+            println!("{reply}");
+          }
+          _ => println!("error unknown command"),
+        }
+        stdout.flush().map_err(|error| error.to_string())?;
+      }
+      Err(error) => return Err(error.to_string()),
+    }
+  }
+  handle
+    .command(radiata::Shutdown::new())
+    .await
+    .map_err(|error| error.to_string())?;
+  Ok(())
+}
+
+/// Whether the member's own public view exposes the exact zone label.
+async fn own_zone_is(
+  handle: &radiata::NodeHandle, node_id: &radiata::NodeId, value: &str,
+) -> String {
+  match handle
+    .query(PageMembers::new(PageSpec::first(64).unwrap()))
+    .await
+  {
+    Ok(page) => {
+      let observed = page
+        .items()
+        .iter()
+        .find(|view| view.node_id() == node_id)
+        .and_then(|view| {
+          view
+            .labels()
+            .get(&radiata::LabelKey::parse("example.org/labels/zone").ok()?)
+        })
+        .is_some_and(|label| label.as_str() == value);
+      if observed {
+        "haszone yes".to_owned()
+      } else {
+        "haszone no".to_owned()
+      }
+    }
+    Err(_) => "error member page".to_owned(),
+  }
+}
+
+/// The member's own owner revision through the public member page.
+async fn own_revision(handle: &radiata::NodeHandle, node_id: &radiata::NodeId) -> String {
+  match handle
+    .query(PageMembers::new(PageSpec::first(64).unwrap()))
+    .await
+  {
+    Ok(page) => format!(
+      "revision {}",
+      page
+        .items()
+        .iter()
+        .find(|view| view.node_id() == node_id)
+        .map(|view| view.owner_revision())
+        .unwrap_or(0)
+    ),
+    Err(_) => "error member page".to_owned(),
+  }
+}
+
+/// Whether the exact named resource is observable through the public
+/// resource query.
+async fn has_resource(handle: &radiata::NodeHandle, name_text: &str) -> String {
+  let name = match radiata::ResourceName::parse(name_text) {
+    Ok(name) => name,
+    Err(_) => return "error bad name".to_owned(),
+  };
+  match handle.query(radiata::GetResource::new(name)).await {
+    Ok(Some(_)) => "has yes".to_owned(),
+    Ok(None) => "has no".to_owned(),
+    Err(_) => "error resource query".to_owned(),
+  }
+}
+
+/// Sets the member's own zone capability label: the owner revision is
+/// observed through the public member page (the descriptor ensure may
+/// legitimately bump revisions concurrently).
+async fn set_own_zone(
+  handle: &radiata::NodeHandle, node_id: &radiata::NodeId, value: &str,
+) -> String {
+  let revision = match handle
+    .query(PageMembers::new(PageSpec::first(64).unwrap()))
+    .await
+  {
+    Ok(page) => page
+      .items()
+      .iter()
+      .find(|view| view.node_id() == node_id)
+      .map(|view| view.owner_revision())
+      .unwrap_or(1),
+    Err(_) => return "error member page".to_owned(),
+  };
+  let patch = (|| {
+    let key = radiata::LabelKey::parse("example.org/labels/zone")?;
+    let value = radiata::LabelValue::parse(value)?;
+    radiata::NodeMetadataPatch::new().set_capability(key, value)
+  })()
+  .map_err(|error| format!("error {error}"));
+  let patch = match patch {
+    Ok(patch) => patch,
+    Err(error) => return error,
+  };
+  match handle
+    .command(radiata::UpdateNodeMetadata::new(revision, patch))
+    .await
+  {
+    Ok(_) => "zone ok".to_owned(),
+    Err(error) => format!("error {error}"),
+  }
+}
+
+/// Executes one workload command and returns the reply line.
+async fn run_workload_command(
+  handle: &radiata::NodeHandle, mut parts: std::str::SplitWhitespace<'_>,
+) -> String {
+  let Some(kind) = parts.next() else {
+    return "error missing workload kind".to_owned();
+  };
+  let sample = match kind {
+    "direct" => {
+      let Some(target) = parts
+        .next()
+        .and_then(|value| radiata::NodeId::parse(value).ok())
+      else {
+        return "error bad target".to_owned();
+      };
+      workload::sample_direct_packet(handle, &target).await
+    }
+    "routed" => workload::sample_routed_packet(handle).await,
+    "node-meta" => {
+      let Some(revision) = parts.next().and_then(|value| value.parse::<u64>().ok()) else {
+        return "error bad revision".to_owned();
+      };
+      let value = parts.next().unwrap_or("edge").to_owned();
+      workload::sample_node_metadata(handle, revision, &value).await
+    }
+    "resource" => {
+      let Some(seed) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
+        return "error bad seed".to_owned();
+      };
+      workload::sample_resource_metadata(handle, seed).await
+    }
+    other => return format!("error unknown workload kind {other}"),
+  };
+  let _ = sample.passes();
+  sample.ledger_line()
 }

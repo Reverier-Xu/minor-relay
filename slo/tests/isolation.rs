@@ -8,7 +8,11 @@
 
 use std::fs;
 
-const HARNESS_SOURCES: &[&str] = &["src/common_impl.rs", "src/bin/slo-node.rs", "src/bin/slo-controller.rs"];
+const HARNESS_SOURCES: &[&str] = &[
+  "src/common_impl.rs",
+  "src/bin/slo-node.rs",
+  "src/bin/slo-controller.rs",
+];
 
 /// The forbidden token classes: private crate paths, storage internals,
 /// test-only features, and secret-bearing channels.
@@ -53,9 +57,12 @@ fn harness_sources_never_reference_private_or_test_only_surface() {
 /// controller binary never calls the listen command.
 #[test]
 fn controller_never_binds_its_own_listener() {
-  let text = fs::read_to_string("src/bin/slo-controller.rs")
-    .expect("controller source is present");
-  for token in ["Listen::new", "CreateCluster::new", "RotateJoinCredential::new"] {
+  let text = fs::read_to_string("src/bin/slo-controller.rs").expect("controller source is present");
+  for token in [
+    "Listen::new",
+    "CreateCluster::new",
+    "RotateJoinCredential::new",
+  ] {
     assert!(
       !text.contains(token),
       "the controller must not drive the facade directly ({token})"

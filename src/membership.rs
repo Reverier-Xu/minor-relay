@@ -296,7 +296,10 @@ pub(crate) mod store {
   /// record starts at revision 1. Same-revision and stale (lower)
   /// revisions are rejected, while a skipped intermediate revision still
   /// replaces the record so anti-entropy heals a lost delivery instead of
-  /// diverging forever; a removal marker is never replaced by an older
+  /// diverging forever — including a first install at a higher revision
+  /// for a node whose trusted binding already exists (the member updated
+  /// its labels before its first descriptor page ever arrived here);
+  /// a removal marker is never replaced by an older
   /// live descriptor (SC-G05-P0-03, ADR-0008).
   pub(crate) async fn store_descriptor_ctx(
     store: &MetadataStore, entropy: &dyn Entropy, descriptor: &NodeDescriptorV1,
@@ -317,7 +320,21 @@ pub(crate) mod store {
         return Err(Error::conflict("node descriptor removal"));
       }
     } else if descriptor.revision() != 1 {
-      return Err(Error::conflict("node descriptor revision"));
+      // A first install at a revision above 1 is only healable when the
+      // node is already trusted (its adopted binding exists): the page
+      // arrived over an authenticated session from a trusted member, so
+      // the skipped revisions are lost deliveries, never fabrications.
+      // A node with no binding and no descriptor is unknown here; its
+      // first descriptor must be revision 1.
+      let (binding_namespace, binding_key) =
+        crate::identity::records::identity_binding_key(descriptor.node())?;
+      let adopted = snapshot
+        .get(&binding_namespace, &binding_key)
+        .await?
+        .is_some();
+      if !adopted {
+        return Err(Error::conflict("node descriptor revision"));
+      }
     }
     // One snapshot view for both the per-key expectation and the CAS
     // revision, so a concurrent writer cannot make them disagree.
@@ -333,8 +350,17 @@ pub(crate) mod store {
         value: StoreValue::new(Arc::from(descriptor.encode()?)),
       }],
     )?;
-    let _ = store.commit(transaction).await?;
-    Ok(())
+    // A discarded commit outcome would silently drop the descriptor: a
+    // Conflict (the register moved under the CAS) must surface so the
+    // anti-entropy page applies on a later tick instead of vanishing.
+    match store.commit(transaction).await? {
+      crate::CommitOutcome::Committed(_) | crate::CommitOutcome::Aborted => Ok(()),
+      crate::CommitOutcome::Conflict => Err(Error::conflict("node descriptor revision")),
+      crate::CommitOutcome::Unknown { .. } => Err(Error::provider(
+        crate::ProviderErrorKind::CommitUnknown,
+        crate::ProviderErrorContext::StorageCommit,
+      )),
+    }
   }
 
   /// Reads the current descriptor for one node over a standalone factory

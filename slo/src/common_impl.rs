@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared harness support for the `slo-node` and `slo-controller`
 //! binaries: a private-custody key provider and the readiness framing,
 //! all through the public facade only.

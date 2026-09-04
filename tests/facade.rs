@@ -526,18 +526,49 @@ async fn g9_facade_core_only_operations() {
       radiata::LabelValue::parse("edge").unwrap(),
     )
     .unwrap();
-  let revision = member
+  // The exact expected revision is observed through the member's own
+  // public page (a concurrent descriptor ensure may legitimately bump
+  // the revision).
+  let members_self = member
+    .handle
+    .query(radiata::PageMembers::new(
+      radiata::PageSpec::first(8).unwrap(),
+    ))
+    .await
+    .unwrap();
+  let member_id = member
     .handle
     .query(radiata::GetLocalNode::new())
     .await
-    .ok()
-    .map(|_| 1_u64)
+    .unwrap()
+    .node_id()
+    .clone();
+  let revision = members_self
+    .items()
+    .iter()
+    .find(|view| view.node_id() == &member_id)
+    .map(|view| view.owner_revision())
     .unwrap_or(1);
-  member
-    .handle
-    .command(UpdateNodeMetadata::new(revision, patch))
-    .await
-    .unwrap();
+  // A concurrent descriptor ensure may bump the revision between the
+  // observation and the command: re-observe and retry within a bound.
+  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  loop {
+    match member
+      .handle
+      .command(UpdateNodeMetadata::new(revision, patch.clone()))
+      .await
+    {
+      Ok(_) => break,
+      Err(error) if error.kind() == ErrorKind::Conflict => {
+        assert!(
+          std::time::Instant::now() < deadline,
+          "metadata update never succeeded"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("update failed persistently: {error:?}"),
+    }
+  }
 
   // Wait until the label converges to the issuer's descriptor store: the
   // selector resolves over the issuer's authoritative descriptors.
