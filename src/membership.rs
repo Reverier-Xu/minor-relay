@@ -199,6 +199,9 @@ pub(crate) fn apply_metadata_patch(
   }
   let mut labels = descriptor.labels().clone();
   for (key, value) in parts.set_labels {
+    // "set" is an upsert: replacing an existing key's value is the
+    // ordinary owner-revision edit, not a conflict.
+    labels.remove(&key);
     labels = labels.insert(key, value)?;
   }
   for key in parts.remove_labels {

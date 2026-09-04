@@ -145,7 +145,10 @@ fn spawn_node(
 ) -> Result<NodeProcess, String> {
   let directory = root.join(format!("node-{index}"));
   std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-  let port = 17_000_u16 + index as u16;
+  // Each respawn takes the next port in a wide range: a failed helper's
+  // TLS listener port can linger in TIME_WAIT past the respawn.
+  static PORT_SEQ: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(17_000);
+  let port = PORT_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
   let endpoint = format!("wss://127.0.0.1:{port}");
   let mut command = Command::new(node_binary());
   command
@@ -357,14 +360,17 @@ async fn measure_async(runs: u32, expected_commit: String) -> Result<(), String>
     wait_ready(&mut node, Duration::from_secs(120))?;
     node
   };
+  let creator_id = creator.node_id.clone().ok_or("creator id missing")?;
   for index in 0..workload_nodes {
     // One fresh credential per member; retries REUSE it. A failed join
     // consumes no credential and the accept loop recomputes its hint per
     // connection, so the next dial with the SAME generation matches (a
     // rotate-per-retry would leave the blocked accept permanently one
     // generation behind).
+    eprintln!("slo-controller: startup member {index} rotating");
     let creator_ref = &mut creator;
     creator_ref.send("rotate")?;
+    eprintln!("slo-controller: startup member {index} credential ready");
     let line = creator_ref.read_line()?;
     let secret = common::parse_credential_line(&line).ok_or("creator returned no credential")?;
     let deadline = Instant::now() + Duration::from_secs(180);
@@ -375,9 +381,19 @@ async fn measure_async(runs: u32, expected_commit: String) -> Result<(), String>
         &creator_endpoint(Some(creator_ref))?,
         "member",
       )?;
+      eprintln!("slo-controller: startup member {index} spawned, joining");
       node.send(&format!("join {secret}"))?;
+      eprintln!("slo-controller: startup member {index} join sent");
       match wait_ready(&mut node, Duration::from_secs(120)) {
         Ok(()) => {
+          eprintln!("slo-controller: startup member {index} ready");
+          // Untimed setup: label the member so the routed stratum's
+          // label-selected targets resolve (ADR-0005 routed samples).
+          node.send("setzone edge")?;
+          let reply = node.read_line()?;
+          if reply.trim() != "zone ok" {
+            return Err(format!("zone label setup failed: {reply}"));
+          }
           members.push(node);
           break;
         }
@@ -487,9 +503,11 @@ async fn measure_async(runs: u32, expected_commit: String) -> Result<(), String>
       }
     }
 
-    // -- direct packet stratum.
+    // -- direct packet stratum: targets are other nodes only.
+    let targets: Vec<&String> =
+      member_ids.iter().filter(|id| *id != &creator_id).collect();
     for index in 0..workload_nodes {
-      let target = &member_ids[index % member_ids.len()];
+      let target = &targets[index % targets.len()];
       let started = now_ms();
       creator.send(&format!("workload direct {target}"))?;
       let line = creator.read_line()?;
@@ -547,14 +565,27 @@ async fn measure_async(runs: u32, expected_commit: String) -> Result<(), String>
       creator.send(&format!("workload node-meta 0 {value}"))?;
       let line = creator.read_line()?;
       // The acceptance predicate: every member observes the exact label
-      // value through its own public member page.
-      let mut observed = true;
-      for member in &mut members {
-        member.send(&format!("haszone {value}"))?;
-        let reply = member.read_line()?;
-        if reply.trim() != "haszone yes" {
-          observed = false;
+      // value through its own public member page (bounded polling while
+      // sync converges).
+      let mut observed = false;
+      let convergence = Instant::now() + Duration::from_secs(30);
+      loop {
+        let mut all_yes = true;
+        for member in &mut members {
+          member.send(&format!("haszone {value}"))?;
+          let reply = member.read_line()?;
+          if reply.trim() != "haszone yes" {
+            all_yes = false;
+          }
         }
+        if all_yes {
+          observed = true;
+          break;
+        }
+        if Instant::now() > convergence {
+          break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
       }
       let ended = now_ms();
       let outcome = if observed && line.contains("\"outcome\":\"ok\"") {
@@ -582,15 +613,25 @@ async fn measure_async(runs: u32, expected_commit: String) -> Result<(), String>
       sample_seed += 1;
       let name = format!("radiata.woooo.tech/resources/workload-{sample_seed:03}");
       let started = now_ms();
-      creator.send(&format!("workload resource {sample_seed}"))?;
-      let line = creator.read_line()?;
-      let mut observed = true;
-      for member in &mut members {
-        member.send(&format!("has {name}"))?;
-        let reply = member.read_line()?;
-        if reply.trim() != "has yes" {
-          observed = false;
+      let mut observed = false;
+      let convergence = Instant::now() + Duration::from_secs(30);
+      loop {
+        let mut all_yes = true;
+        for member in &mut members {
+          member.send(&format!("has {name}"))?;
+          let reply = member.read_line()?;
+          if reply.trim() != "has yes" {
+            all_yes = false;
+          }
         }
+        if all_yes {
+          observed = true;
+          break;
+        }
+        if Instant::now() > convergence {
+          break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
       }
       let ended = now_ms();
       let outcome = if observed && line.contains("\"outcome\":\"ok\"") {

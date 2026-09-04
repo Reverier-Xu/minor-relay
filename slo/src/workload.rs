@@ -70,8 +70,8 @@ fn now_ms() -> u128 {
 }
 
 fn finish(mut sample: RawSample, result: Result<(), radiata::Error>) -> RawSample {
-  if result.is_err() {
-    sample.outcome = "failed".to_owned();
+  if let Err(error) = result {
+    sample.outcome = format!("failed: {:?} {}", error.kind(), error.context());
   }
   sample.ended_at_ms = now_ms();
   sample
@@ -191,31 +191,43 @@ pub async fn sample_node_metadata(
   };
   let result = async {
     // The caller passes 0 to mean "my current revision": the exact
-    // expected revision is observed through the public member page, so a
-    // concurrent descriptor ensure cannot make the caller's assumption
-    // stale.
-    let revision = if requested_revision == 0 {
-      let local = handle.query(radiata::GetLocalNode::new()).await?;
-      let page = handle
-        .query(PageMembers::new(PageSpec::first(64).unwrap()))
-        .await?;
-      page
-        .items()
-        .iter()
-        .find(|view| view.node_id() == local.node_id())
-        .map(|view| view.owner_revision())
-        .unwrap_or(1)
-    } else {
-      requested_revision
-    };
+    // expected revision is observed through the public member page. A
+    // concurrent descriptor ensure can bump the revision between the
+    // observation and the command, so the conflict re-observes and
+    // retries within a bound.
     let key = LabelKey::parse("example.org/labels/zone")?;
     let value = LabelValue::parse(zone_value)?;
-    let patch = NodeMetadataPatch::new().set_capability(key, value)?;
-    let updated = handle
-      .command(UpdateNodeMetadata::new(revision, patch))
-      .await?;
-    let _ = updated.owner_revision();
-    Ok(())
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+      let revision = if requested_revision == 0 {
+        let local = handle.query(radiata::GetLocalNode::new()).await?;
+        let page = handle
+          .query(PageMembers::new(PageSpec::first(64).unwrap()))
+          .await?;
+        page
+          .items()
+          .iter()
+          .find(|view| view.node_id() == local.node_id())
+          .map(|view| view.owner_revision())
+          .unwrap_or(1)
+      } else {
+        requested_revision
+      };
+      let patch = NodeMetadataPatch::new().set_capability(key.clone(), value.clone())?;
+      match handle.command(UpdateNodeMetadata::new(revision, patch)).await {
+        Ok(updated) => {
+          let _ = updated.owner_revision();
+          return Ok(());
+        }
+        Err(error) if error.kind() == radiata::ErrorKind::Conflict => {
+          if Instant::now() > deadline {
+            return Err(error);
+          }
+          tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Err(error) => return Err(error),
+      }
+    }
   }
   .await;
   finish(sample, result)

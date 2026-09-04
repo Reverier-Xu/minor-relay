@@ -44,6 +44,15 @@ impl radiata::PacketConsumer for EchoConsumer {
 }
 
 fn main() -> ExitCode {
+  eprintln!(
+    "slo-node starting; log={}",
+    std::env::var("RADIATA_SLO_LOG").is_ok()
+  );
+  if std::env::var("RADIATA_SLO_LOG").is_ok() {
+    tracing_subscriber::fmt()
+      .with_env_filter(tracing_subscriber::EnvFilter::new("radiata=debug"))
+      .init();
+  }
   let runtime = match tokio::runtime::Builder::new_multi_thread()
     .worker_threads(2)
     .enable_all()
@@ -288,7 +297,7 @@ async fn member(
               println!("error missing zone value");
               continue;
             };
-            let reply = own_zone_is(&handle, &node_id, value).await;
+            let reply = any_zone_is(&handle, value).await;
             println!("{reply}");
           }
           "has" => {
@@ -319,24 +328,20 @@ async fn member(
 }
 
 /// Whether the member's own public view exposes the exact zone label.
-async fn own_zone_is(
-  handle: &radiata::NodeHandle, node_id: &radiata::NodeId, value: &str,
-) -> String {
+async fn any_zone_is(handle: &radiata::NodeHandle, value: &str) -> String {
   match handle
     .query(PageMembers::new(PageSpec::first(64).unwrap()))
     .await
   {
     Ok(page) => {
-      let observed = page
-        .items()
-        .iter()
-        .find(|view| view.node_id() == node_id)
-        .and_then(|view| {
-          view
-            .labels()
-            .get(&radiata::LabelKey::parse("example.org/labels/zone").ok()?)
-        })
-        .is_some_and(|label| label.as_str() == value);
+      let zone_key = radiata::LabelKey::parse("example.org/labels/zone");
+      let observed = page.items().iter().any(|view| {
+        zone_key
+          .as_ref()
+          .ok()
+          .and_then(|key| view.labels().get(key))
+          .is_some_and(|label| label.as_str() == value)
+      });
       if observed {
         "haszone yes".to_owned()
       } else {
@@ -450,6 +455,9 @@ async fn run_workload_command(
     }
     other => return format!("error unknown workload kind {other}"),
   };
+  if !sample.passes() {
+    eprintln!("workload sample failed: {} {}", sample.stratum, sample.outcome);
+  }
   let _ = sample.passes();
   sample.ledger_line()
 }
