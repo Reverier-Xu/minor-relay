@@ -82,7 +82,10 @@ async fn rotate_with_retry(issuer: &NodeHandle) -> radiata::IssuedJoinCredential
 async fn join_with_retry(
   node: &NodeHandle, endpoint: &Endpoint, secret: &str,
 ) -> radiata::AdmissionView {
-  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  // The fixed authentication deadline expires on starved runners; the
+  // bound covers a fully loaded CI machine (the sixteen-node lane runs
+  // alongside every other test binary in the workspace suite).
+  let deadline = std::time::Instant::now() + Duration::from_secs(300);
   let mut attempts = 0_u32;
   loop {
     attempts = attempts.wrapping_add(1);
