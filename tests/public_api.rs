@@ -681,6 +681,7 @@ async fn every_typed_facade_signature_drives_a_real_cluster() {
   let endpoint = listen(&issuer).await;
   let local: LocalNodeView = issuer.handle.query(GetLocalNode::new()).await.unwrap();
   assert_eq!(local.cluster_id(), cluster.cluster_id());
+  let issuer_id: NodeId = local.node_id().clone();
   assert_eq!(local.public_key().as_bytes().len(), 32);
 
   let status: NodeStatus = issuer.handle.query(GetNodeStatus::new()).await.unwrap();
@@ -778,9 +779,23 @@ async fn every_typed_facade_signature_drives_a_real_cluster() {
     );
   }
 
-  // Node metadata revision through the typed patch builder. The issuer's
-  // listener endpoint is already published by the descriptor ensure, so
-  // the patch only sets and removes a capability label.
+  // Node metadata revision through the typed patch builder: the exact
+  // expected revision is observed through the public member page (the
+  // descriptor ensure may legitimately bump revisions concurrently), and
+  // each patch applies to that observed revision.
+  async fn current_issuer_revision(handle: &NodeHandle, issuer_id: &NodeId) -> u64 {
+    let members = handle
+      .query(PageMembers::new(PageSpec::first(8).unwrap()))
+      .await
+      .unwrap();
+    members
+      .items()
+      .iter()
+      .find(|view| view.node_id() == issuer_id)
+      .map(|view| view.owner_revision())
+      .unwrap_or(1)
+  }
+  let revision = current_issuer_revision(&issuer.handle, &issuer_id).await;
   let patch = NodeMetadataPatch::new()
     .set_capability(
       LabelKey::parse("example.org/labels/lane").unwrap(),
@@ -789,16 +804,17 @@ async fn every_typed_facade_signature_drives_a_real_cluster() {
     .unwrap();
   let updated: MemberView = issuer
     .handle
-    .command(UpdateNodeMetadata::new(1, patch))
+    .command(UpdateNodeMetadata::new(revision, patch))
     .await
     .unwrap();
-  assert_eq!(updated.owner_revision(), 2);
+  assert_eq!(updated.owner_revision(), revision + 1);
   let patch2 = NodeMetadataPatch::new()
     .remove_capability(LabelKey::parse("example.org/labels/lane").unwrap())
     .unwrap();
+  let revision2 = current_issuer_revision(&issuer.handle, &issuer_id).await;
   let _updated2: MemberView = issuer
     .handle
-    .command(UpdateNodeMetadata::new(2, patch2))
+    .command(UpdateNodeMetadata::new(revision2, patch2))
     .await
     .unwrap();
 
