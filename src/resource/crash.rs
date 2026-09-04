@@ -164,6 +164,28 @@ async fn resource_crash_child_entry() {
   }
 }
 
+/// Opens the provider with a bounded retry: on overlay filesystems the
+/// crashed child's file lock can linger for a few milliseconds after the
+/// process is reaped, surfacing as one transient StorageLocked.
+async fn open_provider_with_retry(
+  factory: &Arc<dyn StorageFactory>,
+) -> crate::Result<Box<dyn crate::provider::Storage>> {
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+  loop {
+    match factory.open(requirements()).await {
+      Ok(provider) => return Ok(provider),
+      Err(error) if error.kind() == crate::ErrorKind::StorageLocked => {
+        assert!(
+          std::time::Instant::now() < deadline,
+          "provider lock never released: {error:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+      }
+      Err(error) => return Err(error),
+    }
+  }
+}
+
 /// Every crash boundary reopens to exactly the old or the new whole
 /// record, never partial labels, and the pending identity reconciles
 /// consistently with the observed content.
@@ -194,7 +216,7 @@ async fn resource_crash_boundaries_recover_exact_old_or_new_register() {
     // Identity assertion at the provider layer: reconciliation must agree
     // with the observed content.
     drop(reopened);
-    let provider = factory.open(requirements()).await.unwrap();
+    let provider = open_provider_with_retry(&factory).await.unwrap();
     let outcome = provider
       .reconcile(identity.transaction(), identity.operation_digest())
       .await
@@ -372,7 +394,7 @@ async fn resource_delete_boundaries_recover_old_or_new_presence() {
     );
 
     drop(reopened);
-    let provider = factory.open(requirements()).await.unwrap();
+    let provider = open_provider_with_retry(&factory).await.unwrap();
     let outcome = provider
       .reconcile(identity.transaction(), identity.operation_digest())
       .await

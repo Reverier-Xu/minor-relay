@@ -215,7 +215,22 @@ impl MetadataStore {
   }
 
   pub(crate) async fn reconcile(&self) -> Result<ReconcileOutcome> {
-    let (pending, call) = self.begin_reconcile()?;
+    // The same bounded entry wait as commit: a reconcile racing an
+    // in-flight commit waits for the Ready state instead of surfacing the
+    // transient refusal to callers.
+    let deadline = std::time::Instant::now() + ENTRY_WAIT_BOUND;
+    let (pending, call) = loop {
+      match self.begin_reconcile() {
+        Ok(pair) => break pair,
+        Err(error) if error.kind() == crate::ErrorKind::NotReady => {
+          if std::time::Instant::now() >= deadline {
+            return Err(error);
+          }
+          tokio::time::sleep(ENTRY_WAIT_BACKOFF).await;
+        }
+        Err(error) => return Err(error),
+      }
+    };
     let outcome = self
       .provider
       .reconcile(&pending.transaction, &pending.digest)

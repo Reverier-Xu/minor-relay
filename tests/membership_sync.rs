@@ -590,9 +590,12 @@ async fn rotate_with_retry(issuer: &Node) -> radiata::IssuedJoinCredential {
 /// persistent storm still paces itself outside the fixed per-source
 /// admission window (sixteen attempts per minute).
 fn retry_backoff(attempts: u32) -> Duration {
+  // The fixed per-source admission window accepts sixteen attempts per
+  // minute; retries at four-second spacing (fifteen per minute) sit just
+  // under it so a refusal storm cannot saturate the window forever.
   let shift = attempts.min(5);
   let millis = 250_u64.saturating_mul(1_u64 << shift);
-  Duration::from_millis(millis.max(250)).min(Duration::from_secs(4))
+  Duration::from_millis(millis.max(4_000)).min(Duration::from_secs(8))
 }
 
 /// One join with bounded retries: the transport drops handshakes under
