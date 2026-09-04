@@ -23,6 +23,16 @@ mod common;
 
 use common::{MemoryStorageFactory, ScriptedKeys};
 
+/// The sixteen-node lanes share one process: the test harness runs them
+/// concurrently on a runner that cannot carry several oversubscribed
+/// clusters at once, which starves the fixed authentication deadline.
+/// The lanes serialize on this shared gate so each cluster owns the
+/// process while it runs.
+fn cluster_gate() -> &'static tokio::sync::Mutex<()> {
+  static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+  GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 fn init_tracing() {
   use std::sync::Once;
   static INIT: Once = Once::new();
@@ -678,6 +688,8 @@ async fn collected_topology(nodes: &[Node]) -> Vec<(u8, u8)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
+  let _cluster_gate = cluster_gate().lock().await;
+
   // Nodes 0..14 join first; before node 15 joins, the induced graph must
   // already be the 28-edge CQ4-minus-node-15 (SC-G05-P0-23).
   let mut nodes = build_cluster(15).await;
@@ -754,6 +766,8 @@ async fn membership_sync_sixteen_node_reciprocal_trust_and_exact_topology() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_failure_matrix_partition_healing() {
+  let _cluster_gate = cluster_gate().lock().await;
+
   let nodes = build_cluster(4).await;
   wait_trust(&nodes, 4, Duration::from_secs(20)).await;
   // The induced CQ4 graph on {0,1,2,3} is the 4-cycle (0,1),(0,2),(1,3),
@@ -835,6 +849,8 @@ async fn membership_sync_failure_matrix_partition_healing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_slo_trend_stays_below_bound() {
+  let _cluster_gate = cluster_gate().lock().await;
+
   // The trend lane records admission and descriptor completion from public
   // observations; every sample must stay below 10,000 ms
   // (eight-node sample; SC-G05-P0-29 calls for a sixteen-node trend run -
@@ -878,6 +894,8 @@ async fn membership_sync_slo_trend_stays_below_bound() {
 /// sample exercises.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_sync_sixteen_node_revised_workload_slo() {
+  let _cluster_gate = cluster_gate().lock().await;
+
   init_tracing();
   // Profile setup (untimed): fifteen members join and converge.
   let collector = Arc::new(EchoCollector::default());
