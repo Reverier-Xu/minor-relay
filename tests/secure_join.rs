@@ -105,6 +105,29 @@ async fn join_with_retry(
   }
 }
 
+/// One success-expecting join with bounded retries: the typed rejection
+/// lanes stay single-shot, but a success path must not fail the lane when
+/// a loaded runner expires the fixed authentication deadline. The same
+/// credential is reused (a failed join consumes no credential).
+async fn join_ok(node: &NodeHandle, endpoint: &Endpoint, secret: &str) -> radiata::AdmissionView {
+  let deadline = std::time::Instant::now() + Duration::from_secs(120);
+  loop {
+    match node
+      .command(JoinCluster::new(
+        endpoint.clone(),
+        JoinCredential::parse(secret).unwrap(),
+      ))
+      .await
+    {
+      Ok(view) => return view,
+      Err(_) if std::time::Instant::now() < deadline => {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+      }
+      Err(error) => panic!("join never succeeded: {error:?}"),
+    }
+  }
+}
+
 async fn start(storage: Arc<MemoryStorageFactory>, keys: Arc<ScriptedKeys>) -> Node {
   init_tracing();
   let factory: Arc<dyn radiata::extension::StorageFactory> = storage;
@@ -155,14 +178,8 @@ async fn secure_join_completes_exporter_bound_join_and_persists_admission() {
     .await
     .unwrap();
 
-  let admission = joiner
-    .handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  let admission = join_ok(&joiner.handle, listener.endpoint(), &secret).await;
   assert_eq!(admission.cluster_id(), cluster.cluster_id());
   assert_eq!(admission.issuer(), cluster.creator());
 
@@ -430,13 +447,10 @@ async fn secure_join_packet_streams_ordered_after_authentication() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let admission = {
+    let secret = issued.credential().expose_secret().to_owned();
+    join_ok(&joiner_handle, &(listener.endpoint().clone()), &secret).await
+  };
 
   // The receiver sends to the joiner over the established authenticated
   // session; the TraceId is visible before any body delivery.
@@ -527,13 +541,10 @@ async fn secure_join_packet_rejects_unknown_target_and_unregistered_protocol() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let admission = {
+    let secret = issued.credential().expose_secret().to_owned();
+    join_ok(&joiner_handle, &(listener.endpoint().clone()), &secret).await
+  };
 
   // Sender-side: creating a packet for a protocol the local registry never
   // registered fails before any session work.
@@ -643,14 +654,8 @@ async fn secure_join_rotation_keeps_members_and_reconnect_is_credential_free() {
     .await,
     _keys: joiner_keys.clone(),
   };
-  let admission = joiner
-    .handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  let admission = join_ok(&joiner.handle, listener.endpoint(), &secret).await;
   let _admitted = admission.admitted_node().clone();
 
   // E2E-01: the joined member streams packets; credential rotation does
@@ -893,13 +898,10 @@ async fn secure_join_packets_flow_concurrently_in_both_directions() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let admission = {
+    let secret = issued.credential().expose_secret().to_owned();
+    join_ok(&joiner_handle, &(listener.endpoint().clone()), &secret).await
+  };
   let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
   let receiver_id = receiver_view.node_id().clone();
   let joiner_id = admission.admitted_node().clone();
@@ -969,13 +971,10 @@ async fn secure_join_derived_return_packet_reuses_trace_id() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let admission = {
+    let secret = issued.credential().expose_secret().to_owned();
+    join_ok(&joiner_handle, &(listener.endpoint().clone()), &secret).await
+  };
   let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
   let receiver_id = receiver_view.node_id().clone();
   let _joiner_id = admission.admitted_node().clone();
@@ -1039,13 +1038,10 @@ async fn secure_join_incoming_stream_capacity_returns_backpressure_and_recovers(
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let admission = joiner_handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let admission = {
+    let secret = issued.credential().expose_secret().to_owned();
+    join_ok(&joiner_handle, &(listener.endpoint().clone()), &secret).await
+  };
   let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
   let receiver_id = receiver_view.node_id().clone();
   let _joiner_id = admission.admitted_node().clone();
@@ -1226,14 +1222,8 @@ async fn secure_join_copied_credential_cannot_join_twice() {
     Arc::new(ScriptedKeys::full_at(130_000)),
   )
   .await;
-  let _admission = joiner
-    .handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  let _admission = join_ok(&joiner.handle, listener.endpoint(), &secret).await;
 
   // A second node replays the copied credential bytes; the issuer must
   // refuse without admitting a second subject for the same generation.
@@ -1292,13 +1282,10 @@ async fn secure_join_peer_shutdown_interrupts_inflight_stream_explicitly() {
     .command(Listen::new(Endpoint::parse("wss://127.0.0.1:0").unwrap()))
     .await
     .unwrap();
-  let _admission = joiner_handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let _admission = {
+    let secret = issued.credential().expose_secret().to_owned();
+    join_ok(&joiner_handle, &(listener.endpoint().clone()), &secret).await
+  };
   let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
   let receiver_id = receiver_view.node_id().clone();
 
@@ -1481,14 +1468,8 @@ async fn secure_join_crossed_dial_converges_to_one_session() {
     .await,
     _keys: Arc::new(ScriptedKeys::full()),
   };
-  let admission = joiner
-    .handle
-    .command(JoinCluster::new(
-      receiver_listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  let admission = join_ok(&joiner.handle, receiver_listener.endpoint(), &secret).await;
 
   // The joiner now listens so the receiver can dial it back.
   let joiner_listener = joiner
@@ -1550,14 +1531,8 @@ async fn secure_join_shutdown_rejects_new_work_after_drain() {
     Arc::new(ScriptedKeys::full_at(230_000)),
   )
   .await;
-  joiner
-    .handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  join_ok(&joiner.handle, listener.endpoint(), &secret).await;
 
   receiver.handle.command(Shutdown::new()).await.unwrap();
   // New work after shutdown is rejected with a typed shutdown error, not
@@ -1601,14 +1576,8 @@ async fn secure_join_public_membership_and_topology_views() {
     Arc::new(ScriptedKeys::full_at(410_000)),
   )
   .await;
-  let admission = joiner
-    .handle
-    .command(JoinCluster::new(
-      listener.endpoint().clone(),
-      issued.into_credential(),
-    ))
-    .await
-    .unwrap();
+  let secret = issued.credential().expose_secret().to_owned();
+  let admission = join_ok(&joiner.handle, listener.endpoint(), &secret).await;
 
   let receiver_view = receiver.handle.query(GetLocalNode::new()).await.unwrap();
   let receiver_id = receiver_view.node_id().clone();
