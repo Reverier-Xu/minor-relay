@@ -1569,44 +1569,65 @@ impl Supervisor {
       .cluster()
       .clone();
     let writer = context.identity().node().clone();
-    let timestamp_millis = crate::time::now_millis();
     let labels = write.labels().clone();
-    let record = crate::resource::ResourceRecordV1::sign_with_provider(
-      cluster,
-      write.name().clone(),
-      labels.resource_type().clone(),
-      labels.uri().clone(),
-      labels.custom_labels().clone(),
-      timestamp_millis,
-      writer,
-      0,
-      false,
-      &self.dependencies.keys,
-      context.identity().handle(),
-    )
-    .await?;
-    let accepted = crate::resource::select::resource_view(&record);
-    match crate::resource::store::commit_record_ctx(
-      context.store(),
-      self.dependencies.entropy.as_ref(),
-      &record,
-    )
-    .await?
-    {
-      crate::resource::store::ResourceCommitOutcome::Installed(_) => {
-        self
-          .dependencies
-          .events
-          .emit(crate::ResourceChanged::new(record.name().clone()));
-        Ok(crate::ResourceMutationView::new(accepted, true))
-      }
-      crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
-        Ok(crate::ResourceMutationView::new(accepted, false))
-      }
-      crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => Err(Error::provider(
-        crate::ProviderErrorKind::CommitUnknown,
-        crate::ProviderErrorContext::StorageCommit,
-      )),
+    // A snapshot-exact CAS can lose a race against a concurrent internal
+    // committer (anti-entropy convergence or the descriptor ensure) that
+    // moved the base revision between the snapshot and the commit. That
+    // refusal says nothing about the candidate itself, so the write
+    // re-snapshots and re-signs with a fresh tuple timestamp; a bounded
+    // retry keeps the semantic that Conflict means the register rejected
+    // the candidate, not a lost bookkeeping race.
+    let mut attempts = 0_u32;
+    loop {
+      attempts += 1;
+      let timestamp_millis = crate::time::now_millis();
+      let record = crate::resource::ResourceRecordV1::sign_with_provider(
+        cluster.clone(),
+        write.name().clone(),
+        labels.resource_type().clone(),
+        labels.uri().clone(),
+        labels.custom_labels().clone(),
+        timestamp_millis,
+        writer.clone(),
+        0,
+        false,
+        &self.dependencies.keys,
+        context.identity().handle(),
+      )
+      .await?;
+      let accepted = crate::resource::select::resource_view(&record);
+      let outcome = match crate::resource::store::commit_record_ctx(
+        context.store(),
+        self.dependencies.entropy.as_ref(),
+        &record,
+      )
+      .await
+      {
+        Err(error) if error.kind() == crate::ErrorKind::Conflict && attempts < 3 => {
+          tracing::debug!(attempts, "resource put lost the commit race; retrying");
+          tokio::time::sleep(std::time::Duration::from_millis(10 * u64::from(attempts))).await;
+          continue;
+        }
+        result => result?,
+      };
+      return Ok(match outcome {
+        crate::resource::store::ResourceCommitOutcome::Installed(_) => {
+          self
+            .dependencies
+            .events
+            .emit(crate::ResourceChanged::new(record.name().clone()));
+          crate::ResourceMutationView::new(accepted, true)
+        }
+        crate::resource::store::ResourceCommitOutcome::Superseded(_) => {
+          crate::ResourceMutationView::new(accepted, false)
+        }
+        crate::resource::store::ResourceCommitOutcome::Indeterminate { .. } => {
+          return Err(Error::provider(
+            crate::ProviderErrorKind::CommitUnknown,
+            crate::ProviderErrorContext::StorageCommit,
+          ));
+        }
+      });
     }
   }
 

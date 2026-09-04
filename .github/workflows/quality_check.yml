@@ -239,14 +239,24 @@ jobs:
 
       - name: dependency duplicate review
         run: |
+          mkdir -p target
           cargo tree --locked --workspace -d > target/dependency-duplicates.txt
           cat target/dependency-duplicates.txt
           # Duplicate crate families in one protocol role are release blockers
           # (ADR-0004). The reviewed baseline names exactly these benign
           # duplicates across distinct roles; any new family fails the lane.
-          # getrandom 0.3/0.4: proptest's transitive draw vs the crate's own.
-          # windows-sys/windows-* stacks: platform crates from independent
-          # dependencies at different minimum versions.
+          # getrandom 0.2/0.3/0.4 + rand 0.9/0.10 + syn 2/3: independent
+          # third-party minimum versions in distinct dependency roles
+          # (ring's CSPRNG draw, proptest's generators, proc-macro
+          # internals), none duplicated within a protocol role.
+          families=$(grep -oE '^[a-z][a-z0-9_-]*' target/dependency-duplicates.txt | sort -u)
+          echo "$families"
+          for family in $families; do
+            case "$family" in
+              getrandom|rand|rand_core|syn) ;;
+              *) echo "unreviewed duplicate crate family: $family" >&2; exit 1 ;;
+            esac
+          done
           jq -n \
             --arg schema "radiata.woooo.tech/schemas/dependency-duplicates-v1" \
             --rawfile duplicates target/dependency-duplicates.txt \
