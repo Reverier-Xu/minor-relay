@@ -1398,6 +1398,26 @@ async fn secure_join_join_after_listener_stop_fails_closed() {
     .command(radiata::StopListener::new(listener.id().clone()))
     .await
     .unwrap();
+  // One in-flight accept can still complete after the stop returns; wait
+  // until the public listener page is empty before the late join.
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+  loop {
+    let listeners = receiver
+      .handle
+      .query(radiata::PageListeners::new(
+        radiata::PageSpec::first(8).unwrap(),
+      ))
+      .await
+      .unwrap();
+    if listeners.items().is_empty() {
+      break;
+    }
+    assert!(
+      std::time::Instant::now() < deadline,
+      "listener never stopped"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+  }
 
   let late = start(
     Arc::new(MemoryStorageFactory::new(common::required_capabilities())),

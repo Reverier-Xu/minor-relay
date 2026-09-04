@@ -1035,14 +1035,29 @@ async fn every_typed_facade_signature_drives_a_real_cluster() {
     .unwrap();
   assert!(removal.accepted().version().is_removal());
 
-  // Leave through the acknowledged marker.
-  let outcome: LeaveOutcome = issuer
-    .handle
-    .command(LeaveCluster::new(
-      ReplaceIdentityAndDeleteOldCoreMetadata::new(),
-    ))
-    .await
-    .unwrap();
+  // Leave through the acknowledged marker: the intent's Absent
+  // expectation races concurrent background commits, so the typed
+  // conflict retries with a bound (the harness precedent).
+  let deadline = std::time::Instant::now() + Duration::from_secs(30);
+  let outcome: LeaveOutcome = loop {
+    match issuer
+      .handle
+      .command(LeaveCluster::new(
+        ReplaceIdentityAndDeleteOldCoreMetadata::new(),
+      ))
+      .await
+    {
+      Ok(outcome) => break outcome,
+      Err(error) if error.kind() == radiata::ErrorKind::Conflict => {
+        assert!(
+          std::time::Instant::now() < deadline,
+          "leave never succeeded: {error:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+      Err(error) => panic!("leave failed persistently: {error:?}"),
+    }
+  };
   assert_ne!(outcome.former_identity(), outcome.replacement_identity());
 
   let shutdown: ShutdownOutcome = issuer.handle.command(Shutdown::new()).await.unwrap();
