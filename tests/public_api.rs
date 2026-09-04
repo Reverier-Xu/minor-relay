@@ -6,12 +6,20 @@
 //! or implemented from outside the crate, solely through `radiata::*`. A
 //! signature that disappears, renames, or changes shape breaks this build;
 //! a superseded export would appear here as an unsatisfied lane.
+//!
+//! The cluster-driving lane mounts the test-only JSON adapter, so the
+//! file requires the `json` feature and the unix directory barrier (the
+//! json_runtime precedent).
+
+#![cfg(all(feature = "json", unix))]
 
 use std::{
   sync::{Arc, Mutex},
   time::Duration,
 };
 
+#[cfg(all(feature = "json", unix))]
+use radiata::adapters::json_store;
 use radiata::{
   AdmissionView, BoxFuture, ChannelBinding, ClusterId, ClusterView, CommitOutcome, CommitReceipt,
   ConnectMember, ConnectivityStatus, CreateCluster, CreatedKey, DeliveryAck, Digest,
@@ -33,7 +41,6 @@ use radiata::{
   ShutdownReason, Signature, StartRecovery, StopListener, StoreCapabilities, StoreEntry, StoreKey,
   StoreNamespace, StoreOperation, StoreRequirements, StoreRevision, StoreTransaction, StoreValue,
   TraceId, TraceMetadataLimits, TransactionId, TransportTag, UpdateNodeMetadata, WaitForShutdown,
-  adapters::json_store,
   extension::{Entropy, KeyProvider, Storage, StorageFactory, StoreScan, StoreSnapshot},
 };
 
@@ -660,6 +667,8 @@ fn config_and_registry_are_externally_constructible() {
 /// The full typed command/query/event surface drives one real two-node
 /// cluster from outside the crate: every manifest command and query is
 /// dispatched and every event kind is subscribed.
+#[cfg(all(feature = "json", unix))]
+#[cfg(all(feature = "json", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_typed_facade_signature_drives_a_real_cluster() {
   init_tracing();

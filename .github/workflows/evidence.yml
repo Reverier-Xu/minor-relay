@@ -106,7 +106,7 @@ jobs:
 
       - name: upload evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540478e92f5e7f873de7e08c
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: fuzz-evidence-${{ matrix.target }}
           path: |
@@ -167,7 +167,7 @@ jobs:
 
       - name: upload evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540478e92f5e7f873de7e08c
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: soak-evidence
           path: |
