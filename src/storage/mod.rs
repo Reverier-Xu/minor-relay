@@ -10,6 +10,13 @@ use crate::{
   provider::{Storage, StorageFactory, StoreSnapshot},
 };
 
+/// The bounded wait for the single commit slot: internal committers are
+/// short, so an entry wait queues a concurrent caller instead of surfacing
+/// the transient refusal. Keep it well under any caller-facing deadline.
+const ENTRY_WAIT_BOUND: Duration = Duration::from_secs(5);
+/// The commit-slot wait poll interval.
+const ENTRY_WAIT_BACKOFF: Duration = Duration::from_millis(10);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingCommit {
   transaction: TransactionId,
@@ -137,13 +144,33 @@ impl MetadataStore {
   }
 
   pub(crate) async fn commit(&self, transaction: PreparedTransaction) -> Result<CommitOutcome> {
+    // The single-commit state machine refuses a second in-flight commit
+    // with NotReady. Every internal committer (anti-entropy ticks,
+    // descriptor ensures, key intents) is short and always restores the
+    // Ready state, so a bounded entry wait turns the transient refusal
+    // into queueing instead of pushing retry policy onto every caller.
+    // A caller that truly cannot wait still observes NotReady after the
+    // bound, and a user-visible Conflict/Aborted outcome is never masked:
+    // only the entry refusal is retried, never the commit itself.
+    let deadline = std::time::Instant::now() + ENTRY_WAIT_BOUND;
     let transaction = transaction.0;
     let pending = PendingCommit {
       transaction: transaction.id().clone(),
       digest: transaction.operation_digest().clone(),
       journal_proven: false,
     };
-    let call = self.begin_commit(pending.clone())?;
+    let call = loop {
+      match self.begin_commit(pending.clone()) {
+        Ok(call) => break call,
+        Err(error) if error.kind() == crate::ErrorKind::NotReady => {
+          if std::time::Instant::now() >= deadline {
+            return Err(error);
+          }
+          tokio::time::sleep(ENTRY_WAIT_BACKOFF).await;
+        }
+        Err(error) => return Err(error),
+      }
+    };
     let result = self.provider.commit(transaction).await;
 
     match result {
